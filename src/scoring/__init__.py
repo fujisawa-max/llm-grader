@@ -1,1 +1,1 @@
-"""Local, sequential OCR and rubric-based grading."""
+"""llm-grader: sequential local OCR and rubric-based grading."""

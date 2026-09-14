@@ -1,4 +1,4 @@
-# ローカルLLMによる答案採点
+# llm-grader：ローカルLLMによる答案採点
 
 Ricoh-8Bが答案全体をOCRし、その結果と元画像から数式領域を特定します。指定領域を元画像から切り出してUni-MuMER-4B Q4_K_Mで認識し、Ornith Q8が元画像・Ricoh結果・位置情報付きLaTeXを照合してから採点します。逐次実行するPythonランナーとBasicMathSmallExam1のサンプルを用意しています。
 
