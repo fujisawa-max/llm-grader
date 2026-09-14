@@ -1,0 +1,35 @@
+# 答案・問題・採点結果はローカル管理。共有用テンプレートのみ追跡する。
+/data/*
+!/data/.gitkeep
+/runs/*
+!/runs/.gitkeep
+/config/local.json
+.env
+.env.*
+!.env.example
+*.gguf
+__pycache__/
+.venv/
+
+/testData/
+# Local model weights and runtime caches (often tens of GB).
+*.gguf
+*.safetensors
+*.bin
+/.cache/
+/models/
+
+# Private source material and generated reports.
+/data/assignments/
+/data/evaluation/
+/reports/
+*.raw.json
+*.core
+
+# Local credentials and editor/OS files.
+.hf_token
+*.pem
+.DS_Store
+*.swp
+*.egg-info/
+.ruff_cache/

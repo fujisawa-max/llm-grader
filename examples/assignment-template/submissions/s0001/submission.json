@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "submission_id": "s0001",
+  "pages": [
+    {
+      "page_id": "page-001",
+      "image": "images/page-001.png"
+    }
+  ],
+  "answers": [
+    {
+      "question_id": "q01",
+      "page_ids": [
+        "page-001"
+      ]
+    }
+  ]
+}

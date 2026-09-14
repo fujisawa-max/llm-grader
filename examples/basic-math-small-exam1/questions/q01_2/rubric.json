@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "question_id": "q01_2",
+  "version": "1.0-draft",
+  "max_score": 20,
+  "aggregation": "sum",
+  "criteria": [
+    {
+      "criterion_id": "process",
+      "name": "途中式",
+      "max_score": 10,
+      "levels": [
+        {
+          "score": 10,
+          "condition": "正しい因数分解と二次方程式の処理など全解に至る過程が示される。"
+        },
+        {
+          "score": 5,
+          "condition": "x=-2の確認や因数分解・解の公式など有効な過程があるが、完成していない、または符号・計算に誤りがある。"
+        },
+        {
+          "score": 0,
+          "condition": "有効な途中過程が示されていない。"
+        }
+      ]
+    },
+    {
+      "criterion_id": "answer",
+      "name": "全ての解",
+      "max_score": 10,
+      "levels": [
+        {
+          "score": 10,
+          "condition": "x=-2,1±√3 iの全解が正しく示され、余分な解がない。"
+        },
+        {
+          "score": 0,
+          "condition": "全解が揃っていない、符号などに誤りがある、または未記入。"
+        }
+      ]
+    }
+  ],
+  "source": "basicMathM3SmallExam1-modelAnswer.pdf page 1",
+  "review_notes": [
+    "原文の「途中式5点ないし10点」「途中まで5点」の具体的境界は暫定の運用定義。初期試行では教員確認が必要。"
+  ],
+  "policies": {
+    "blank": "明確な未記入は0点。",
+    "unreadable": "判読困難は当該観点nullとし要確認。",
+    "equivalence": "同値な式と正しい別解を許容する。",
+    "no_invention": "原文にない最終解答の部分点は追加しない。途中式と最終解答は独立に判定。"
+  }
+}

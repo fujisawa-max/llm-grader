@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "assignment_id": "assignment-template",
+  "title": "採点準備用の記入例",
+  "questions": [
+    {
+      "question_id": "q01",
+      "question": "questions/q01/question.md",
+      "rubric": "questions/q01/rubric.json",
+      "reference_answer": "questions/q01/reference-answer.md",
+      "assets": []
+    }
+  ],
+  "submissions": [
+    "submissions/s0001/submission.json"
+  ]
+}

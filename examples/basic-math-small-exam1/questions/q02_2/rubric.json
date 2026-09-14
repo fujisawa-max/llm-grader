@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "question_id": "q02_2",
+  "version": "1.1",
+  "max_score": 20,
+  "aggregation": "sum",
+  "criteria": [
+    {
+      "criterion_id": "direction",
+      "name": "放物線の向き",
+      "max_score": 5,
+      "levels": [
+        {
+          "score": 5,
+          "condition": "頂点から左右に下がる∩形の放物線が描かれている。"
+        },
+        {
+          "score": 0,
+          "condition": "向きが異なる、または未記入。"
+        }
+      ]
+    },
+    {
+      "criterion_id": "vertex",
+      "name": "頂点の座標",
+      "max_score": 5,
+      "levels": [
+        {
+          "score": 5,
+          "condition": "(-3,4/3)が図上の頂点に対応づけて記載されている。"
+        },
+        {
+          "score": 0,
+          "condition": "頂点座標が異なる、または記載されていない。"
+        }
+      ]
+    },
+    {
+      "criterion_id": "x_intercepts",
+      "name": "x軸との交点（2つ合わせて）",
+      "max_score": 5,
+      "levels": [
+        {
+          "score": 5,
+          "condition": "(-5,0),(-1,0)の両方、またはx軸上の-5,-1が交点に対応づけて記載されている。"
+        },
+        {
+          "score": 0,
+          "condition": "片方または両方が誤り・未記載。原文に片方のみの部分点はない。"
+        }
+      ]
+    },
+    {
+      "criterion_id": "y_intercept",
+      "name": "y軸との交点",
+      "max_score": 5,
+      "levels": [
+        {
+          "score": 5,
+          "condition": "(0,-5/3)またはy軸上の-5/3が交点に対応づけて記載されている。"
+        },
+        {
+          "score": 0,
+          "condition": "交点の数値が異なる、または記載されていない。"
+        }
+      ]
+    }
+  ],
+  "source": "basicMathM3SmallExam1-modelAnswer.pdf page 1",
+  "review_notes": [],
+  "policies": {
+    "blank": "明確な未記入は0点。",
+    "unreadable": "判読困難は当該観点nullとし要確認。",
+    "equivalence": "同値な式と正しい別解を許容する。",
+    "no_invention": "原文にない最終解答の部分点は追加しない。途中式と最終解答は独立に判定。"
+  }
+}

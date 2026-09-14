@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "execution_mode": "resident_serial",
+  "max_in_flight_requests": 1,
+  "request_timeout_seconds": 300,
+  "max_retries": 0,
+  "models": {
+    "ocr": {
+      "label": "Ricoh-8B",
+      "base_url": "http://127.0.0.1:8081/v1",
+      "model_id": "ricoh-qwen3vl-8b-q8",
+      "expected_ftype": "Q8_0"
+    },
+    "grader": {
+      "label": "Ornith-Q8",
+      "base_url": "http://127.0.0.1:8080/v1",
+      "model_id": "ornith-q8",
+      "expected_ftype": "Q8_0"
+    },
+    "math_ocr": {
+      "label": "Uni-MuMER-4B Q4_K_M",
+      "base_url": "http://127.0.0.1:8082/v1",
+      "model_id": "unimumer-q4",
+      "expected_ftype": "Q4_K - Medium",
+      "generation": {
+        "temperature": 0,
+        "max_output_tokens": 4096
+      }
+    }
+  },
+  "generation": {
+    "temperature": 0,
+    "max_output_tokens": 4096
+  },
+  "review_policy": "all_results_during_pilot"
+}

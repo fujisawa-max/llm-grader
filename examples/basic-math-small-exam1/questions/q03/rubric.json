@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "question_id": "q03",
+  "version": "1.0-draft",
+  "max_score": 20,
+  "aggregation": "sum",
+  "criteria": [
+    {
+      "criterion_id": "construction",
+      "name": "方程式の構成",
+      "max_score": 20,
+      "levels": [
+        {
+          "score": 20,
+          "condition": "-1を三重根とする正しい三次方程式が示されている。"
+        },
+        {
+          "score": 10,
+          "condition": "-1に対応する因子x+1を3回掛けるという正しい考え方があるが、展開の誤りなどで正しい方程式に至っていない。"
+        },
+        {
+          "score": 0,
+          "condition": "正しい構成の考え方がない、または未記入。"
+        }
+      ]
+    }
+  ],
+  "source": "basicMathM3SmallExam1-modelAnswer.pdf page 1",
+  "review_notes": [
+    "原文の考え方の部分点を具体化した暫定定義。"
+  ],
+  "policies": {
+    "blank": "明確な未記入は0点。",
+    "unreadable": "判読困難は当該観点nullとし要確認。",
+    "equivalence": "同値な式と正しい別解を許容する。",
+    "no_invention": "原文にない最終解答の部分点は追加しない。途中式と最終解答は独立に判定。"
+  }
+}

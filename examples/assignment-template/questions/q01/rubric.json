@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "question_id": "q01",
+  "version": "1.0",
+  "max_score": 5,
+  "criteria": [
+    {
+      "criterion_id": "c01",
+      "name": "立式・変形",
+      "max_score": 2,
+      "levels": [
+        {
+          "score": 2,
+          "condition": "2x = 11 - 3、2x = 8、または同等の正しい変形を記載している。まとめた式も可。"
+        },
+        {
+          "score": 0,
+          "condition": "該当する変形が未記載、または移項や演算の選択が誤っている。"
+        }
+      ]
+    },
+    {
+      "criterion_id": "c02",
+      "name": "計算過程",
+      "max_score": 2,
+      "levels": [
+        {
+          "score": 2,
+          "condition": "自分の2x = aから両辺を2で割る計算を正しく示している。前段階の数値誤りが波及していても、この操作が正しければ認める。まとめた式も可。"
+        },
+        {
+          "score": 1,
+          "condition": "2で割る操作は明示されているが、その除算に計算ミスがある。"
+        },
+        {
+          "score": 0,
+          "condition": "2で割る操作が誤っている、または計算過程が未記載。"
+        }
+      ]
+    },
+    {
+      "criterion_id": "c03",
+      "name": "最終解答",
+      "max_score": 1,
+      "levels": [
+        {
+          "score": 1,
+          "condition": "最終解答としてx = 4を明示している。"
+        },
+        {
+          "score": 0,
+          "condition": "最終解答が異なる、または未記載。"
+        }
+      ]
+    }
+  ],
+  "policies": {
+    "blank_answer": "未記入と確認できる場合は全観点0点。",
+    "unreadable": "未記入扱いにせず、判断できない観点はnullとして要確認。",
+    "equivalent_answers": "同値な変形・別解を許容する。",
+    "answer_only": "x = 4のみならc01=0、c02=0、c03=1。",
+    "error_propagation": "c01の誤りだけを理由にc02も0点にしない。c03は最終解答の正否を独立に評価。",
+    "multiple_answers": "取り消された解答を除外する。最終解答を特定できなければ要確認。"
+  }
+}

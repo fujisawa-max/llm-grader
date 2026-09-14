@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "assignment_id": "BasicMathSmallExam1",
+  "title": "数学基礎(M3) 小テスト #1",
+  "questions": [
+    {
+      "question_id": "q01_1",
+      "label": "問題1(1)",
+      "question": "questions/q01_1/question.md",
+      "rubric": "questions/q01_1/rubric.json",
+      "reference_answer": "questions/q01_1/reference-answer.md",
+      "assets": []
+    },
+    {
+      "question_id": "q01_2",
+      "label": "問題1(2)",
+      "question": "questions/q01_2/question.md",
+      "rubric": "questions/q01_2/rubric.json",
+      "reference_answer": "questions/q01_2/reference-answer.md",
+      "assets": []
+    },
+    {
+      "question_id": "q02_1",
+      "label": "問題2(1)",
+      "question": "questions/q02_1/question.md",
+      "rubric": "questions/q02_1/rubric.json",
+      "reference_answer": "questions/q02_1/reference-answer.md",
+      "assets": []
+    },
+    {
+      "question_id": "q02_2",
+      "label": "問題2(2)",
+      "question": "questions/q02_2/question.md",
+      "rubric": "questions/q02_2/rubric.json",
+      "reference_answer": "questions/q02_2/reference-answer.md",
+      "assets": []
+    },
+    {
+      "question_id": "q03",
+      "label": "問題3",
+      "question": "questions/q03/question.md",
+      "rubric": "questions/q03/rubric.json",
+      "reference_answer": "questions/q03/reference-answer.md",
+      "assets": []
+    }
+  ],
+  "submissions": [
+    "submissions/s42/submission.json",
+    "submissions/s43/submission.json"
+  ]
+}
