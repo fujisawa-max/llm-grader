@@ -75,6 +75,21 @@ class GradingTests(unittest.TestCase):
 
 
 class InputTests(unittest.TestCase):
+    def test_generation_parameters_are_explicit_in_request(self):
+        config = {"models": {"grader": {"base_url": "http://127.0.0.1:8080/v1",
+                                           "model_id": "ornith"}}, "generation": {}}
+        client = LocalClient(config, "grader")
+        captured = {}
+        def fake_request(url, payload):
+            captured["payload"] = payload
+            return {"choices": [{"finish_reason": "stop", "message": {"content": "{}"}}]}
+        client.request = fake_request
+        client.chat("system", {"question_id": "q1", "ocr": [], "unimumer": []}, [])
+        payload = captured["payload"]
+        self.assertEqual(payload["seed"], 42)
+        for key in ("temperature", "top_k", "top_p", "min_p", "repeat_penalty", "max_tokens"):
+            self.assertIn(key, payload)
+
     def test_path_escape_and_symlink_escape_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "root"

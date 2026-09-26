@@ -40,10 +40,10 @@ class PipelineTests(unittest.TestCase):
             calls = []
             responses = [
                 {"page_id": "p1", "text": "x=4", "uncertainties": []},
-                {"page_id": "p1", "needs_review": False,
+                {"page_id": "p1", "coordinate_space": "normalized", "needs_review": False,
                  "questions": [{"question_id": "q1", "status": "located", "reason": "数式あり"}],
                  "regions": [{"region_id": "r1", "question_id": "q1", "kind": "math",
-                              "bbox": [100, 100, 400, 400], "description": "解答の式"}]},
+                              "bbox": [0.1, 0.1, 0.4, 0.4], "description": "解答の式"}]},
                 "MATH_RESPONSE",
                 {"question_id": "q1", "transcript": "x=4", "needs_review": False,
                  "uncertainties": [], "changes": [], "evidence": [{"page_id": "p1", "quote": "x=4"}]},

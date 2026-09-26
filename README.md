@@ -99,6 +99,16 @@ HF_TOKEN=... scripts/download_models.sh
 - 同ディレクトリの `grading.json`: 観点別得点、画像・文字の根拠、理由。
 - `review.json`: 人手確認の必要性と理由。初期試行は全件確認。
 
+## Python adapter（Phase A）
+
+既存CLIを壊さずworker等から同じ処理を呼ぶため、
+`scoring.adapters.LegacyCliAdapter`を提供しています。`StageRequest`に
+assignment、run、configを指定し、`run_ricoh_phase()`、
+`run_math_ocr_phase()`、`run_ornith_phase()`を順に呼び出します。内部では既存の
+`scoring.cli.run_exam`へ委譲するため、checkpoint、hash、reuse、保存形式はCLIと
+共通です。`RunArtifactAdapter`は既存`runs/<run>/`のJSONとresult hashを読み取る
+互換境界です。
+
 ### 一覧と答案PDFの出力
 
 採点済みrunから次のコマンドで出力します。
@@ -115,7 +125,7 @@ HF_TOKEN=... scripts/download_models.sh
 
 ## Ricoh結果に基づく領域分割
 
-全体OCRのあと、Ricohに元画像・OCR・設問IDとラベルを渡し、領域指定を別リクエストで取得します。問題の正解や配点は渡しません。`bbox` は左上原点の0〜1000座標、`bbox_pixels` は余白を含む元画像上の画素座標です。元画像を変更・縮小せず、各領域の周囲に12ピクセルの余白を付けます。
+全体OCRのあと、Ricohに元画像・OCR・設問IDとラベルを渡し、領域指定を別リクエストで取得します。問題の正解や配点は渡しません。新規artifactの`bbox`は`coordinate_space: "normalized"`を伴う左上原点の0.0〜1.0座標、`bbox_pixels`は余白を含む元画像上の画素座標です。旧artifactの`normalized_1000`は明示された互換境界でのみ0.0〜1.0へ変換します。元画像を変更・縮小せず、各領域の周囲に12ピクセルの余白を付けます。
 
 `math` の領域だけUni-MuMERへ送信します。グラフ・文章はOrnithが元画像で評価します。全設問について `located`・`blank`・`no_math`・`unreadable` を明示し、検出できなかった領域を空答案や0点へ変換しません。Ornithには対象設問の領域だけを渡します。
 
@@ -131,9 +141,189 @@ Uni-MuMERはJSONを強制せずLaTeXの転写を依頼します。`content` が�
 
 ## 検証
 
+## Production operations (I.6)
+
+運用時の起動停止、Teacher/Adminの境界、学生ポータルのfeature flag、
+バックアップ・復旧、障害対応、監視、Playwright環境は
+[production runbook](docs/operations/production-runbook.md)を参照してください。
+バックアップ検証は[backup-restore.md](docs/operations/backup-restore.md)、
+リリース前確認は[deployment-checklist.md](docs/operations/deployment-checklist.md)、
+障害対応は[incident-response.md](docs/operations/incident-response.md)にまとめています。
+本番serverでは`STUDENT_PORTAL_ENABLED=false`が既定で、結果はTeacher/Adminが
+PDF/CSVで授業システムへ配布します。Student向け実装はflagで再有効化できます。
+
+### Instructor Web UI
+
+Phase H の UI は `frontend/` に独立した Next.js App Router アプリとして配置しています。
+`frontend/.env.example` を `.env.local` にコピーし、FastAPI の `/api/v1` URL を設定してから、次を実行してください。通常のUIは開発用ユーザーIDを使わず、ログイン時に発行されたHttpOnlyセッションを使います。
+
+```bash
+npm install
+npm run typecheck
+npm run lint
+npm run build
+```
+
+採点処理と runtime 操作はブラウザでは実行せず、既存 API と別プロセスの worker に委譲します。
+
+### Authentication and administration (J.UI.Admin.1)
+
+ブラウザのTeacher/Admin UIは`/api/v1/auth/login`が発行するHttpOnly
+セッションCookieを使用します。既存ユーザーはmigrationで保持されますが、password
+hashがないユーザーにはpasswordを自動設定しません。初回管理者は次で作成します。
+
+```bash
+ADMIN_INITIAL_PASSWORD='change-me-now' \\
+  .venv/bin/python -m scoring.admin create-admin \\
+  --email admin@example.com --display-name 管理者
+```
+
+`ADMIN_INITIAL_PASSWORD`や`--password`はログへ出力しません。Adminは
+`/admin/users`からTeacherを作成できます。Teacherが作成したCourseはログイン中の
+Teacherに自動的に紐づき、別TeacherのCourseへはBackend authorizationでアクセスできません。
+
+既存DBを保持したまま認証列とセッション表を追加するには、アプリ起動前に対象DBへ
+Alembic migrationを適用します（production URLは環境変数から渡してください）。
+
+```bash
+.venv/bin/alembic -x sqlalchemy.url="$LLM_GRADER_DATABASE_URL" upgrade head
+```
+
+既存ユーザーにpasswordを自動設定することはありません。password hashがない既存ユーザーは
+Adminによる明示的なreset/bootstrap後にログインできます。
+
+通常のproductionでは`X-Role`/`X-User-ID`ヘッダー認証は無効です。既存の内部workerや
+auth proxyとの互換が必要な隔離環境だけ、`LLM_GRADER_ALLOW_HEADER_AUTH=true`を明示して
+有効化してください。
+
 ```bash
 .venv/bin/python -m unittest discover -s tests -v
 .venv/bin/ruff check src tests
 ```
 
 テストにはモデル起動・実答案・ネットワーク接続は不要です。実際の認識精度と採点精度は、別途実モデルで確認します。
+# Hierarchical grading preparation (H.2-F)
+
+`src/scoring/grading_context.py` resolves root-to-leaf authoritative content and
+derives question/test grading readiness. `GET /api/v1/tests/{id}/grading-readiness`
+and `GET /api/v1/test-questions/{id}/effective-grading-context` are read-only.
+Answers and Rubric sections in Test Workspace use the existing versioned
+associations; structural nodes need neither. Removing an association retires its
+current version, preserving historical records.
+
+New domain grading jobs require per-question readiness plus the existing policy
+and submission preconditions. `src/scoring/grading_inputs.py` snapshots context,
+model answers, the validated legacy rubric and figure assets before execution.
+Assignment question IDs must exactly match gradable compatibility question
+numbers; no student-answer mapping or rubric levels are inferred. Old jobs and
+CLI runs without domain snapshots retain the existing input path.
+
+Validation: `.venv/bin/python -m unittest`, `.venv/bin/python -m pytest -q`,
+`.venv/bin/ruff check`; in `frontend`, use the existing `typecheck`, `lint`,
+`build` and `e2e` npm scripts. See `docs/phase-h2f-completion-report.md` for the
+real PostgreSQL and browser evidence, including the existing sampleQ3 literal
+LaTeX discrepancy that requires a separate authoritative correction workflow.
+
+## Final grading review (I.1)
+
+The read-only teacher review surface is available at
+`/tests/{testId}/grading` and `/tests/{testId}/grading/{submissionId}`. It uses
+`GradingReviewService`, which delegates final-result selection to
+`grading_audit.resolve_authoritative_result`; the browser never implements
+precedence or creates a job. The corresponding API endpoints are
+`GET /api/v1/tests/{testId}/grading` and
+`GET /api/v1/tests/{testId}/grading/{submissionId}`. They expose current
+authoritative scores, teacher decisions, historical model results, immutable
+input evidence, visual asset roles, and warning codes without exposing local
+filesystem paths. Teacher actions are handled by the append-only endpoints
+described below.
+
+## Teacher review actions (I.2)
+
+The detail page keeps the same resolver-backed read model and adds append-only
+teacher actions. `POST .../questions/{questionId}/teacher-decision` validates
+criterion IDs, allowed rubric levels, totals, and the immutable grading-input
+snapshot before creating a `TeacherGradingDecision`. `POST
+.../questions/{questionId}/regrade-request` records a `REGRADING_REQUESTED`
+domain event without starting a model job. Submission and test finalization use
+the corresponding `/finalize` endpoints and store references to authoritative
+results rather than copying scores. `GET .../grading/export.csv` emits a UTF-8
+BOM CSV with dynamic question columns and the authoritative Test total (so a
+110-point test remains 110 points). Domain events provide the audit timeline;
+no migration is required because these actions use the existing append-only
+event table.
+
+## Review workspace and regrade queue (I.3)
+
+`/tests/{testId}/grading/review` filters unresolved warnings, pending regrades,
+teacher decisions, reconstruction history, visual answers, and score bands in
+one side-by-side workspace. `J`/`K` (or arrow keys) move between targets while
+the focused action form keeps shortcuts inactive. `/tests/{testId}/grading/regrade-queue`
+shows pending and approved requests; only the explicit approve endpoint may
+seal a new current grading-input snapshot and enqueue one production
+`GradingJob`. Rejecting writes a reasoned domain event and creates no job.
+Worker completion/failure events close or retain the request for review, and
+the existing TeacherDecision precedence remains authoritative over any new
+model result.
+
+## Student feedback and result publishing (I.4)
+
+`ResultPublicationService` stores `results_published` and
+`results_unpublished` as append-only domain events containing immutable result
+references rather than copied scores. Publishing requires finalization,
+complete authoritative results, no review flags, and no unresolved regrade
+request. Teacher feedback overrides are separate append-only events and take
+precedence only for the student-facing feedback projection.
+
+Teacher controls are exposed below the grading overview and the student-safe
+read-only projection is available at `/results/{submissionId}` through
+`GET /api/v1/student/results/{submissionId}`. The student endpoint requires
+`X-Student-ID` (or the equivalent `student_id` query value), exposes only the
+published snapshot, and uses opaque visual-asset URLs. A changed authoritative
+result is reported as `RESULT_CHANGED_AFTER_PUBLICATION` until the teacher
+republishes. Result PDFs use the same sanitized projection and omit model,
+rubric, audit, path, hash, and teacher-note data.
+
+## Production readiness checks (I.5)
+
+The review, publication, and legacy job/runtime APIs enforce a service-level
+authorization boundary. Teacher routes require `X-Role: teacher`, `X-User-ID`,
+and ownership of the Test's Course (unlinked legacy jobs still require an
+active teacher identity); student result routes require `X-Role: student` plus
+the student identity. Student visual URLs use opaque capabilities and are
+resolved against the requesting student's published submissions.
+
+For a non-destructive artifact backup manifest, run:
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/build_backup_manifest.py artifacts \
+  --output /tmp/llm-scoring-artifacts-manifest.json
+```
+
+The production logical backup command is `pg_dump --format=custom --file
+backup.dump "$DATABASE_URL"`. Restore validation is a dry run: restore into
+a disposable PostgreSQL database, run the manifest verifier with `--verify`,
+and compare the database dump checksum and artifact manifest checksum before
+switching any production pointer. No production restore is performed by the
+test suite.
+# Docker deployment
+
+Docker Engine and the Docker Compose plugin are the only host dependencies for
+the deployment path. From a fresh checkout:
+
+```bash
+cp .env.example .env
+# Edit POSTGRES_PASSWORD and any site-specific ports in .env.
+docker compose up -d --build
+```
+
+The first start waits for PostgreSQL, runs the Alembic migrations once, and
+then starts the API and frontend. Open `http://localhost:${FRONTEND_PORT:-3000}`
+and complete `/setup` to create the first administrator. Logs are available
+with `docker compose logs -f`; stop the stack with `docker compose down`.
+
+The named PostgreSQL and artifact volumes are retained by `down` and container
+recreation. `docker compose down -v` removes those volumes and is a destructive
+development reset, never a normal update procedure. For an update, pull the
+new checkout, rebuild, and run `docker compose up -d --build`; the migration
+service applies pending migrations before the API starts.

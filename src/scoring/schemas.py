@@ -20,12 +20,13 @@ def response_schema(materials):
     if materials.get("task") == "locate":
         question = {"enum": [q["question_id"] for q in materials["questions"]]}
         return obj({"page_id": {"const": materials["page_id"]},
+                    "coordinate_space": {"const": "normalized"},
                     "questions": array(obj({"question_id": question,
                         "status": {"enum": ["located", "blank", "no_math", "unreadable"]},
                         "reason": nonempty}), 1),
                     "regions": array(obj({"region_id": {"type": "string", "pattern": "^[a-zA-Z0-9_-]+$"},
                         "question_id": question, "kind": {"enum": ["math", "graph", "text"]},
-                        "bbox": array({"type": "integer", "minimum": 0, "maximum": 1000}, 4, 4),
+                        "bbox": array({"type": "number", "minimum": 0, "maximum": 1}, 4, 4),
                         "description": nonempty}), 0, 32), "needs_review": boolean})
     if "question_id" not in materials:
         return obj({"page_id": {"const": materials["page_id"]}, "student_id": string,
@@ -38,11 +39,25 @@ def response_schema(materials):
     qid = {"const": materials["question_id"]}
     if "rubric" in materials:
         criteria = materials["rubric"]["criteria"]
-        alternatives = [obj({
-            "criterion_id": {"const": c["criterion_id"]},
-            "score": {"enum": [level["score"] for level in c["levels"]] + [None]},
-            "max_score": {"const": c["max_score"]}, "evidence": evidence, "reason": nonempty,
-        }) for c in criteria]
+        alternatives = []
+        for c in criteria:
+            properties = {
+                "criterion_id": {"const": c["criterion_id"]},
+                "score": {"enum": [level["score"] for level in c["levels"]] + [None]},
+                "max_score": {"const": c["max_score"]}, "evidence": evidence,
+                "reason": nonempty,
+            }
+            if materials.get("require_level_selection"):
+                # Comparison prompts must expose the chosen rubric level and
+                # the evidence-based reason for choosing it.  Keep this in the
+                # production response schema so constrained decoding cannot
+                # omit the field that the validator requires.
+                properties["selected_level"] = obj({
+                    "score": {"enum": [level["score"] for level in c["levels"]]},
+                    "condition": nonempty,
+                    "reason": nonempty,
+                })
+            alternatives.append(obj(properties))
         return obj({"question_id": qid,
                     "criteria": array({"oneOf": alternatives}, len(criteria), len(criteria)),
                     "needs_review": boolean, "review_reasons": array(nonempty)})

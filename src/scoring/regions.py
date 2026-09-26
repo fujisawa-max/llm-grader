@@ -1,13 +1,50 @@
 """Ricoh-guided crops and resumable, region-level formula recognition."""
 
 import math
+from copy import deepcopy
 from pathlib import Path
 
-from .core import digest, identifier, read_json, write_json
+from .core import digest, effective_generation, identifier, read_json, write_json
+from .coordinate import (CoordinateSpace, COORDINATE_CONTRACT_VERSION,
+                          legacy_1000_to_normalized, normalized_to_pixel,
+                          validate_bbox)
 from .math_ocr import parse_math_response
 
 
-def validate_layout(value, page_id, question_ids):
+def canonicalize_layout(value, *, source_coordinate_space: str | None = None):
+    """Convert an explicitly typed layout to the v2 normalized representation.
+
+    Raw model/checkpoint JSON is never modified by this helper.  Callers that
+    read an old checkpoint must pass its known legacy contract explicitly;
+    values are never classified by their magnitude.
+    """
+    space = value.get("coordinate_space") or source_coordinate_space
+    if space is None:
+        raise ValueError("AMBIGUOUS_COORDINATE_SPACE")
+    if space not in {CoordinateSpace.NORMALIZED.value, CoordinateSpace.NORMALIZED_1000.value}:
+        raise ValueError("layout coordinate_space must be normalized or normalized_1000")
+    result = deepcopy(value)
+    result["regions"] = []
+    for original in value.get("regions", []):
+        region = dict(original)
+        box = region.get("bbox")
+        if space == CoordinateSpace.NORMALIZED_1000.value:
+            box = legacy_1000_to_normalized(box)
+        else:
+            box = validate_bbox(box, CoordinateSpace.NORMALIZED)
+        region["bbox"] = box
+        region["coordinate_space"] = CoordinateSpace.NORMALIZED.value
+        region["coordinate_version"] = COORDINATE_CONTRACT_VERSION
+        result["regions"].append(region)
+    result["coordinate_space"] = CoordinateSpace.NORMALIZED.value
+    result["coordinate_version"] = COORDINATE_CONTRACT_VERSION
+    if space == CoordinateSpace.NORMALIZED_1000.value:
+        result["source_coordinate_space"] = CoordinateSpace.NORMALIZED_1000.value
+    return result
+
+
+def validate_layout(value, page_id, question_ids, *, source_coordinate_space=None):
+    value = canonicalize_layout(value, source_coordinate_space=source_coordinate_space)
     if value.get("page_id") != page_id or type(value.get("needs_review")) is not bool:
         raise ValueError("領域結果のページID・needs_reviewが不正")
     coverage = value.get("questions")
@@ -26,11 +63,11 @@ def validate_layout(value, page_id, question_ids):
         if region.get("kind") not in {"math", "graph", "text"}:
             raise ValueError("領域の種類が不正")
         box = region.get("bbox")
-        if (not isinstance(box, list) or len(box) != 4
-                or any(type(n) is not int or not 0 <= n <= 1000 for n in box)
-                or box[0] >= box[2] or box[1] >= box[3]):
-            raise ValueError("領域座標は0〜1000の[x0,y0,x1,y1]で正の幅と高さが必要")
-        if region["kind"] == "math" and (box[2]-box[0])*(box[3]-box[1]) > 500000:
+        try:
+            validate_bbox(box, CoordinateSpace.NORMALIZED)
+        except ValueError as exc:
+            raise ValueError("領域座標はnormalized 0.0〜1.0の[x0,y0,x1,y1]で正の幅と高さが必要") from exc
+        if region["kind"] == "math" and (box[2]-box[0])*(box[3]-box[1]) > 0.5:
             raise ValueError("数式領域がページの半分を超えています。計算のまとまりごとに分割が必要")
         if not isinstance(region.get("description"), str) or not region["description"].strip():
             raise ValueError("領域の説明がありません")
@@ -56,16 +93,29 @@ def validate_layout(value, page_id, question_ids):
     return value
 
 
-def crop_image(source, bbox, destination, padding=12):
+def crop_image(source, bbox, destination, padding=12, *, coordinate_space=None):
     """Copy native pixels; never resize the page or alter the original."""
     import pymupdf
 
+    if coordinate_space is None:
+        raise ValueError("coordinate_space is required; do not infer bbox units from values")
+    space = CoordinateSpace(coordinate_space)
+    if space is CoordinateSpace.PDF_POINT:
+        raise ValueError("pdf_point bbox requires the PDF page transform before image crop")
     pix = pymupdf.Pixmap(str(source))
     width, height = pix.width, pix.height
-    x0 = max(0, math.floor(bbox[0] * width / 1000) - padding)
-    y0 = max(0, math.floor(bbox[1] * height / 1000) - padding)
-    x1 = min(width, math.ceil(bbox[2] * width / 1000) + padding)
-    y1 = min(height, math.ceil(bbox[3] * height / 1000) + padding)
+    if space is CoordinateSpace.NORMALIZED:
+        pixels = normalized_to_pixel(bbox, width, height)
+    elif space is CoordinateSpace.NORMALIZED_1000:
+        pixels = normalized_to_pixel(legacy_1000_to_normalized(bbox), width, height)
+    elif space is CoordinateSpace.PIXEL:
+        pixels = validate_bbox(bbox, CoordinateSpace.PIXEL, bounds=[0, 0, width, height])
+    else:  # pragma: no cover - CoordinateSpace is exhaustive
+        raise ValueError("unsupported crop coordinate space")
+    x0 = max(0, math.floor(pixels[0]) - padding)
+    y0 = max(0, math.floor(pixels[1]) - padding)
+    x1 = min(width, math.ceil(pixels[2]) + padding)
+    y1 = min(height, math.ceil(pixels[3]) + padding)
     if x1-x0 < 4 or y1-y0 < 4:
         raise ValueError("切り出した画像が小さすぎます")
     rectangle = pymupdf.IRect(x0, y0, x1, y1)
@@ -79,7 +129,10 @@ def crop_image(source, bbox, destination, padding=12):
             raise ValueError("保存済み切り出し画像が入力・領域指定と一致しません")
     else:
         destination.write_bytes(crop.tobytes("png"))
-    return {"bbox_pixels": [x0, y0, x1, y1], "page_size": [width, height],
+    return {"bbox_pixels": [x0, y0, x1, y1], "coordinate_space": CoordinateSpace.PIXEL.value,
+            "source_bbox": list(bbox), "source_coordinate_space": space.value,
+            "coordinate_version": COORDINATE_CONTRACT_VERSION,
+            "page_size": [width, height],
             "crop_size": [x1-x0, y1-y0], "padding_pixels": padding,
             "image_sha256": digest(destination), "renderer": f"PyMuPDF {pymupdf.VersionBind}"}
 
@@ -97,7 +150,8 @@ def process_regions(page, ricoh, layout, folder, config, prompt, checkpoint, cli
         image_path = folder / "regions" / pid / f"{rid}.png"
         if client is None and not image_path.exists():
             raise ValueError(f"成功済みの切り出し画像が必要: {pid}/{rid}")
-        metadata = crop_image(page["path"], region["bbox"], image_path)
+        metadata = crop_image(page["path"], region["bbox"], image_path,
+                              coordinate_space=region.get("coordinate_space", layout.get("coordinate_space")))
         materials = {"page_id": pid, "region": region, "crop": metadata,
                      "source_sha256": digest(page["path"]), "ricoh": ricoh,
                      "layout": layout}
@@ -112,7 +166,7 @@ def process_regions(page, ricoh, layout, folder, config, prompt, checkpoint, cli
             status = read_json(result_folder / "transcription.status.json")
             result_path = result_folder / "transcription.json"
             expected = {"model": settings,
-                        "generation": {**config.get("generation", {}), **settings.get("generation", {})},
+                        "generation": effective_generation(config, "math_ocr"),
                         "prompt": prompt, "materials": materials,
                         "images": [[rid, metadata["image_sha256"]]], "parser_sha256": parser_hash}
             if (status.get("state") != "success" or status.get("signature") != expected
@@ -121,7 +175,9 @@ def process_regions(page, ricoh, layout, folder, config, prompt, checkpoint, cli
             value = read_json(result_path)
         region_results.append({**region, **metadata, "image": str(image_path.relative_to(folder)),
                                "ocr": value})
-    aggregate = {"page_id": pid, "regions": region_results, "coverage": layout["questions"],
+    aggregate = {"page_id": pid, "coordinate_space": CoordinateSpace.NORMALIZED.value,
+                 "coordinate_version": COORDINATE_CONTRACT_VERSION,
+                 "regions": region_results, "coverage": layout["questions"],
                  "layout_needs_review": layout["needs_review"],
                  "source_sha256": digest(page["path"]),
                  "text": "\n".join(r["ocr"]["text"] for r in region_results),

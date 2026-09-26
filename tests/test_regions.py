@@ -5,20 +5,33 @@ from pathlib import Path
 
 import pymupdf
 
-from scoring.regions import crop_image, for_question, process_regions, validate_layout
+from scoring.regions import canonicalize_layout, crop_image, for_question, process_regions, validate_layout
 
 
 def layout():
-    return {"page_id": "p1", "needs_review": False,
+    return {"page_id": "p1", "coordinate_space": "normalized", "needs_review": False,
             "questions": [{"question_id": "q1", "status": "located", "reason": "式あり"}],
             "regions": [{"region_id": "r1", "question_id": "q1", "kind": "math",
-                         "bbox": [100, 200, 500, 400], "description": "計算"}]}
+                         "bbox": [0.1, 0.2, 0.5, 0.4], "description": "計算"}]}
 
 
 class LayoutTests(unittest.TestCase):
+    def test_legacy_layout_requires_explicit_contract_and_converts(self):
+        value = layout()
+        value.pop("coordinate_space")
+        value["regions"][0]["bbox"] = [100, 200, 500, 400]
+        with self.assertRaisesRegex(ValueError, "AMBIGUOUS_COORDINATE_SPACE"):
+            validate_layout(value, "p1", ["q1"])
+        converted = validate_layout(value, "p1", ["q1"],
+                                    source_coordinate_space="normalized_1000")
+        self.assertEqual(converted["coordinate_space"], "normalized")
+        self.assertEqual(converted["regions"][0]["bbox"], [0.1, 0.2, 0.5, 0.4])
+        self.assertEqual(canonicalize_layout(value, source_coordinate_space="normalized_1000")
+                         ["source_coordinate_space"], "normalized_1000")
+
     def test_invalid_coordinates_and_large_regions_are_rejected(self):
-        for box in [[-1, 0, 20, 20], [0, 0, 1001, 20], [0, 50, 20, 10],
-                    [0, 0, 0, 20], [True, 0, 20, 20], [0.5, 0, 20, 20], [0, 0, 1000, 1000]]:
+        for box in [[-0.1, 0, 0.2, 0.2], [0, 0, 1.1, 0.2], [0, 0.5, 0.2, 0.1],
+                    [0, 0, 0, 0.2], [True, 0, 0.2, 0.2], ["0.5", 0, 0.8, 0.2], [0, 0, 1, 1]]:
             value = layout()
             value["regions"][0]["bbox"] = box
             with self.subTest(box=box), self.assertRaises(ValueError):
@@ -57,6 +70,13 @@ class LayoutTests(unittest.TestCase):
 
 
 class CropTests(unittest.TestCase):
+    def test_crop_rejects_implicit_coordinate_units(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "page.png"
+            pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 20, 20), False).save(source)
+            with self.assertRaisesRegex(ValueError, "coordinate_space is required"):
+                crop_image(source, [0, 0, 1, 1], Path(directory) / "crop.png", padding=0)
+
     def test_native_pixels_padding_edges_and_tampering(self):
         with tempfile.TemporaryDirectory() as directory:
             source, dest = Path(directory) / "page.png", Path(directory) / "crop.png"
@@ -65,16 +85,20 @@ class CropTests(unittest.TestCase):
             pix.set_pixel(50, 40, (255, 0, 0))
             pix.save(source)
             original = source.read_bytes()
-            metadata = crop_image(source, [400, 400, 600, 600], dest, padding=0)
+            metadata = crop_image(source, [400, 400, 600, 600], dest, padding=0,
+                                  coordinate_space="normalized_1000")
             self.assertEqual(metadata["bbox_pixels"], [40, 32, 60, 48])
             self.assertEqual(pymupdf.Pixmap(str(dest)).pixel(10, 8), (255, 0, 0))
             self.assertEqual(source.read_bytes(), original)
-            self.assertEqual(crop_image(source, [400, 400, 600, 600], dest, 0), metadata)
-            edge = crop_image(source, [0, 0, 100, 100], Path(directory) / "edge.png")
+            self.assertEqual(crop_image(source, [400, 400, 600, 600], dest, 0,
+                                        coordinate_space="normalized_1000"), metadata)
+            edge = crop_image(source, [0, 0, 100, 100], Path(directory) / "edge.png",
+                              coordinate_space="normalized_1000")
             self.assertEqual(edge["bbox_pixels"], [0, 0, 22, 20])
             dest.write_bytes(b"tampered")
             with self.assertRaises(ValueError):
-                crop_image(source, [400, 400, 600, 600], dest, 0)
+                crop_image(source, [400, 400, 600, 600], dest, 0,
+                           coordinate_space="normalized_1000")
 
     def test_graph_regions_are_not_sent_to_formula_model(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -123,7 +147,7 @@ class RegionResumeTests(unittest.TestCase):
             pix.save(source)
             plan = layout()
             plan["regions"].append({**plan["regions"][0], "region_id": "r2",
-                                    "bbox": [600, 600, 900, 800]})
+                                    "bbox": [0.6, 0.6, 0.9, 0.8]})
             client = Client()
             args = ({"page_id": "p1", "path": source}, {}, plan, folder,
                     {"models": {"math_ocr": {}}}, "math prompt", checkpoint)

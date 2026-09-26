@@ -1,0 +1,78 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-llm_grader}
+      POSTGRES_USER: ${POSTGRES_USER:-llm_grader}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    environment:
+      LLM_GRADER_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-llm_grader}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-llm_grader}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["sh", "-c", "alembic -x sqlalchemy.url=$${LLM_GRADER_DATABASE_URL} upgrade head"]
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    environment:
+      LLM_GRADER_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-llm_grader}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-llm_grader}
+      LLM_GRADER_ARTIFACT_ROOT: ${ARTIFACT_ROOT:-/data/artifacts}
+      LLM_GRADER_QUESTION_IMPORT_ROOT: ${ARTIFACT_ROOT:-/data/artifacts}/question-imports
+      LLM_GRADER_ALLOWED_ROOTS: ${ARTIFACT_ROOT:-/data/artifacts}
+      LLM_GRADER_ALLOW_HEADER_AUTH: ${LLM_GRADER_ALLOW_HEADER_AUTH:-false}
+      LLM_GRADER_COOKIE_SECURE: ${LLM_GRADER_COOKIE_SECURE:-false}
+      LLM_GRADER_CORS_ORIGINS: http://localhost:${FRONTEND_PORT:-3000}
+      STUDENT_PORTAL_ENABLED: ${STUDENT_PORTAL_ENABLED:-false}
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - artifacts_data:/data/artifacts
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/api/v1/health >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        API_PROXY_TARGET: http://api:8000
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:3000/"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  artifacts_data:

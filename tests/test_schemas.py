@@ -8,6 +8,13 @@ from scoring.schemas import response_schema
 
 
 class SchemaTests(unittest.TestCase):
+    def test_locate_schema_declares_canonical_normalized_coordinates(self):
+        schema = response_schema({"task": "locate", "page_id": "p1",
+                                   "questions": [{"question_id": "q1"}]})
+        self.assertEqual(schema["properties"]["coordinate_space"], {"const": "normalized"})
+        bbox = schema["properties"]["regions"]["items"]["properties"]["bbox"]
+        self.assertEqual(bbox["items"], {"type": "number", "minimum": 0, "maximum": 1})
+
     def test_reconstruction_requires_string_and_image_evidence(self):
         schema = response_schema({"question_id": "q1", "ocr": {"p1": {}}})
         self.assertEqual(schema["properties"]["transcript"]["type"], "string")

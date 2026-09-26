@@ -30,6 +30,11 @@
   },
   "generation": {
     "temperature": 0,
+    "seed": 42,
+    "top_k": 40,
+    "top_p": 0.95,
+    "min_p": 0.05,
+    "repeat_penalty": 1.0,
     "max_output_tokens": 4096
   },
   "review_policy": "all_results_during_pilot"

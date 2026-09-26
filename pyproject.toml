@@ -9,14 +9,15 @@ description = "Sequential local-LLM OCR and rubric-based exam grading"
 readme = "README.md"
 urls = {Homepage = "https://github.com/fujisawa-max/llm-grader", Repository = "https://github.com/fujisawa-max/llm-grader"}
 requires-python = ">=3.11"
-dependencies = ["PyMuPDF==1.28.2"]
+dependencies = ["PyMuPDF==1.28.2", "SQLAlchemy>=2.0,<2.1", "alembic>=1.14,<1.16", "fastapi>=0.115,<0.116", "psycopg[binary]>=3.2,<4", "uvicorn>=0.34,<0.35"]
 
 [project.optional-dependencies]
 pdf = []
-dev = ["ruff==0.11.13"]
+dev = ["ruff==0.11.13", "pytest==8.3.5", "httpx>=0.27,<0.28", "uvicorn>=0.34,<0.35"]
 
 [project.scripts]
 score-exam = "scoring.cli:main"
+llm-admin = "scoring.admin:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -26,3 +27,13 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/scoring/domain.py" = ["E701", "E702", "E712", "F841"]
+"src/scoring/api/domain.py" = ["E701", "E702", "F401", "F403", "F405"]
+"migrations/versions/0002_domain_model.py" = ["F841"]
+"migrations/versions/0003_domain_constraints.py" = ["E701"]
+"migrations/versions/0004_domain_events.py" = ["E701", "E702"]
+"src/scoring/api/schemas.py" = ["E701", "E702", "F401"]
+"src/scoring/domain_adapter.py" = ["E701", "E702"]
+"tests/test_domain.py" = ["E701", "E702", "F841"]

@@ -12,6 +12,25 @@ from pathlib import Path
 
 from .schemas import response_schema
 
+DEFAULT_GENERATION = {
+    "temperature": 0,
+    "seed": 42,
+    "top_k": 40,
+    "top_p": 0.95,
+    "min_p": 0.05,
+    "repeat_penalty": 1.0,
+    "max_output_tokens": 4096,
+}
+
+
+def effective_generation(config, role=None):
+    """Merge explicit generation settings while preserving legacy empty signatures."""
+    settings = config.get("models", {}).get(role, {}) if role else {}
+    values = {**config.get("generation", {}), **settings.get("generation", {})}
+    if not values:
+        return {}
+    return {**DEFAULT_GENERATION, **values}
+
 
 def read_json(path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
@@ -167,9 +186,9 @@ def image_content(path):
 
 
 class LocalClient:
-    def __init__(self, config, role):
+    def __init__(self, config, role, endpoint_override=None):
         self.settings = config["models"][role]
-        self.base = self.settings["base_url"].rstrip("/")
+        self.base = (endpoint_override or self.settings["base_url"]).rstrip("/")
         parsed = urllib.parse.urlparse(self.base)
         if (parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
                 or parsed.username or parsed.password or parsed.query or parsed.fragment
@@ -177,7 +196,8 @@ class LocalClient:
             raise ValueError("接続先はローカルHTTP /v1 のみ対応")
         self.role = role
         self.timeout = self.settings.get("request_timeout_seconds", config.get("request_timeout_seconds", 300))
-        self.generation = {**config.get("generation", {}), **self.settings.get("generation", {})}
+        self.generation = {**DEFAULT_GENERATION, **config.get("generation", {}),
+                           **self.settings.get("generation", {})}
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
     def request(self, url, payload=None):
@@ -210,8 +230,7 @@ class LocalClient:
             return self.request(self.base + "/chat/completions", {
                 "model": self.settings["model_id"],
                 "messages": [{"role": "user", "content": content}],
-                "temperature": self.generation.get("temperature", 0),
-                "max_tokens": self.generation.get("max_output_tokens", 4096),
+                **generation_payload(self.generation),
                 "stream": False,
             })
         content = [{"type": "text", "text": json.dumps(materials, ensure_ascii=False)}]
@@ -220,8 +239,7 @@ class LocalClient:
         payload = {
             "model": self.settings["model_id"],
             "messages": [{"role": "system", "content": prompt}, {"role": "user", "content": content}],
-            "temperature": self.generation.get("temperature", 0),
-            "max_tokens": self.generation.get("max_output_tokens", 4096),
+            **generation_payload(self.generation),
             "stream": False,
             "response_format": {"type": "json_schema", "json_schema": {
                 "name": "scoring_response", "strict": True, "schema": response_schema(materials),
@@ -229,6 +247,14 @@ class LocalClient:
             "chat_template_kwargs": {"enable_thinking": False},
         }
         return self.request(self.base + "/chat/completions", payload)
+
+
+def generation_payload(generation):
+    """Return explicit llama.cpp sampling fields for every completion request."""
+    return {"temperature": generation["temperature"], "seed": generation["seed"],
+            "top_k": generation["top_k"], "top_p": generation["top_p"],
+            "min_p": generation["min_p"], "repeat_penalty": generation["repeat_penalty"],
+            "max_tokens": generation["max_output_tokens"]}
 
 
 def parse_response(raw, *, allow_reasoning=False):

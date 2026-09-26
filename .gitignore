@@ -12,6 +12,14 @@ __pycache__/
 .venv/
 
 /testData/
+/AGENTS.md
+/imported-conversation.md
+/docs/auto-grading-system-spec-v4.md
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/npm-debug.log*
+frontend/test-results/
 # Local model weights and runtime caches (often tens of GB).
 *.gguf
 *.safetensors
@@ -31,5 +39,38 @@ __pycache__/
 *.pem
 .DS_Store
 *.swp
+*.pid
+.coverage
+coverage.xml
+htmlcov/
+.pytest_cache/
+dist/
+build/
 *.egg-info/
 .ruff_cache/
+
+# Local databases / backups
+*.db
+*.sqlite
+*.sqlite3
+*.dump
+
+# Runtime/generated files
+/artifacts/
+runtime-*.log
+
+# OAuth callback remnants
+callback?code=*
+
+# Local credentials / secrets
+.env
+.env.local
+.env.*.local
+data/operations/**/owner-credentials.json
+data/operations/**/*credentials*.json
+
+student-answer/
+student-visual/
+
+*.tsbuildinfo
+

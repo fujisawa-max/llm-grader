@@ -12,10 +12,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .core import (
-    LocalClient, digest, identifier, load_assignment, parse_response, read_json,
+    LocalClient, digest, effective_generation, identifier, load_assignment, parse_response, read_json,
     validate_grade, write_json,
 )
-from .regions import for_question, process_regions, validate_layout
+from .regions import canonicalize_layout, for_question, process_regions, validate_layout
+from .coordinate import CoordinateSpace, normalized_to_pixel
 
 ROOT = Path(__file__).resolve().parents[2]
 OCR_ENGINES = {"ricoh": ("ocr", "ocr"), "unimumer": ("math_ocr", "math_ocr")}
@@ -23,6 +24,25 @@ OCR_ENGINES = {"ricoh": ("ocr", "ocr"), "unimumer": ("math_ocr", "math_ocr")}
 
 def now():
     return datetime.now(timezone.utc).isoformat()
+
+
+def layout_source_coordinate_space(path):
+    """Resolve old checkpoint units from the immutable run manifest only.
+
+    This deliberately does not inspect bbox magnitudes.  A pre-v2 run stores
+    the exact old locate prompt in its manifest, which is the provenance needed
+    to identify its 0..1000 contract.  Unversioned/unknown artifacts remain
+    ambiguous and are rejected by ``validate_layout``.
+    """
+    manifest = path.parents[4] / "manifest.json"
+    try:
+        value = read_json(manifest)
+        prompt = value.get("identity", {}).get("prompts", {}).get("locate", "")
+    except (OSError, ValueError, TypeError):
+        return None
+    if "[1000,1000]" in prompt and "coordinate_space" not in prompt:
+        return CoordinateSpace.NORMALIZED_1000.value
+    return None
 
 
 def prepare(args):
@@ -167,7 +187,7 @@ def ocr_signature(engine, page, config, prompt):
     settings = config["models"][role]
     signature = {
         "model": settings,
-        "generation": {**config.get("generation", {}), **settings.get("generation", {})},
+        "generation": effective_generation(config, engine),
         "prompt": prompt, "materials": {"page_id": page["page_id"]},
         "images": [[page["page_id"], digest(page["path"])]],
     }
@@ -272,6 +292,8 @@ def run_exam(args):
             raise ValueError("別の採点ランナーが実行中です") from exc
         run, prompts = snapshot(args, config)
         _, questions, submissions = load_assignment(run / "inputs/assignment")
+        from .grading_inputs import apply_inputs
+        questions = apply_inputs(questions, getattr(args, "domain_inputs", None))
         selected = getattr(args, "ocr_engine", "both")
         engines = list(OCR_ENGINES) if selected == "both" else [selected]
         if args.stage != "ocr" and selected != "both":
@@ -280,7 +302,9 @@ def run_exam(args):
                  else ["grader"] if args.stage == "grade" else ["ocr", "math_ocr", "grader"])
         clients = {}
         for role in roles:
-            clients[role] = LocalClient(config, role)
+            endpoint = getattr(args, "runtime_endpoints", {}).get(role)
+            clients[role] = (LocalClient(config, role, endpoint)
+                             if endpoint else LocalClient(config, role))
             info = clients[role].preflight()
             write_json(run / f"server-{role}.json", info)
         for sub in submissions:
@@ -328,7 +352,7 @@ def run_exam(args):
                 else:
                     settings = config["models"]["ocr"]
                     expected = {"model": settings,
-                        "generation": {**config.get("generation", {}), **settings.get("generation", {})},
+                        "generation": effective_generation(config, "ocr"),
                         "prompt": prompts["locate"], "materials": materials,
                         "images": [[pid, digest(page["path"])]], "parser_sha256": layout_hash}
                     status = read_json(ricoh_folder / f"{pid}.layout.status.json")
@@ -336,7 +360,14 @@ def run_exam(args):
                     if (status.get("state") != "success" or status.get("signature") != expected
                             or status.get("result_sha256") != digest(path)):
                         raise ValueError("成功済みのRicoh領域分割が必要です。先に--ocr-engine ricohを実行してください")
-                    layout = validate_layout(read_json(path), pid, qids)
+                    stored_layout = read_json(path)
+                    # Checkpoints written before coordinate-contract.v2 have
+                    # a known legacy 0..1000 contract.  This is an explicit
+                    # compatibility boundary, never a value-range guess.
+                    legacy_space = (None if stored_layout.get("coordinate_space")
+                                    else layout_source_coordinate_space(path))
+                    layout = validate_layout(stored_layout, pid, qids,
+                                             source_coordinate_space=legacy_space)
                 ocr[pid]["ricoh"] = ricoh
                 if args.stage == "ocr" and selected == "ricoh":
                     continue
@@ -484,15 +515,24 @@ def export_reports(args):
                 mark = "△"
             summary += f"\n{q.get('label', q['question_id'])}: {mark} {score if score != '' else '要確認'}/{q['rubric_data']['max_score']}"
 
-            # Locate the question's answer area from Ricoh's layout.  Bboxes
-            # are normalized to 0..1000; expand the box so the annotation is
+            # Locate the question's answer area from Ricoh's layout. Bboxes
+            # are canonical normalized coordinates after validation; expand the box so the annotation is
             # readable while remaining next to the student's work.
             layout_path = run / f"submissions/{sub['submission_id']}/ocr/ricoh/{sub['pages'][0]['page_id']}.layout.json"
-            regions = read_json(layout_path).get("regions", []) if layout_path.exists() else []
+            stored_layout = read_json(layout_path) if layout_path.exists() else {}
+            if stored_layout:
+                stored_layout = canonicalize_layout(
+                    stored_layout,
+                    source_coordinate_space=(None if stored_layout.get("coordinate_space")
+                                             else layout_source_coordinate_space(layout_path)),
+                )
+            regions = stored_layout.get("regions", [])
             boxes = [r["bbox"] for r in regions if r.get("question_id") == q["question_id"] and len(r.get("bbox", [])) == 4]
             if boxes:
-                x0 = min(b[0] for b in boxes) / 1000 * page.rect.width
-                y1 = max(b[3] for b in boxes) / 1000 * page.rect.height
+                pixels = [normalized_to_pixel(b, page.rect.width, page.rect.height)
+                          for b in boxes]
+                x0 = min(b[0] for b in pixels)
+                y1 = max(b[3] for b in pixels)
             else:
                 index = questions.index(q)
                 x0 = 40
