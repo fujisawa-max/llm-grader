@@ -6,6 +6,8 @@ test("fresh Teacher course and source registration without model execution",asyn
  test.skip(!enabled,"Requires isolated fresh API and demo fixtures (JUI7_FRESH_SMOKE=1)");
  test.setTimeout(150000);
  page.setDefaultTimeout(15000);
+ const pageErrors:string[]=[];
+ page.on("pageerror",error=>pageErrors.push(error.message));
  const password="DemoSetup123!"; const teacherPassword="DemoTeacherChanged123!";
  const fixture=process.env.JUI7_FIXTURES||"/tmp/jui7/fixtures";
  await page.goto("/");
@@ -69,8 +71,22 @@ test("fresh Teacher course and source registration without model execution",asyn
  });
  await page.getByRole("navigation",{name:"テスト準備",exact:true}).getByRole("button",{name:"問題",exact:true}).click();
  const questionRegister=page.getByRole("button",{name:"問題用紙を登録",exact:true});
+ const questionInput=page.getByLabel("問題用紙ファイルを選択");
  await expect(questionRegister).toBeVisible();await expect(questionRegister).toBeDisabled();
- await page.getByLabel("問題用紙ファイルを選択").setInputFiles([path.join(fixture,"question.pdf"),path.join(fixture,"question.png")]);
+ await questionInput.setInputFiles({name:"invalid.txt",mimeType:"text/plain",buffer:Buffer.from("invalid")});
+ await expect(questionRegister).toBeDisabled();
+ await expect(page.getByText("選択したファイルの形式またはサイズを確認してください。")).toBeVisible();
+ await questionInput.setInputFiles(path.join(fixture,"question.pdf"));
+ await expect(page.getByText("選択済み: question.pdf",{exact:true})).toBeVisible();
+ await expect.poll(()=>questionInput.evaluate((el:HTMLInputElement)=>el.files?.[0]?.name)).toBe("question.pdf");
+ await expect(questionRegister).toBeEnabled();
+ await questionInput.dispatchEvent("cancel");
+ await expect(page.getByText("選択済み: question.pdf",{exact:true})).toBeVisible();
+ await questionInput.setInputFiles(path.join(fixture,"question.png"));
+ await expect(page.getByText("選択済み: question.png",{exact:true})).toBeVisible();
+ await expect(page.getByRole("row",{name:/question.pdf/})).toHaveCount(0);
+ await questionInput.setInputFiles([path.join(fixture,"question.pdf"),path.join(fixture,"question.png")]);
+ await expect(page.getByText("選択済み: 2ファイル（question.pdf、question.png）",{exact:true})).toBeVisible();
  await expect(questionRegister).toBeEnabled();expect(uploadResponses).toHaveLength(0);
  await page.route("**/materials/upload",async route=>{
    if(route.request().headers()["x-source-role"]==="question_sheet")await new Promise(resolve=>setTimeout(resolve,400));
@@ -79,53 +95,69 @@ test("fresh Teacher course and source registration without model execution",asyn
  await questionRegister.click();
  await expect(questionRegister).toBeDisabled();
  await expect(page.getByText("問題用紙: 2ファイル登録済み",{exact:true})).toBeVisible();
+ await expect(page.getByText("ファイル未選択",{exact:true})).toBeVisible();
+ await expect.poll(()=>questionInput.evaluate((el:HTMLInputElement)=>el.files?.length)).toBe(0);
  await page.unroute("**/materials/upload");
  await expect(questionRegister).toBeDisabled();
  expect(uploadResponses.filter(item=>item.role==="question_sheet"&&item.status===201)).toHaveLength(2);
  await page.getByRole("button",{name:"1. question.pdfを確認",exact:true}).click();
  await expect(page.locator("iframe").first()).toBeVisible();
+ await questionInput.setInputFiles(path.join(fixture,"question.pdf"));
+ await expect(page.getByText("選択済み: question.pdf",{exact:true})).toBeVisible();
+ await expect(questionRegister).toBeEnabled();
  expect(processingRequests).toHaveLength(0);
  await page.goto(testUrl+"?section=answers");
  const modelRegister=page.getByRole("button",{name:"模範解答を登録",exact:true});
+ const modelInput=page.getByLabel("模範解答ファイルを選択");
  await expect(modelRegister).toBeVisible();await expect(modelRegister).toBeDisabled();
- await page.getByLabel("模範解答ファイルを選択").setInputFiles([path.join(fixture,"model-answer.pdf"),path.join(fixture,"model-answer.png")]);
+ await modelInput.setInputFiles([path.join(fixture,"model-answer.pdf"),path.join(fixture,"model-answer.png")]);
+ await expect(page.getByText("選択済み: 2ファイル（model-answer.pdf、model-answer.png）",{exact:true})).toBeVisible();
  await expect(modelRegister).toBeEnabled();expect(uploadResponses.filter(item=>item.role==="model_answer_source")).toHaveLength(0);
  await modelRegister.click();
  await expect(page.getByText("模範解答: 2ファイル登録済み",{exact:true})).toBeVisible();
+ await expect(page.getByText("ファイル未選択",{exact:true})).toBeVisible();
+ await expect.poll(()=>modelInput.evaluate((el:HTMLInputElement)=>el.files?.length)).toBe(0);
  await expect(modelRegister).toBeDisabled();
  expect(uploadResponses.filter(item=>item.role==="model_answer_source"&&item.status===201)).toHaveLength(2);
  await page.getByRole("button",{name:"1. model-answer.pdfを確認",exact:true}).click();
  await expect(page.locator("iframe").first()).toBeVisible();
  await page.getByRole("navigation",{name:"テスト準備",exact:true}).getByRole("button",{name:"学生答案",exact:true}).click();
  const studentRegister=page.getByRole("button",{name:"学生答案を登録",exact:true});
+ const studentInput=page.getByLabel("学生答案を追加",{exact:true});
  await expect(studentRegister).toBeVisible();await expect(studentRegister).toBeDisabled();
- await page.getByLabel("学生答案を追加",{exact:true}).setInputFiles([path.join(fixture,"student-1.png"),path.join(fixture,"student-2.png"),path.join(fixture,"student-3.pdf")]);
+ await studentInput.setInputFiles([path.join(fixture,"student-1.png"),path.join(fixture,"student-1.pdf"),path.join(fixture,"student-2.png"),path.join(fixture,"student-3.pdf")]);
+ await expect(page.getByText("選択済み: 4ファイル",{exact:false})).toBeVisible();
+ await expect(page.getByRole("row",{name:/student-1.pdf/})).toBeVisible();
  await expect(studentRegister).toBeDisabled();
- for(let i=1;i<=3;i++){await page.getByRole("textbox",{name:`学籍番号 ${i}`,exact:true}).fill(`S00${i}`);await page.getByRole("textbox",{name:`氏名 ${i}`,exact:true}).fill(`デモ学生${i}`);}
+ for(let i=1;i<=4;i++){const number=i<=2?"S001":`S00${i-1}`;await page.getByRole("textbox",{name:`学籍番号 ${i}`,exact:true}).fill(number);await page.getByRole("textbox",{name:`氏名 ${i}`,exact:true}).fill(`デモ学生${number}`);}
  await expect(studentRegister).toBeEnabled();expect(uploadResponses.filter(item=>item.role==="student_answer_source")).toHaveLength(0);
  await studentRegister.click();
- await expect(page.getByText("学生答案: 3ファイル登録済み / 学生答案 3件",{exact:true})).toBeVisible();
+ await expect(page.getByText("学生答案: 4ファイル登録済み / 学生答案 3件",{exact:true})).toBeVisible();
+ await expect(page.getByText("ファイル未選択",{exact:true})).toBeVisible();
+ await expect.poll(()=>studentInput.evaluate((el:HTMLInputElement)=>el.files?.length)).toBe(0);
  await expect(studentRegister).toBeDisabled();
- expect(uploadResponses.filter(item=>item.role==="student_answer_source"&&item.status===201)).toHaveLength(3);
+ expect(uploadResponses.filter(item=>item.role==="student_answer_source"&&item.status===201)).toHaveLength(4);
  expect(submissionResponses.filter(status=>status===201)).toHaveLength(3);
  await page.getByRole("button",{name:"1. student-1.pngを確認",exact:true}).click();
  await expect(page.getByRole("img",{name:"学生答案原資料"})).toBeVisible();
  await page.reload();
- await expect(page.getByText("学生答案: 3ファイル登録済み / 学生答案 3件",{exact:true})).toBeVisible();
+ await expect(page.getByText("学生答案: 4ファイル登録済み / 学生答案 3件",{exact:true})).toBeVisible();
  await expect(page.getByRole("button",{name:"1. student-1.pngを確認",exact:true})).toBeVisible();
- await page.getByLabel("学生答案を追加",{exact:true}).setInputFiles([
+ await studentInput.setInputFiles([
    {name:"student-1.png",mimeType:"image/png",buffer:fs.readFileSync(path.join(fixture,"student-1.png"))},
    {name:"invalid.txt",mimeType:"text/plain",buffer:Buffer.from("invalid answer source")},
  ]);
  for(const [i,number] of [[1,"S004"],[2,"S005"]] as const){await page.getByRole("textbox",{name:`学籍番号 ${i}`,exact:true}).fill(number);await page.getByRole("textbox",{name:`氏名 ${i}`,exact:true}).fill(`デモ学生${number}`);}
  await studentRegister.click();
- await expect(page.getByText("学生答案: 3ファイル登録済み / 学生答案 4件",{exact:true})).toBeVisible();
+ await expect(page.getByText("学生答案: 4ファイル登録済み / 学生答案 4件",{exact:true})).toBeVisible();
  await expect(page.getByText("1件成功・1件失敗",{exact:false})).toBeVisible();
  await expect(page.getByRole("alert").filter({hasText:"PNG・JPEG・PDFを選択してください"})).toBeVisible();
- await expect(studentRegister).toBeEnabled();
- await page.getByRole("button",{name:"取り消し",exact:true}).click();
  await expect(studentRegister).toBeDisabled();
- await page.getByLabel("学生答案を追加",{exact:true}).setInputFiles(path.join(fixture,"student-2.png"));
+ await expect(page.getByText("選択したファイルの形式またはサイズを確認してください。")).toBeVisible();
+ await page.getByRole("row").filter({hasText:"invalid.txt"}).getByRole("button",{name:"取り消し"}).click();
+ await expect(studentRegister).toBeDisabled();
+ await expect(page.getByText("ファイル未選択",{exact:true})).toBeVisible();
+ await studentInput.setInputFiles(path.join(fixture,"student-2.png"));
  await page.getByRole("textbox",{name:"学籍番号 1",exact:true}).fill("S005");
  await page.getByRole("textbox",{name:"氏名 1",exact:true}).fill("デモ学生5");
  let failOnce=true;
@@ -135,9 +167,12 @@ test("fresh Teacher course and source registration without model execution",asyn
  });
  await studentRegister.click();
  await expect(page.getByRole("alert").filter({hasText:"接続を確認して再試行してください"})).toBeVisible();
+ await expect(page.getByText("選択済み: student-2.png",{exact:true})).toBeVisible();
+ await expect.poll(()=>studentInput.evaluate((el:HTMLInputElement)=>el.files?.[0]?.name)).toBe("student-2.png");
  await expect(studentRegister).toBeEnabled();
  await studentRegister.click();
- await expect(page.getByText("学生答案: 3ファイル登録済み / 学生答案 5件",{exact:true})).toBeVisible();
+ await expect(page.getByText("学生答案: 4ファイル登録済み / 学生答案 5件",{exact:true})).toBeVisible();
+ await expect(page.getByText("ファイル未選択",{exact:true})).toBeVisible();
  await expect(studentRegister).toBeDisabled();
  await page.unroute("**/materials/upload");
  expect(processingRequests).toHaveLength(0);
@@ -160,4 +195,5 @@ test("fresh Teacher course and source registration without model execution",asyn
  if(process.env.JUI7_SCREENSHOT_DIR)await page.screenshot({path:path.join(process.env.JUI7_SCREENSHOT_DIR,"teacher-courses.png")});
  await page.goto(testUrl);
  await expect(page.locator("body")).toContainText("人工知能・機械学習");
+ expect(pageErrors).toEqual([]);
 });
