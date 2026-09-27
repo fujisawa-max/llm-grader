@@ -17,8 +17,8 @@ export function PdfPreview({ id, page, pages, selected, onPage }: {
     return () => { active = false; };
   }, [id, page]);
   return <section className="panel review-preview" aria-label="原PDFプレビュー">
-    <div className="review-toolbar"><h2>原PDF</h2><button disabled={page === 0} onClick={() => onPage(page - 1)}>Previous</button>
-      <span>{page + 1} / {pages}</span><button disabled={page + 1 === pages} onClick={() => onPage(page + 1)}>Next</button></div>
+    <div className="review-toolbar"><h2>元の問題用紙</h2><button disabled={page === 0} onClick={() => onPage(page - 1)}>前のページ</button>
+      <span>{page + 1} / {pages} ページ</span><button disabled={page + 1 === pages} onClick={() => onPage(page + 1)}>次のページ</button></div>
     {error && <p role="alert" className="error">{error}</p>}
     {!loaded && !error && <p role="status">ページを読み込み中…</p>}
     {meta && <div className="review-preview-image">

@@ -5,7 +5,7 @@ import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { grading, type GradingOverview } from "@/lib/api/grading";
 import { AppShell } from "@/components/AppShell";
-import { TechnicalDetails, friendlyWarning } from "@/components/ui";
+import { TechnicalDetails, friendlyStatus, friendlyWarning } from "@/components/ui";
 
 const statusLabel: Record<string, string> = { COMPLETE: "完了", REVIEW_REQUIRED: "要確認", REGRADING_REQUESTED: "再採点依頼済み", INCOMPLETE: "未完了" };
 
@@ -26,7 +26,7 @@ export default function GradingOverviewPage() {
       <Summary title="教師確定" value={`${data.totals.teacher_adjudicated_count}名`} />
       <Summary title="テスト配点" value={`${data.test.total_points}点`} />
     </section>
-    <section className="panel section"><h2>学生別一覧</h2>{data.students.length === 0 ? <p className="empty">答案がありません。</p> : <table className="table"><thead><tr><th>学生</th><th>得点</th><th>割合</th><th>状態</th><th>確定</th><th>公開</th><th>確認事項</th><th>公開操作</th></tr></thead><tbody>{data.students.map((row) => <tr key={row.submission_id}><td><Link href={`/tests/${testId}/grading/${row.submission_id}`}>{row.student_display_label || "学生情報未確認"}</Link>{row.student_identity_review_required && <small className="warn">学生情報を確認</small>}</td><td>{row.score} / {row.max}</td><td>{row.percentage === null ? "—" : `${row.percentage.toFixed(2)}%`}</td><td><span className={`badge badge-${row.status.toLowerCase()}`}>{statusLabel[row.status] || row.status}</span></td><td>{row.finalized ? "確定済み" : "未確定"}</td><td><span className={`badge ${row.published ? "badge-published" : "badge-unpublished"}`}>{row.published ? "公開済み" : "未公開"}</span>{row.published_at && <small className="muted">{row.published_at}</small>}</td><td>{row.review_flags.length ? <div className="flag-list">{row.review_flags.map((flag) => <TechnicalDetails label={friendlyWarning(flag)} key={flag}><code>{flag}</code></TechnicalDetails>)}</div> : <span className="muted">なし</span>}</td><td><PublishSubmissionButton testId={testId} submissionId={row.submission_id} published={Boolean(row.published)} onDone={refresh} /></td></tr>)}</tbody></table>}</section>
+    <section className="panel section"><h2>学生別一覧</h2>{data.students.length === 0 ? <p className="empty">答案がありません。</p> : <table className="table"><thead><tr><th>学生</th><th>得点</th><th>割合</th><th>状態</th><th>確定</th><th>公開</th><th>確認事項</th><th>公開操作</th></tr></thead><tbody>{data.students.map((row) => <tr key={row.submission_id}><td><Link href={`/tests/${testId}/grading/${row.submission_id}`}>{row.student_display_label || "学生情報未確認"}</Link>{row.student_identity_review_required && <small className="warn">学生情報を確認</small>}</td><td>{row.score} / {row.max}</td><td>{row.percentage === null ? "—" : `${row.percentage.toFixed(2)}%`}</td><td><span className={`badge badge-${row.status.toLowerCase()}`}>{statusLabel[row.status] || friendlyStatus(row.status)}</span></td><td>{row.finalized ? "確定済み" : "未確定"}</td><td><span className={`badge ${row.published ? "badge-published" : "badge-unpublished"}`}>{row.published ? "公開済み" : "未公開"}</span>{row.published_at && <small className="muted">{row.published_at}</small>}</td><td>{row.review_flags.length ? <div className="flag-list">{row.review_flags.map((flag) => <TechnicalDetails label={friendlyWarning(flag)} key={flag}><code>{flag}</code></TechnicalDetails>)}</div> : <span className="muted">なし</span>}</td><td><PublishSubmissionButton testId={testId} submissionId={row.submission_id} published={Boolean(row.published)} onDone={refresh} /></td></tr>)}</tbody></table>}</section>
   </AppShell>;
 }
 

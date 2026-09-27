@@ -14,7 +14,7 @@ export function ReviewEntries({ testId }: { testId: string }) {
   async function open(row: ReviewEntry) {
     setBusy(true); setError("");
     try { const id = row.id || (await reviews.create(row.draft_id)).id; router.push(`/question-import-reviews/${id}`); }
-    catch { setError("Reviewを開始できません。Source artifactの整合性と通信状態を確認してください。"); setBusy(false); }
+    catch { setError("問題の読み取り確認を開始できませんでした。元の問題用紙と通信状態を確認してください。"); setBusy(false); }
   }
   return <section className="panel section"><h2>問題の読み取り確認</h2>
     {error && <><p role="alert" className="error">{error}</p><TechnicalDetails label="詳細を表示"><p>Question import review endpoint did not respond.</p></TechnicalDetails></>}{!rows && !error && <p>読み込み中…</p>}

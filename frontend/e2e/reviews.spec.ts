@@ -3,8 +3,8 @@ import type { ReviewDocument, ReviewNode, ReviewSnapshot } from "../types/review
 
 function fixture(): ReviewDocument {
   const node: ReviewNode = { review_node_id: "q1", stable_key: "q1", source_draft_stable_key: "q1", source_draft_node_id: null,
-    parent_key: null, node_type: "major_question", depth: 0, sort_order: 0, label: { raw: "Question 1", normalized: "Question 1" },
-    body_text: "Visible question", ordered_content: [{ type: "text", order: 0, text: "Visible question" },
+    parent_key: null, node_type: "major_question", depth: 0, sort_order: 0, label: { raw: "問題1", normalized: "問題1" },
+    body_text: "問題文", ordered_content: [{ type: "text", order: 0, text: "問題文" },
       { type: "formula_region", order: 1, region_id: "formula-1" }, { type: "figure_region", order: 2, region_id: "figure-1" }],
     included: true, score_semantics: "direct", score_points: 10, review_flags: [], formula_decisions: {}, figure_decisions: {}, warning_states: {} };
   return { id: "review", draft_id: "draft", test_id: "test", state: "editing", current_revision: 1, revision_number: 1,
@@ -20,6 +20,9 @@ function fixture(): ReviewDocument {
 }
 
 test("review compares evidence, switches pages, saves teacher edits and reports conflicts", async ({ page }) => {
+  await page.addInitScript(() => Object.defineProperty(window.crypto, "randomUUID", { value: undefined, configurable: true }));
+  const pageErrors: string[] = [];
+  page.on("pageerror", error => pageErrors.push(error.message));
   const data = fixture();
   const saved: ReviewSnapshot[] = [];
   let conflict = false;
@@ -27,6 +30,11 @@ test("review compares evidence, switches pages, saves teacher edits and reports 
     const url = new URL(route.request().url()).pathname;
     if (url.endsWith("/confirmation")) return route.fulfill({ json: null });
     if (url.endsWith("/users")) return route.fulfill({ json: [] });
+    if (url.endsWith("/mark-reviewed")) {
+      data.snapshot = { ...data.snapshot, state: "reviewed", reviewed: true };
+      data.current_revision++; data.revision_number++;
+      return route.fulfill({ json: data });
+    }
     if (url.endsWith("/revisions") && route.request().method() === "POST") {
       if (conflict) return route.fulfill({ status: 409, json: { error: { code: "revision_conflict" } } });
       const body = route.request().postDataJSON() as { snapshot: ReviewSnapshot; base_revision: number };
@@ -47,34 +55,79 @@ test("review compares evidence, switches pages, saves teacher edits and reports 
     return route.fulfill({ json: data });
   });
   await page.goto("/question-import-reviews/review");
-  await expect(page.getByRole("heading", { name: "Teacher Review" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "教師による確認" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "← 試験の問題画面に戻る" })).toBeVisible();
+  await expect(page.getByLabel("確認状況")).toContainText("設問 1 / 除外 0");
+  await expect(page.getByRole("navigation", { name: "設問構成" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "問題文と資料" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "確認事項" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "変更履歴" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "確認済みにする" })).toBeVisible();
+  await expect(page.getByLabel("設問の階層")).toHaveValue("");
+  await expect(page.getByLabel("配点の扱い")).toHaveValue("direct");
+  await expect(page.getByRole("option", { name: "各小問に配点" })).toHaveAttribute("value", "each_child");
+  await expect(page.getByRole("button", { name: "前のページ" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "次のページ" })).toBeEnabled();
+  const visibleReviewText = await page.locator(".teacher-review").evaluate(element => (element as HTMLElement).innerText);
+  expect(visibleReviewText).not.toMatch(/Teacher Review|Test Workspace|Question tree|Major question|Subquestion|Score semantics|Ordered content|Mark Reviewed|Previous|Next|each_child|major_question/);
   await expect(page.locator("rect[data-source-id=q1]")).toHaveCount(1);
-  await page.getByRole("button", { name: "[Formula] formula-1", exact: false }).click();
+  await page.getByRole("button", { name: "数式 2 · 読み取り結果を比較", exact: true }).click();
   await expect(page.locator("rect[data-source-id=formula-1]")).toHaveCount(1);
-  await expect(page.getByRole("heading", { name: "Native evidence" })).toBeVisible();
-  await page.getByText("Raw Vision response（読み取り専用）").click();
+  await expect(page.getByRole("heading", { name: "PDFから読み取った内容" })).toBeVisible();
+  await page.getByText("画像解析の元データ（技術情報）").click();
   await expect(page.getByText('"<script>untrusted</script>"', { exact: false })).toBeVisible();
-  await page.getByLabel("formula-1 decision").selectOption("teacher_edit");
+  await page.getByLabel("確認結果").selectOption("teacher_edit");
   const single = String.raw`\sin \frac{5}{12}\pi`;
-  await page.getByLabel("Teacher transcription", { exact: true }).fill(single);
-  await page.getByLabel("warning state").selectOption("acknowledged");
-  await page.getByRole("button", { name: "Revisionを保存", exact: true }).click();
+  await page.getByLabel("教師が確認した数式", { exact: true }).fill(single);
+  await page.getByLabel("確認事項 1の状態").selectOption("acknowledged");
+  await page.getByRole("button", { name: "変更を保存", exact: true }).click();
   await expect.poll(() => saved.length).toBe(1);
   expect(saved[0].nodes[0].formula_decisions["formula-1"].teacher_transcription).toBe(single);
   await page.reload();
-  await page.getByRole("button", { name: "[Formula] formula-1", exact: false }).click();
-  await expect(page.getByLabel("Teacher transcription", { exact: true })).toHaveValue(single);
+  await page.getByRole("button", { name: "数式 2 · 読み取り結果を比較", exact: true }).click();
+  await expect(page.getByLabel("教師が確認した数式", { exact: true })).toHaveValue(single);
   const deliberateDouble = String.raw`a\\b`;
-  await page.getByLabel("Teacher transcription", { exact: true }).fill(deliberateDouble);
-  await page.getByRole("button", { name: "Revisionを保存", exact: true }).click();
+  await page.getByLabel("教師が確認した数式", { exact: true }).fill(deliberateDouble);
+  await page.getByRole("button", { name: "変更を保存", exact: true }).click();
   await expect.poll(() => saved.length).toBe(2);
   expect(saved[1].nodes[0].formula_decisions["formula-1"].teacher_transcription).toBe(deliberateDouble);
-  await page.getByRole("button", { name: "[Figure] figure-1", exact: false }).click();
-  await expect(page.getByText("Partial · Needs review")).toBeVisible();
+  await page.getByLabel("配点の扱い").selectOption("each_child");
+  await page.getByRole("button", { name: "変更を保存", exact: true }).click();
+  await expect.poll(() => saved.length).toBe(3);
+  expect(saved[2].nodes[0].score_semantics).toBe("each_child");
+  await page.getByRole("button", { name: "小問を追加" }).click();
+  await expect(page.getByRole("heading", { name: "追加問題" })).toBeVisible();
+  await expect(page.getByLabel("設問の階層")).toHaveValue("q1");
+  await page.getByLabel("設問番号・見出し").fill("追加した小問");
+  await page.getByRole("button", { name: "変更を保存", exact: true }).click();
+  await expect.poll(() => saved.length).toBe(4);
+  expect(saved[3].nodes[1].node_type).toBe("subquestion");
+  expect(saved[3].nodes[1].stable_key).toMatch(/^teacher-[0-9a-f-]{36}$/);
+  await page.locator(".review-tree button[data-source-key=q1]").click();
+  await page.getByRole("button", { name: "小問を追加" }).click();
+  await page.getByLabel("設問番号・見出し").fill("もう一つの小問");
+  await page.getByRole("button", { name: "変更を保存", exact: true }).click();
+  await expect.poll(() => saved.length).toBe(5);
+  await page.getByRole("button", { name: "上へ移動" }).click();
+  await page.getByRole("button", { name: "変更を保存", exact: true }).click();
+  await expect.poll(() => saved.length).toBe(6);
+  expect(saved[5].nodes.find(node => node.label.raw === "もう一つの小問")?.sort_order).toBe(0);
+  await page.getByLabel("設問の階層").selectOption("");
+  await page.getByRole("button", { name: "変更を保存", exact: true }).click();
+  await expect.poll(() => saved.length).toBe(7);
+  expect(saved[6].nodes.find(node => node.label.raw === "もう一つの小問")?.node_type).toBe("major_question");
+  await page.locator(".review-tree button[data-source-key=q1]").click();
+  await page.getByRole("button", { name: "図 3 · 読み取り結果を比較", exact: true }).click();
+  await expect(page.getByText("一部のみ読み取り済み・要確認")).toBeVisible();
   await expect(page.getByAltText("原PDF 2ページ")).toBeVisible();
   await expect(page.locator("rect[data-source-id=figure-1]")).toHaveCount(1);
   conflict = true;
-  await page.getByLabel("figure-1 decision").selectOption("accepted_as_evidence");
-  await page.getByRole("button", { name: "Revisionを保存", exact: true }).click();
-  await expect(page.locator(".teacher-review [role=alert]")).toContainText("A newer revision exists");
+  await page.getByLabel("確認結果").selectOption("accepted_as_evidence");
+  await page.getByRole("button", { name: "変更を保存", exact: true }).click();
+  await expect(page.locator(".teacher-review [role=alert]")).toContainText("別の画面で新しい修正版が保存されています");
+  page.once("dialog", dialog => dialog.accept());
+  await page.getByRole("button", { name: "最新の内容を再読み込み" }).click();
+  await page.getByRole("button", { name: "確認済みにする" }).click();
+  await expect(page.locator("header .badge")).toHaveText("確認済み");
+  expect(pageErrors).toEqual([]);
 });
