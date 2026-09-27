@@ -13,7 +13,7 @@ interface Run { id: string; status: string; source_sha256: string; pipeline_vers
 interface StudentIdentity { submission_id?: string; student_number?: string; student_name?: string; display_label?: string; confidence?: number; review_required?: boolean; }
 const apiBase = (process.env.NEXT_PUBLIC_API_BASE_URL || "/api/v1").replace(/\/$/, "");
 
-export function StudentAnswerSources({testId, submissions, students: _students, questions}: {testId: string; submissions: Submission[]; students: Student[]; questions: Question[]}) {
+export function StudentAnswerSources({testId, submissions, students, questions}: {testId: string; submissions: Submission[]; students: Student[]; questions: Question[]}) {
   const [selectedId, setSelectedId] = useState("");
   const [search, setSearch] = useState("");
   const [pageIndex, setPageIndex] = useState<PageIndex>();
@@ -26,7 +26,14 @@ export function StudentAnswerSources({testId, submissions, students: _students, 
   const [identities, setIdentities] = useState<Record<string, StudentIdentity>>({});
   const [identityLoaded, setIdentityLoaded] = useState(false);
   const orderedQuestions = useMemo(() => orderedGradableQuestions(questions), [questions]);
-  const identityFor = (id: string) => identities[id] || {};
+  const identityFor = (id: string): StudentIdentity => {
+    const identity = identities[id];
+    if (identity?.student_number) return identity;
+    const sub = submissions.find(value => value.id === id);
+    const student = students.find(value => value.id === sub?.student_id);
+    // Explicit teacher roster mapping is display context, not OCR identity confirmation.
+    return student ? {...identity, student_number: student.student_identifier, student_name: student.display_name || "", display_label: `${student.student_identifier} ${student.display_name || ""}（登録時の対応）`, review_required: true} : identity || {};
+  };
   const orderedSubmissions = useMemo(() => [...submissions].sort((a, b) => {
     const an = identityFor(a.id).student_number || ""; const bn = identityFor(b.id).student_number || "";
     if (!an && !bn) return a.id.localeCompare(b.id); if (!an) return 1; if (!bn) return -1; return an.localeCompare(bn) || a.id.localeCompare(b.id);

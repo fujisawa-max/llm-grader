@@ -630,7 +630,8 @@ def create_app(session_factory=None, *, allowed_roots=None, runtime_client=None,
         ]
 
     @app.post("/api/v1/tests/{test_id}/question-materials", status_code=201,
-              summary="Register and natively extract a question-sheet PDF")
+              summary="Register and natively extract a question-sheet PDF",
+              dependencies=[Depends(domain_authorized)])
     async def question_material(test_id: str, request: Request, s=Depends(db)):
         test = s.get(Test, test_id)
         if not test:
@@ -678,19 +679,28 @@ def create_app(session_factory=None, *, allowed_roots=None, runtime_client=None,
                 TestMaterial.sha256 == source_sha256,
             ))
             if duplicate:
-                raise HTTPException(409, detail={"error": {"code": "duplicate_question_sheet", "message": "同じPDFは既に登録されています", "material_id": duplicate.id}})
-            material_id = str(__import__('uuid').uuid4())
+                existing = s.scalar(select(QuestionImportExtraction).where(
+                    QuestionImportExtraction.material_id == duplicate.id
+                ).order_by(QuestionImportExtraction.created_at.desc()))
+                if existing and existing.state != "failed":
+                    return _extraction_public(existing)
+                material = duplicate
+            else:
+                material_id = str(__import__('uuid').uuid4())
+                material = TestMaterial(id=material_id, test_id=test_id, material_type=material_type,
+                                        storage_ref="", original_filename=filename,
+                                        mime_type="application/pdf", sha256=source_sha256)
+            material_id = material.id
             extraction_id = str(__import__('uuid').uuid4())
             artifact_rel = f"question-imports/{extraction_id}"
-            material = TestMaterial(id=material_id, test_id=test_id, material_type=material_type,
-                                    storage_ref=f"{artifact_rel}/source.pdf", original_filename=filename,
-                                    mime_type="application/pdf", sha256=source_sha256)
+            if not duplicate:
+                material.storage_ref = f"{artifact_rel}/source.pdf"
+                s.add(material)
             extraction = QuestionImportExtraction(id=extraction_id, test_id=test_id, material_id=material_id,
                                                   state="extracting", source_sha256=source_sha256,
                                                   parser_backend="pymupdf", parser_library="PyMuPDF",
                                                   parser_version="unknown", schema_version=IR_SCHEMA_VERSION,
                                                   extraction_config_hash="pending", artifact_ref=artifact_rel)
-            s.add(material)
             s.flush()
             s.add(extraction)
             s.commit()

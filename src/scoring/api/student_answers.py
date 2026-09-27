@@ -67,6 +67,10 @@ def router(db, artifact_root):
             if page is None:
                 raise HTTPException(404, "answer_page_not_found")
             path = (builder.source.parent / page["image"]).resolve()
+            if document.get("registration_only"):
+                if not path.is_relative_to(builder.root) or not path.is_file() or sha256_file(path) != page.get("sha256"):
+                    raise HTTPException(409, "SOURCE_ANSWER_HASH_MISMATCH")
+                return FileResponse(path, media_type="image/png" if path.suffix.lower() == ".png" else "image/jpeg")
             if not path.is_relative_to(builder.root) or not path.is_file() or sha256_file(path) != next(
                     v["sha256"] for v in answer_pages(document, builder.source.parent)
                     for p in v["pages"] if p["page_id"] == page_id):
@@ -107,7 +111,7 @@ def router(db, artifact_root):
                 image = (builder.source.parent / str(page.get("image", ""))).resolve()
                 if not image.is_relative_to(builder.root) or not image.is_file():
                     raise HTTPException(409, "SOURCE_ANSWER_ARTIFACT_MISSING")
-                digest = next(
+                digest = page.get("sha256") if document.get("registration_only") else next(
                     v["sha256"] for v in answer_pages(document, builder.source.parent)
                     for p in v["pages"] if p["page_id"] == page.get("page_id")
                 )
@@ -159,6 +163,8 @@ def router(db, artifact_root):
     def source_page(test_id, submission_id, page_id, s=Depends(db)):
         submission = submission_or_404(test_id, submission_id, s)
         material = s.get(TestMaterial, submission.material_id)
+        if material and material.material_type == "student_answer":
+            return answer_artifact(test_id, submission_id, page_id, s)
         if material is None or material.material_type != "student_answer_source_image" or page_id != "source":
             raise HTTPException(404, "source_page_not_found")
         path = Path(material.storage_ref).resolve()

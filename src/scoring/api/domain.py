@@ -1,6 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
-from ..domain import DomainService
+from ..domain import DomainService, TERMS
 from ..domain_adapter import DomainGradingJobAdapter
 from ..grading_context import GradingReadinessService, ContextError, asset_path
 from fastapi.responses import FileResponse
@@ -57,9 +57,20 @@ def router(db, artifact_root=None, allowed_roots=None, grading_visual_config=Non
     def courses(v:CourseCreate,s=Depends(db)):
         current = actor(s)
         values = v.model_dump()
-        if current and current.role != "admin": values["owner_user_id"] = current.id
-        try: x=DomainService(s).course(**values); s.commit(); return obj(x)
-        except ValueError as e: raise HTTPException(400,str(e))
+        term = values.pop("offering", None)
+        if current and (current.role != "admin" or not values.get("owner_user_id")):
+            values["owner_user_id"] = current.id
+        try:
+            service = DomainService(s)
+            x = service.course(**values)
+            if term:
+                term.pop("offering_id", None)
+                service.offering(x.id, **term)
+            s.commit()
+            return obj(x)
+        except ValueError as e:
+            s.rollback()
+            raise HTTPException(400,str(e))
     @r.get("/courses")
     def courses_list(s=Depends(db)):
         current = actor(s); query = select(Course)
@@ -68,7 +79,29 @@ def router(db, artifact_root=None, allowed_roots=None, grading_visual_config=Non
     @r.get("/courses/{i}")
     def course(i,s=Depends(db)): return obj(owned_course_or_error(i,s))
     @r.patch("/courses/{i}")
-    def course_patch(i,v:CourseUpdate,s=Depends(db)): x=owned_course_or_error(i,s); [setattr(x,k,val) for k,val in v.model_dump(exclude_none=True).items()]; s.add(DomainEvent(entity_type="course",entity_id=x.id,event_type="course_updated")); s.commit(); return obj(x)
+    def course_patch(i,v:CourseUpdate,s=Depends(db)):
+        x = owned_course_or_error(i,s)
+        values = v.model_dump(exclude_unset=True)
+        term = values.pop("offering", None)
+        if term:
+            if term["term"] not in TERMS:
+                raise HTTPException(422, "開講時期が不正です")
+            target = get(CourseOffering, term.get("offering_id"), s) if term.get("offering_id") else None
+            if target and target.course_id != i:
+                raise HTTPException(403, "COURSE_ACCESS_DENIED")
+            if target:
+                target.academic_year = term["academic_year"]
+                target.term = term["term"]
+                s.add(DomainEvent(entity_type="offering", entity_id=target.id, event_type="offering_updated"))
+            else:
+                DomainService(s).offering(i, academic_year=term["academic_year"], term=term["term"])
+        for k, val in values.items():
+            if val is not None or k in {"code", "description"}:
+                setattr(x, k, val)
+        x.updated_at = now()
+        s.add(DomainEvent(entity_type="course",entity_id=x.id,event_type="course_updated"))
+        s.commit()
+        return obj(x)
     @r.post("/courses/{cid}/offerings",status_code=201)
     def offerings(cid,v:OfferingCreate,s=Depends(db)):
         owned_course_or_error(cid, s)
@@ -123,6 +156,28 @@ def router(db, artifact_root=None, allowed_roots=None, grading_visual_config=Non
     @r.get("/tests/{tid}/materials")
     def materials_list(tid, s=Depends(db)):
         return [obj(x) for x in s.scalars(select(TestMaterial).where(TestMaterial.test_id == tid))]
+
+    @r.post("/tests/{tid}/materials/upload", status_code=201)
+    async def material_upload(tid: str, request: Request, s=Depends(db)):
+        owned_test_or_error(tid, s)
+        from urllib.parse import unquote
+        from ..source_registration import register_source, MAX_SOURCE_BYTES
+        data = bytearray()
+        async for chunk in request.stream():
+            data.extend(chunk)
+            if len(data) > MAX_SOURCE_BYTES:
+                raise HTTPException(413, "ファイルは25MB以内で登録してください")
+        try:
+            material, count, reused = register_source(
+                s, storage_root or artifact_root, tid,
+                request.headers.get("x-source-role"),
+                unquote(request.headers.get("x-filename", "")),
+                request.headers.get("content-type", "").split(";")[0], bytes(data))
+            s.commit()
+            return {**obj(material), "page_count": count, "reused": reused}
+        except ValueError as exc:
+            s.rollback()
+            raise HTTPException(422, str(exc)) from exc
 
     @r.get("/tests/{tid}/materials/{mid}/file")
     def material_file(tid, mid, s=Depends(db)):
@@ -195,8 +250,23 @@ def router(db, artifact_root=None, allowed_roots=None, grading_visual_config=Non
     def students_list(oid,s=Depends(db)): return [obj(x) for x in s.scalars(select(Student).where(Student.course_offering_id==oid))]
     @r.post("/tests/{tid}/submissions",status_code=201)
     def submissions(tid,v:SubmissionCreate,s=Depends(db)):
-        try: x=DomainService(s).submission(tid,**v.model_dump()); s.commit(); return obj(x)
-        except Exception as e: s.rollback(); raise HTTPException(400,str(e))
+        test = owned_test_or_error(tid, s)
+        try:
+            if v.material_ids is not None:
+                from ..source_registration import register_submission
+                x = register_submission(s, storage_root or artifact_root, test,
+                                        v.material_ids, v.student_id,
+                                        v.student_identifier, v.display_name)
+            else:
+                if not v.material_id or not v.student_id or not v.submission_key:
+                    raise ValueError("学生と答案資料を指定してください")
+                x = DomainService(s).submission(tid, **v.model_dump(include={
+                    "student_id", "submission_key", "material_id", "attempt_number"}))
+            s.commit()
+            return obj(x)
+        except ValueError as e:
+            s.rollback()
+            raise HTTPException(422, str(e)) from e
     @r.get("/tests/{tid}/submissions")
     def submissions_list(tid,s=Depends(db)): return [obj(x) for x in s.scalars(select(StudentSubmission).where(StudentSubmission.test_id==tid))]
     @r.get("/tests/{tid}/readiness")
