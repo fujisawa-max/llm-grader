@@ -72,4 +72,4 @@
 .login-page{min-height:100vh;display:grid;place-items:center;padding:24px;background:var(--bg)}.login-card{width:min(460px,100%)}.login-card h1{margin-top:0}
 @media(max-width:900px){.grading-selection-bar{grid-template-columns:1fr}.grading-current-total{text-align:left}.grading-workspace-grid{grid-template-columns:1fr}.grading-question-selector{position:static}}
 
-.source-table-scroll{overflow-x:auto;max-width:100%}.registered-source-preview{display:block;max-width:100%;max-height:70vh;object-fit:contain;margin:1rem auto}
+.source-register-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:10px 0 16px}.source-register-actions span{color:var(--muted);font-size:14px}.source-table-scroll{overflow-x:auto;max-width:100%}.registered-source-preview{display:block;max-width:100%;max-height:70vh;object-fit:contain;margin:1rem auto}

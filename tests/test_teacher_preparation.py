@@ -170,6 +170,20 @@ class TeacherPreparationTests(unittest.TestCase):
                             ).status_code,
                             422,
                         )
+                    self.assertEqual(
+                        (
+                            await client.post(
+                                path + "/materials/upload",
+                                content=png,
+                                headers={
+                                    "Content-Type": "text/plain",
+                                    "X-Filename": "invalid.txt",
+                                    "X-Source-Role": "student_answer_source",
+                                },
+                            )
+                        ).status_code,
+                        422,
+                    )
                     image = (
                         await client.post(
                             path + "/materials/upload",

@@ -1,5 +1,6 @@
 import {test, expect} from "@playwright/test";
 import path from "node:path";
+import fs from "node:fs";
 const enabled=process.env.JUI7_FRESH_SMOKE==="1";
 test("fresh Teacher course and source registration without model execution",async({page})=>{
  test.skip(!enabled,"Requires isolated fresh API and demo fixtures (JUI7_FRESH_SMOKE=1)");
@@ -54,26 +55,92 @@ test("fresh Teacher course and source registration without model execution",asyn
  await page.getByRole("link",{name:"デモ試験",exact:true}).click();
  await expect(page).toHaveURL(/\/tests\//);
  const testUrl=page.url();
+ const uploadResponses:{role:string;status:number}[]=[];
+ const submissionResponses:number[]=[];
+ const processingRequests:string[]=[];
+ page.on("response",response=>{
+   const request=response.request();
+   if(request.method()!=="POST")return;
+   if(response.url().includes("/materials/upload"))uploadResponses.push({role:request.headers()["x-source-role"],status:response.status()});
+   if(/\/tests\/[^/]+\/submissions$/.test(new URL(response.url()).pathname))submissionResponses.push(response.status());
+ });
+ page.on("request",request=>{
+   if(request.method()==="POST"&&/\/(question-materials|question-imports|extractions|grading-jobs)(\/|$)/.test(new URL(request.url()).pathname))processingRequests.push(request.url());
+ });
  await page.getByRole("navigation",{name:"テスト準備",exact:true}).getByRole("button",{name:"問題",exact:true}).click();
+ const questionRegister=page.getByRole("button",{name:"問題用紙を登録",exact:true});
+ await expect(questionRegister).toBeVisible();await expect(questionRegister).toBeDisabled();
  await page.getByLabel("問題用紙ファイルを選択").setInputFiles([path.join(fixture,"question.pdf"),path.join(fixture,"question.png")]);
- await page.getByRole("button",{name:"登録 / 再試行",exact:true}).click();
+ await expect(questionRegister).toBeEnabled();expect(uploadResponses).toHaveLength(0);
+ await page.route("**/materials/upload",async route=>{
+   if(route.request().headers()["x-source-role"]==="question_sheet")await new Promise(resolve=>setTimeout(resolve,400));
+   await route.continue();
+ });
+ await questionRegister.click();
+ await expect(questionRegister).toBeDisabled();
  await expect(page.getByText("問題用紙: 2ファイル登録済み",{exact:true})).toBeVisible();
+ await page.unroute("**/materials/upload");
+ await expect(questionRegister).toBeDisabled();
+ expect(uploadResponses.filter(item=>item.role==="question_sheet"&&item.status===201)).toHaveLength(2);
  await page.getByRole("button",{name:"1. question.pdfを確認",exact:true}).click();
  await expect(page.locator("iframe").first()).toBeVisible();
- await page.getByRole("button",{name:/問題取り込み確認へ（PDF解析）/}).click();
- await expect(page).toHaveURL(/question-import-reviews/);
- await page.goto(testUrl+"?section=questions");
+ expect(processingRequests).toHaveLength(0);
  await page.goto(testUrl+"?section=answers");
+ const modelRegister=page.getByRole("button",{name:"模範解答を登録",exact:true});
+ await expect(modelRegister).toBeVisible();await expect(modelRegister).toBeDisabled();
  await page.getByLabel("模範解答ファイルを選択").setInputFiles([path.join(fixture,"model-answer.pdf"),path.join(fixture,"model-answer.png")]);
- await page.getByRole("button",{name:"登録 / 再試行",exact:true}).click();
+ await expect(modelRegister).toBeEnabled();expect(uploadResponses.filter(item=>item.role==="model_answer_source")).toHaveLength(0);
+ await modelRegister.click();
  await expect(page.getByText("模範解答: 2ファイル登録済み",{exact:true})).toBeVisible();
+ await expect(modelRegister).toBeDisabled();
+ expect(uploadResponses.filter(item=>item.role==="model_answer_source"&&item.status===201)).toHaveLength(2);
+ await page.getByRole("button",{name:"1. model-answer.pdfを確認",exact:true}).click();
+ await expect(page.locator("iframe").first()).toBeVisible();
  await page.getByRole("navigation",{name:"テスト準備",exact:true}).getByRole("button",{name:"学生答案",exact:true}).click();
+ const studentRegister=page.getByRole("button",{name:"学生答案を登録",exact:true});
+ await expect(studentRegister).toBeVisible();await expect(studentRegister).toBeDisabled();
  await page.getByLabel("学生答案を追加",{exact:true}).setInputFiles([path.join(fixture,"student-1.png"),path.join(fixture,"student-2.png"),path.join(fixture,"student-3.pdf")]);
+ await expect(studentRegister).toBeDisabled();
  for(let i=1;i<=3;i++){await page.getByRole("textbox",{name:`学籍番号 ${i}`,exact:true}).fill(`S00${i}`);await page.getByRole("textbox",{name:`氏名 ${i}`,exact:true}).fill(`デモ学生${i}`);}
- await page.getByRole("button",{name:"登録 / 再試行",exact:true}).click();
+ await expect(studentRegister).toBeEnabled();expect(uploadResponses.filter(item=>item.role==="student_answer_source")).toHaveLength(0);
+ await studentRegister.click();
  await expect(page.getByText("学生答案: 3ファイル登録済み / 学生答案 3件",{exact:true})).toBeVisible();
+ await expect(studentRegister).toBeDisabled();
+ expect(uploadResponses.filter(item=>item.role==="student_answer_source"&&item.status===201)).toHaveLength(3);
+ expect(submissionResponses.filter(status=>status===201)).toHaveLength(3);
  await page.getByRole("button",{name:"1. student-1.pngを確認",exact:true}).click();
  await expect(page.getByRole("img",{name:"学生答案原資料"})).toBeVisible();
+ await page.reload();
+ await expect(page.getByText("学生答案: 3ファイル登録済み / 学生答案 3件",{exact:true})).toBeVisible();
+ await expect(page.getByRole("button",{name:"1. student-1.pngを確認",exact:true})).toBeVisible();
+ await page.getByLabel("学生答案を追加",{exact:true}).setInputFiles([
+   {name:"student-1.png",mimeType:"image/png",buffer:fs.readFileSync(path.join(fixture,"student-1.png"))},
+   {name:"invalid.txt",mimeType:"text/plain",buffer:Buffer.from("invalid answer source")},
+ ]);
+ for(const [i,number] of [[1,"S004"],[2,"S005"]] as const){await page.getByRole("textbox",{name:`学籍番号 ${i}`,exact:true}).fill(number);await page.getByRole("textbox",{name:`氏名 ${i}`,exact:true}).fill(`デモ学生${number}`);}
+ await studentRegister.click();
+ await expect(page.getByText("学生答案: 3ファイル登録済み / 学生答案 4件",{exact:true})).toBeVisible();
+ await expect(page.getByText("1件成功・1件失敗",{exact:false})).toBeVisible();
+ await expect(page.getByRole("alert").filter({hasText:"PNG・JPEG・PDFを選択してください"})).toBeVisible();
+ await expect(studentRegister).toBeEnabled();
+ await page.getByRole("button",{name:"取り消し",exact:true}).click();
+ await expect(studentRegister).toBeDisabled();
+ await page.getByLabel("学生答案を追加",{exact:true}).setInputFiles(path.join(fixture,"student-2.png"));
+ await page.getByRole("textbox",{name:"学籍番号 1",exact:true}).fill("S005");
+ await page.getByRole("textbox",{name:"氏名 1",exact:true}).fill("デモ学生5");
+ let failOnce=true;
+ await page.route("**/materials/upload",async route=>{
+   if(failOnce){failOnce=false;await route.abort("failed");return;}
+   await route.continue();
+ });
+ await studentRegister.click();
+ await expect(page.getByRole("alert").filter({hasText:"接続を確認して再試行してください"})).toBeVisible();
+ await expect(studentRegister).toBeEnabled();
+ await studentRegister.click();
+ await expect(page.getByText("学生答案: 3ファイル登録済み / 学生答案 5件",{exact:true})).toBeVisible();
+ await expect(studentRegister).toBeDisabled();
+ await page.unroute("**/materials/upload");
+ expect(processingRequests).toHaveLength(0);
  if(process.env.JUI7_SCREENSHOT_DIR)await page.screenshot({path:path.join(process.env.JUI7_SCREENSHOT_DIR,"teacher-source-upload.png")});
  const health=await page.request.get("/api/v1/health");expect((await health.json()).jobs.pending).toBe(0);
  await page.getByRole("navigation",{name:"テスト準備",exact:true}).getByRole("button",{name:"概要",exact:true}).click();
