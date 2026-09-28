@@ -141,3 +141,43 @@ class ReviewTextEditingTests(unittest.TestCase):
             "type": "text", "order": 3, "text": "偽造", "page_index": 999})
         with self.assertRaisesRegex(ReviewError, "source_anchor_changed"):
             validate_snapshot(changed, self.current, self.draft, self.pin)
+
+    def test_major_split_reassigns_evidence_without_assigning_points(self):
+        source_text = "導入\n1. 境界\n2. 領域\n3. 点"
+        self.draft["nodes"][0]["ordered_content"][0]["text"] = source_text
+        current = initial_snapshot("draft-hash", self.draft, self.pin)
+        changed = deepcopy(current)
+        parent = changed["nodes"][0]
+        original = parent["ordered_content"][0]
+        formula = parent["ordered_content"][1]
+        lines = source_text.splitlines(keepends=True)
+        start = 0
+        pieces = []
+        for line in lines:
+            end = start + len(line)
+            pieces.append({**original, "text": line, "source_slice": [start, end, len(source_text)]})
+            start = end
+        parent["ordered_content"] = [{**pieces[0], "order": 0}, {**parent["ordered_content"][2], "order": 1}]
+        parent["score_semantics"], parent["score_points"] = "unset", None
+        for index in range(3):
+            key = f"teacher-child-{index}"
+            content = [{**pieces[index + 1], "order": 0}]
+            if index == 1:
+                content.append({**formula, "order": 1})
+            changed["nodes"].append({
+                "review_node_id": key, "stable_key": key, "source_draft_stable_key": None,
+                "source_draft_node_id": None, "parent_key": "q1", "node_type": "subquestion",
+                "depth": 1, "sort_order": index, "label": {"raw": f"({index+1})", "normalized": f"({index+1})"},
+                "body_text": "", "ordered_content": content, "included": True,
+                "score_semantics": "unset", "score_points": None, "review_flags": [],
+                "formula_decisions": {}, "figure_decisions": {}, "warning_states": {},
+            })
+        result = validate_snapshot(changed, current, self.draft, self.pin)
+        self.assertEqual([n["parent_key"] for n in result["nodes"][1:]], ["q1"] * 3)
+        self.assertEqual(result["nodes"][2]["ordered_content"][1]["region_id"], "f1")
+        self.assertEqual([n["score_points"] for n in result["nodes"]], [None] * 4)
+        self.assertEqual(result["nodes"][2]["ordered_content"][0]["source_element_ids"], ["span-1"])
+        forged = deepcopy(changed)
+        forged["nodes"][2]["ordered_content"][0]["source_slice"] = [0, 5, len(source_text)]
+        with self.assertRaisesRegex(ReviewError, "invalid_source_slice"):
+            validate_snapshot(forged, current, self.draft, self.pin)

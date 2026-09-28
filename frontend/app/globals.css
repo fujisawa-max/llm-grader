@@ -77,3 +77,15 @@
 .review-content-item{min-width:0;padding:14px;border:1px solid var(--line);border-radius:7px;background:#fff}.review-content-item:focus-within{border-color:var(--accent)}.review-content-item h5{margin:0}.review-content-heading,.review-content-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.review-content-heading{justify-content:space-between;margin-bottom:8px}.review-content-actions{margin-top:8px}.review-required,.review-field-error{color:#a62b2b;font-weight:700}.review-field-error{display:block;margin:4px 0}.review-needs-check{color:#825616;font-weight:700}.review-confirmed{color:#27734d;font-weight:700}.review-warning-wrap{padding:6px 10px 12px;border:1px solid var(--line);border-radius:7px}.review-warning-wrap.needs-check{border-color:#c48d43;background:#fffaf1}.review-warning-wrap .review-warning{margin:4px 0}.math-preview-label{display:block;margin-bottom:8px;font-size:13px}.math-preview-body{padding:10px;border:1px solid var(--line);border-radius:4px;background:#fff}.review-summary button{font:inherit;background:transparent;padding:0 10px;border:0;text-decoration:underline}
 .question-text-edit{min-width:260px;margin-top:10px}.question-text-edit label{display:grid;gap:5px}.question-text-edit textarea{width:100%;min-height:160px;resize:vertical}.question-text-edit .button{margin-right:6px}
 .math-text.question-text,.math-text.context-text,.math-text.answer-text{display:block}
+.markdown-math { min-width: 0; overflow-wrap: anywhere; }
+.markdown-math > :first-child { margin-top: 0; }
+.markdown-math > :last-child { margin-bottom: 0; }
+.markdown-math ul, .markdown-math ol { padding-left: 1.6rem; margin: .45rem 0; }
+.markdown-math ul { list-style: disc; }
+.markdown-math ol { list-style: decimal; }
+.markdown-math li { margin: .2rem 0; }
+.markdown-math table { border-collapse: collapse; display: block; max-width: 100%; overflow-x: auto; margin: .6rem 0; }
+.markdown-math th, .markdown-math td { border: 1px solid var(--border, #d5dbe4); padding: .3rem .55rem; }
+.markdown-math pre { overflow-x: auto; padding: .6rem; border-radius: .35rem; background: var(--surface-muted, #f5f6f8); }
+.markdown-math code { overflow-wrap: break-word; }
+.markdown-math .katex-display { overflow-x: auto; overflow-y: hidden; }

@@ -66,6 +66,120 @@ def _text(value, limit=20000):
         raise ReviewError("invalid_text_length", 422)
 
 
+def _source_owner(node, by_key):
+    """Nearest automatic ancestor owns PDF evidence used by a teacher child."""
+    seen = set()
+    while node is not None and node["stable_key"] not in seen:
+        seen.add(node["stable_key"])
+        if node.get("source_draft_stable_key") is not None:
+            return node["source_draft_stable_key"]
+        node = by_key.get(node.get("parent_key"))
+    return None
+
+
+def _content_evidence(item):
+    return {key: value for key, value in item.items()
+            if key not in {"type", "order", "text", "merged_source_segments", "source_slice"}}
+
+
+def _validate_content_provenance(nodes, source, by_key):
+    groups = {key: [] for key in source}
+    for node in nodes:
+        owner = _source_owner(node, by_key)
+        if owner is None:
+            for item in node["ordered_content"]:
+                if item.get("type") != "text" or set(item) - {"type", "order", "text"}:
+                    raise ReviewError("invalid_teacher_content", 422)
+        else:
+            groups[owner].append(node)
+    for owner, members in groups.items():
+        original = source[owner]["ordered_content"]
+        anchors = [{key: value for key, value in item.items() if key != "order"}
+                   for item in original if item.get("type") != "text"]
+        present = []
+        refs = []
+        formula_segments = []
+        decisions = {}
+        figure_decisions = set()
+        for node in members:
+            for rid, decision in node.get("formula_decisions", {}).items():
+                if rid in decisions:
+                    raise ReviewError("duplicate_region_decision", 422)
+                decisions[rid] = decision
+            for rid in node.get("figure_decisions", {}):
+                if rid in figure_decisions:
+                    raise ReviewError("duplicate_region_decision", 422)
+                figure_decisions.add(rid)
+            for item in node["ordered_content"]:
+                if item.get("type") != "text":
+                    anchor = {key: value for key, value in item.items() if key != "order"}
+                    try:
+                        anchors.remove(anchor)
+                    except ValueError:
+                        raise ReviewError("source_anchor_changed", 422) from None
+                    present.append(anchor)
+                    continue
+                evidence = _content_evidence(item)
+                if evidence or "source_slice" in item:
+                    refs.append((evidence, item.get("source_slice")))
+                segments = item.get("merged_source_segments", [])
+                if not isinstance(segments, list) or len(segments) > 2000:
+                    raise ReviewError("source_anchor_changed", 422)
+                for segment in segments:
+                    if not isinstance(segment, dict) or not segment:
+                        raise ReviewError("source_anchor_changed", 422)
+                    if segment.get("type") == "formula_region":
+                        formula_segments.append((segment, item["text"]))
+                    else:
+                        refs.append((_content_evidence(segment), segment.get("source_slice")))
+        original_text = [item for item in original if item.get("type") == "text"]
+        used = [[] for _ in original_text]
+        for evidence, source_slice in refs:
+            matches = [index for index, item in enumerate(original_text)
+                       if _content_evidence(item) == evidence]
+            if len(matches) != 1 or not evidence:
+                raise ReviewError("source_anchor_changed", 422)
+            index = matches[0]
+            if source_slice is None:
+                if used[index]:
+                    raise ReviewError("source_anchor_changed", 422)
+                used[index].append(None)
+            else:
+                if (not isinstance(source_slice, list) or len(source_slice) != 3 or
+                        any(type(value) is not int for value in source_slice)):
+                    raise ReviewError("invalid_source_slice", 422)
+                start, end, total = source_slice
+                if not 0 <= start < end <= total == len(original_text[index]["text"]) or any(
+                        old is None or old[2] != total or max(start, old[0]) < min(end, old[1])
+                        for old in used[index]):
+                    raise ReviewError("invalid_source_slice", 422)
+                used[index].append(source_slice)
+        for anchor in original:
+            if anchor.get("type") != "formula_region":
+                continue
+            evidence = {key: value for key, value in anchor.items() if key != "order"}
+            decision = decisions.get(anchor["region_id"], {})
+            state = decision.get("decision") if isinstance(decision, dict) else None
+            if evidence in present:
+                if state in {"excluded", "merged_into_text"}:
+                    raise ReviewError("formula_content_decision_mismatch", 422)
+            elif state == "merged_into_text":
+                matches = [text for segment, text in formula_segments if segment == evidence]
+                latex = decision.get("teacher_transcription", "").strip()
+                if len(matches) != 1:
+                    raise ReviewError("source_anchor_changed", 422)
+                if not latex or f"${latex}$" not in matches[0]:
+                    raise ReviewError("merged_formula_text_missing", 422)
+            elif state != "excluded":
+                raise ReviewError("formula_content_decision_mismatch", 422)
+        if any(anchor.get("type") != "formula_region" for anchor in anchors):
+            raise ReviewError("source_anchor_changed", 422)
+        for segment, _ in formula_segments:
+            if not any({key: value for key, value in item.items() if key != "order"} == segment
+                       and item.get("type") == "formula_region" for item in original):
+                raise ReviewError("source_anchor_changed", 422)
+
+
 def validate_snapshot(snapshot, current, draft, pin, *, mark=False):
     """Validate teacher data without accepting source/provenance changes from clients."""
     if not isinstance(snapshot, dict):
@@ -156,89 +270,20 @@ def validate_snapshot(snapshot, current, draft, pin, *, mark=False):
             baseline = source[src]
             if n.get("review_flags") != baseline["review_flags"]:
                 raise ReviewError("source_warning_changed", 422)
-            original = baseline["ordered_content"]
         else:
             if n.get("source_draft_node_id") is not None or n.get("review_flags", []):
                 raise ReviewError("invalid_teacher_node_source", 422)
-            original = None
         items = n.get("ordered_content")
         if not isinstance(items, list) or len(items) > 2000:
             raise ReviewError("invalid_ordered_content", 422)
         if any(not isinstance(item, dict) for item in items):
             raise ReviewError("invalid_ordered_content", 422)
         prior = previous.get(key, {})
-        if original is not None:
-            # Order is editable, but every non-text source anchor must still
-            # occur exactly once with its original provenance.
-            anchors = [{k: v for k, v in item.items() if k != "order"}
-                       for item in original if item.get("type") != "text"]
-            present_anchors = []
-            for item in items:
-                if item.get("type") != "text":
-                    anchor = {k: v for k, v in item.items() if k != "order"}
-                    try:
-                        anchors.remove(anchor)
-                        present_anchors.append(anchor)
-                    except ValueError:
-                        raise ReviewError("source_anchor_changed", 422) from None
-            merged_formulas = []
-            formula_decisions = n.get("formula_decisions", {})
-            if not isinstance(formula_decisions, dict):
-                raise ReviewError("invalid_decision", 422)
-            for anchor in original:
-                if anchor.get("type") != "formula_region":
-                    continue
-                evidence = {k: v for k, v in anchor.items() if k != "order"}
-                entry = formula_decisions.get(anchor["region_id"], {})
-                if not isinstance(entry, dict):
-                    raise ReviewError("invalid_region_decision", 422)
-                decision = entry.get("decision")
-                if evidence in present_anchors:
-                    if decision in {"excluded", "merged_into_text"}:
-                        raise ReviewError("formula_content_decision_mismatch", 422)
-                elif decision == "merged_into_text":
-                    merged_formulas.append(evidence)
-                elif decision != "excluded":
-                    raise ReviewError("formula_content_decision_mismatch", 422)
-            if any(anchor.get("type") != "formula_region" for anchor in anchors):
-                raise ReviewError("source_anchor_changed", 422)
-            def text_evidence(item):
-                return {k: v for k, v in item.items()
-                        if k not in {"type", "order", "text", "merged_source_segments"}}
-            available = [text_evidence(item) for item in original if item.get("type") == "text"]
         for i, item in enumerate(items):
             if type(item.get("order")) is not int or (items != prior.get("ordered_content") and item["order"] != i):
                 raise ReviewError("invalid_ordered_content", 422)
-            if original is not None:
-                if item.get("type") == "text":
-                    evidence = text_evidence(item)
-                    segments = item.get("merged_source_segments", [])
-                    if not isinstance(segments, list) or len(segments) > 2000 or any(
-                            not isinstance(segment, dict) or not segment for segment in segments):
-                        raise ReviewError("source_anchor_changed", 422)
-                    # Only text items carrying PDF provenance are source-locked.
-                    # Plain teacher-authored text uses no provenance and may be
-                    # freely inserted, removed, or edited.
-                    for segment in ([evidence] if evidence else []) + segments:
-                        # Python structural equality treats JSON 60 and 60.0 as
-                        # the same source coordinate after a browser round trip.
-                        try:
-                            if segment.get("type") == "formula_region":
-                                merged_formulas.remove(segment)
-                                formula_source = formula_decisions.get(
-                                    segment.get("region_id"), {}).get("teacher_transcription", "").strip()
-                                if not formula_source or f"${formula_source}$" not in item.get("text", ""):
-                                    raise ReviewError("merged_formula_text_missing", 422)
-                            else:
-                                available.remove(segment)
-                        except ValueError:
-                            raise ReviewError("source_anchor_changed", 422) from None
-            elif item.get("type") != "text" or set(item) - {"type", "order", "text"}:
-                raise ReviewError("invalid_teacher_content", 422)
             if item.get("type") == "text":
                 _text(item.get("text"))
-        if original is not None and merged_formulas:
-            raise ReviewError("formula_provenance_missing", 422)
         # Preserve the historical body field until ordered text is actually edited.
         if items != prior.get("ordered_content"):
             n["body_text"] = "\n".join(i["text"] for i in items if i.get("type") == "text")
@@ -268,6 +313,7 @@ def validate_snapshot(snapshot, current, draft, pin, *, mark=False):
                 raise ReviewError("node_content_required", 422)
             if n["score_semantics"] == "each_child" and not has_children:
                 raise ReviewError("each_child_requires_children", 422)
+    _validate_content_provenance(nodes, source, by_key)
     pinned = {p["region_id"]: p for p in pin.get("results", [])}
     for n in nodes:
         for kind, allowed in (("formula", {"unreviewed", "use_native", "use_vision", "teacher_edit",
@@ -276,8 +322,9 @@ def validate_snapshot(snapshot, current, draft, pin, *, mark=False):
             decisions = n.get(f"{kind}_decisions", {})
             if not isinstance(decisions, dict):
                 raise ReviewError("invalid_decision", 422)
+            owner = _source_owner(n, by_key)
             owned = {r["region_id"]: r for r in draft.get(f"{kind}_regions", [])
-                     if r.get("assigned_question_key") == n.get("source_draft_stable_key")}
+                     if r.get("assigned_question_key") == owner}
             for rid, d in decisions.items():
                 if rid not in owned or not isinstance(d, dict) or set(d) - {
                         "decision", "teacher_transcription", "note", "evidence_identity"}:
@@ -309,10 +356,16 @@ def validate_snapshot(snapshot, current, draft, pin, *, mark=False):
                 if d.get("evidence_identity") not in (None, identity):
                     raise ReviewError("decision_evidence_mismatch", 422)
                 d["evidence_identity"] = identity
-            if mark and n["included"]:
-                for rid in owned:
-                    if decisions.get(rid, {}).get("decision", "unreviewed") == "unreviewed":
-                        raise ReviewError(f"{kind}_review_required", 422)
+    if mark:
+        for kind in ("formula", "figure"):
+            for region in draft.get(f"{kind}_regions", []):
+                owner = region.get("assigned_question_key")
+                if owner not in by_key or not by_key[owner]["included"]:
+                    continue
+                decisions = [n.get(f"{kind}_decisions", {}).get(region["region_id"], {})
+                             for n in nodes if _source_owner(n, by_key) == owner]
+                if not any(d.get("decision", "unreviewed") != "unreviewed" for d in decisions):
+                    raise ReviewError(f"{kind}_review_required", 422)
     catalog = {w["id"]: w for w in warning_catalog(draft, pin)}
     resolutions = snap.get("warning_states", {})
     if not isinstance(resolutions, dict):
@@ -336,6 +389,7 @@ def validate_snapshot(snapshot, current, draft, pin, *, mark=False):
 def review_summary(snap, draft, pin):
     included = [n for n in snap["nodes"] if n["included"]]
     by_key = {n["stable_key"]: n for n in included}
+    all_by_key = {n["stable_key"]: n for n in snap["nodes"]}
     scores = []
     unresolved = 0
     for n in included:
@@ -360,9 +414,14 @@ def review_summary(snap, draft, pin):
     result = {"included_questions": len(included), "excluded_questions": len(snap["nodes"]) - len(included),
               "score_unresolved": unresolved, "total_points_candidate": None if unresolved else sum(scores)}
     for kind in ("formula", "figure"):
-        decisions = [n.get(f"{kind}_decisions", {}).get(r["region_id"], {}).get("decision", "unreviewed")
-                     for n in included for r in draft.get(f"{kind}_regions", [])
-                     if r.get("assigned_question_key") == n.get("source_draft_stable_key")]
+        decisions = []
+        for region in draft.get(f"{kind}_regions", []):
+            if region.get("assigned_question_key") not in by_key:
+                continue
+            values = [n.get(f"{kind}_decisions", {}).get(region["region_id"], {}).get("decision")
+                      for n in included if _source_owner(n, all_by_key)
+                      == region.get("assigned_question_key")]
+            decisions.append(next((value for value in values if value), "unreviewed"))
         result[f"{kind}_unreviewed"] = decisions.count("unreviewed")
         result[f"{kind}_reviewed"] = len(decisions) - decisions.count("unreviewed")
     result["unresolved_warnings"] = sum(

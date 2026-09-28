@@ -1,7 +1,8 @@
 import { useRef, type ReactNode } from "react";
 import type { AutomaticNode, ContentItem, Region, ReviewNode } from "@/types/reviews";
 import { questionTypeLabel, reviewContentLabel, reviewDecisionLabel, scoreSemanticsLabel } from "@/lib/reviewLabels";
-import { MathText, MathPreview, mathInputHelp } from "@/components/MathText";
+import { MathPreview } from "@/components/MathText";
+import { MarkdownMathText, MarkdownMathPreview, markdownMathHelp } from "@/components/MarkdownMathText";
 import { inlineFormulaSource } from "@/lib/formulaMerge";
 
 export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange, onParent, onMove, onRegion, activeRegionId, renderEvidence, issues = {} }: {
@@ -105,7 +106,7 @@ export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange
           return <section className="review-content-item" id={`review-field-text-${index}`} key={`text-${index}`} data-content-type="text">
             <label>問題文 {number} <span className="review-required" aria-label="必須">*</span><textarea ref={element => { if (element && mergeFocusIndex.current === index) { element.focus(); mergeFocusIndex.current = null; } }} aria-label={`問題文 ${number}`} maxLength={20000} value={item.text} aria-invalid={!!fieldIssues(key).length}
               onChange={e => updateItems(node.ordered_content.map((value, at) => at === index ? { ...value, text: e.target.value } : value))} /></label>
-            {errors(key)}<small className="math-help">{mathInputHelp}</small><MathPreview source={item.text} />
+            {errors(key)}<small className="math-help">{markdownMathHelp}</small><MarkdownMathPreview source={item.text} />
             <div className="review-content-actions"><button type="button" onClick={() => moveItem(index, -1)} disabled={index === 0}>上へ</button><button type="button" onClick={() => moveItem(index, 1)} disabled={index === node.ordered_content.length - 1}>下へ</button>{canMerge && <button type="button" onClick={() => mergeText(index)} disabled={mergeTooLong} title={mergeTooLong ? "結合後の問題文が文字数上限を超えます" : undefined}>上の問題文とマージ</button>}<button type="button" onClick={() => removeText(index, String(item.text))}>問題文 {number}を削除</button></div>
           </section>;
         }
@@ -139,8 +140,8 @@ export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange
       })}
       <button type="button" className="button secondary" onClick={addText}>＋ 問題文を追加</button>
     </fieldset>
-    <details><summary>保存済みの問題文を表示</summary><MathText source={node.body_text} /></details>
-    {automatic && <details><summary>自動解析された問題文を表示</summary><MathText source={automatic.body_text} /></details>}
+    <details><summary>保存済みの問題文を表示</summary><MarkdownMathText source={node.body_text} /></details>
+    {automatic && <details><summary>自動解析された問題文を表示</summary><MarkdownMathText source={automatic.body_text} /></details>}
     <details><summary>技術情報</summary><code>{node.stable_key}</code></details>
   </article>;
 }

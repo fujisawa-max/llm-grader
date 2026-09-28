@@ -1,4 +1,6 @@
 "use client";
+import { MarkdownMathText } from "@/components/MarkdownMathText";
+
 
 import Link from "next/link";
 import { MathText } from "@/components/MathText";
@@ -44,7 +46,7 @@ function QuestionReview({ item, testId, onChanged }: { item: GradingDetail["ques
     <p className="muted">{item.historical_grading_count > 0 ? `過去の採点履歴 ${item.historical_grading_count}件` : "過去の採点履歴はありません"}</p>{item.warnings.length > 0 && <div className="flag-list question-flags">{item.warnings.map((warning) => <TechnicalDetails label={friendlyWarning(warning)} key={warning}><code>{warning}</code></TechnicalDetails>)}</div>}
     <details><summary>答案・基準・履歴を表示</summary><div className="grading-evidence-grid">
       <Evidence title="答案の読み取り結果"><p className="muted">手書き答案を読み取り、採点に使用する形に整理した内容です。</p><pre className="answer-text">{item.student_answer.answer_text || "（本文なし）"}</pre>{item.student_answer.reconstruction && <TechnicalDetails label="技術情報"><p>Reconstruction v{String(item.student_answer.reconstruction.version)} / {String(item.student_answer.reconstruction.id)}</p></TechnicalDetails>}</Evidence>
-      <Evidence title="問題"><MathText source={item.question.context?.effective_text || item.question.text || "—"} /></Evidence>
+      <Evidence title="問題"><MarkdownMathText source={item.question.context?.effective_text || item.question.text || "—"} /></Evidence>
       <Evidence title="模範解答"><MathText className="answer-text" source={item.model_answer?.content || "—"} />{item.model_answer && <TechnicalDetails label="技術情報"><p>V{item.model_answer.version} / SHA {item.model_answer.sha256}</p></TechnicalDetails>}</Evidence>
       <Evidence title="採点基準"><Rubric entry={item.rubric?.entry} /></Evidence>
       <Evidence title="採点基準別の結果"><Criteria criteria={item.criteria} definitions={item.rubric?.entry?.criteria} /></Evidence>

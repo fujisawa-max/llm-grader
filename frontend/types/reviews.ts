@@ -1,12 +1,12 @@
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 export type BBox = [number, number, number, number];
-interface ContentBase { order: number; page_index?: number; bbox?: BBox; source_element_ids?: string[]; }
+interface ContentBase { order: number; page_index?: number; bbox?: BBox; source_element_ids?: string[]; source_slice?: [number, number, number]; }
 export type OrderedContent =
   | (ContentBase & { type: "text"; text: string; merged_source_segments?: Record<string, unknown>[] })
   | (ContentBase & { type: "formula_region" | "figure_region"; region_id: string })
   | (ContentBase & { type: "score_expression"; text?: string; expression_id?: string });
 // Unrecognized server items retain all fields and are rendered without editing.
-export interface UnknownContent { type: string; order: number; [key: string]: unknown; }
+export interface UnknownContent { type: string; order: number; text?: string; region_id?: string; source_slice?: [number, number, number]; merged_source_segments?: Record<string, unknown>[]; [key: string]: unknown; }
 export type ContentItem = OrderedContent | UnknownContent;
 export type Decision = { decision: string; teacher_transcription?: string; note?: string; evidence_identity?: Json };
 export type WarningResolution = { state: "unreviewed" | "acknowledged" | "resolved"; note?: string };
