@@ -91,4 +91,40 @@ test("save errors show full question paths and focus the fields before real API 
   expect((await rejected.json()).error).toMatchObject({
     code: "score_type_mismatch", details: { node_key: invalid.nodes[0].stable_key, field_key: "score" },
   });
+
+  const navigation = page.getByRole("navigation", { name: "設問構成" });
+  await navigation.getByRole("button").nth(0).click();
+  const originalValue = await page.getByLabel("問題文 1").inputValue();
+  await page.getByLabel("問題文 1").fill("未保存編集を保持する確認用テキスト");
+  await page.route(`**${apiPath}/revisions`, async route => {
+    const body = route.request().postDataJSON();
+    const sourceNode = body.snapshot.nodes.find((candidate: { stable_key: string }) => candidate.stable_key === saved.snapshot.nodes[0].stable_key);
+    const sourceItem = sourceNode.ordered_content.find((item: { source_slice?: number[] }) => item.source_slice);
+    const total = sourceItem.source_slice[2];
+    sourceItem.source_slice = [0, total + 1, total];
+    await route.continue({ postData: JSON.stringify(body) });
+  }, { times: 1 });
+  response = saveRequest();
+  await page.getByRole("button", { name: "変更を保存", exact: true }).click();
+  const internalResponse = await response;
+  expect(internalResponse.status()).toBe(422);
+  expect((await internalResponse.json()).error.details).toMatchObject({
+    category: "internal_consistency", node_key: saved.snapshot.nodes[0].stable_key,
+    field_key: "source_mapping", recoverable: false, recovery_action: "reload_latest",
+  });
+  const internal = page.locator(".review-internal-error");
+  await expect(internal).toContainText("問題1 > 元資料との対応情報");
+  await expect(internal).toContainText("直接修正しても解消しない");
+  await expect(internal).toContainText("技術情報");
+  await expect(page.locator(".review-save-errors")).toHaveCount(0);
+  await expect(page.getByLabel("問題文 1")).toHaveValue("未保存編集を保持する確認用テキスト");
+  page.once("dialog", async dialog => {
+    expect(dialog.message()).toContain("未保存編集は失われます");
+    await dialog.dismiss();
+  });
+  await internal.getByRole("button", { name: "最新の内容を再読み込み" }).click();
+  await expect(page.getByLabel("問題文 1")).toHaveValue("未保存編集を保持する確認用テキスト");
+  page.once("dialog", dialog => dialog.accept());
+  await internal.getByRole("button", { name: "最新の内容を再読み込み" }).click();
+  await expect(page.getByLabel("問題文 1")).toHaveValue(originalValue);
 });

@@ -5,7 +5,7 @@ import { ApiRequestError } from "@/lib/api/client";
 import { reviews, type ImportPlan, type Confirmation } from "@/lib/api/reviews";
 import type { Decision, ReviewDocument, ReviewNode, ReviewSnapshot, RevisionInfo } from "@/types/reviews";
 import { questionTypeLabel, reviewIssueLabel, reviewSaveIssueLabel, reviewStateLabel } from "@/lib/reviewLabels";
-import { reviewFieldErrors, reviewFieldId, validateReviewFields, type FieldIssues, type ReviewFieldError } from "@/lib/reviewValidation";
+import { buildQuestionPath, reviewFieldErrors, reviewFieldId, validateReviewFields, type FieldIssues, type ReviewFieldError } from "@/lib/reviewValidation";
 import { PdfPreview } from "./PdfPreview";
 import { NodeEditor } from "./NodeEditor";
 import { EvidencePanel } from "./EvidencePanel";
@@ -48,6 +48,7 @@ export function ReviewWorkspace({ id }: { id: string }) {
   const [regionId, setRegionId] = useState("");
   const [page, setPage] = useState(0);
   const [error, setError] = useState("");
+  const [internalError, setInternalError] = useState<{ path: string; code: string } | null>(null);
   const [fieldIssues, setFieldIssues] = useState<FieldIssues>({});
   const [busy, setBusy] = useState(false);
   const [history, setHistory] = useState<RevisionInfo[]>([]);
@@ -59,7 +60,7 @@ export function ReviewWorkspace({ id }: { id: string }) {
   const dirty = !!data && !!snapshot && JSON.stringify(snapshot) !== JSON.stringify(data.snapshot);
   const install = useCallback((d: ReviewDocument) => { setData(d); setSnapshot(structuredClone(d.snapshot)); setSelected(prev => prev || d.snapshot.nodes[0]?.stable_key || ""); }, []);
   const load = useCallback(async (revision?: number) => {
-    setBusy(true); setError(""); setFieldIssues({});
+    setBusy(true); setError(""); setFieldIssues({}); setInternalError(null);
     try { install(await reviews.get(id, revision)); setPlan(undefined); setSplitProposal(null); setConfirmation(await reviews.confirmation(id)); setHistorical(!!revision); setHistory((await reviews.history(id)).revisions); }
     catch (e) { setError(message(e)); } finally { setBusy(false); }
   }, [id, install]);
@@ -136,10 +137,18 @@ export function ReviewWorkspace({ id }: { id: string }) {
     setBusy(true); setError("");
     try {
       const d = mark ? await reviews.reviewed(id, document.current_revision) : await reviews.save(id, current, document.current_revision);
-      install(d); setFieldIssues({}); setHistory((await reviews.history(id)).revisions);
+      install(d); setFieldIssues({}); setInternalError(null); setHistory((await reviews.history(id)).revisions);
     } catch (e) {
       if (!mark && e instanceof ApiRequestError && e.status === 422) {
         const details = e.details && typeof e.details === "object" ? e.details as Record<string, unknown> : {};
+        if (details.category === "internal_consistency" || ["invalid_source_slice", "source_anchor_changed"].includes(e.code || "")) {
+          const key = typeof details.node_key === "string" && current.nodes.some(n => n.stable_key === details.node_key)
+            ? details.node_key : node.stable_key;
+          setFieldIssues({});
+          setInternalError({ path: buildQuestionPath(key, current.nodes), code: e.code || "internal_consistency_error" });
+          setError("");
+          return;
+        }
         const key = typeof details.node_key === "string" && current.nodes.some(n => n.stable_key === details.node_key)
           ? details.node_key : node.stable_key;
         const field = typeof details.field_key === "string" ? details.field_key : "node";
@@ -172,7 +181,8 @@ export function ReviewWorkspace({ id }: { id: string }) {
       setSplitMessage("既に小問があります。設問構成を確認し、必要なら手動で小問を追加してください。");
       return;
     }
-    const proposal = suggestSubquestions(node);
+    const sourceNode = document.automatic_nodes.find(entry => entry.stable_key === node.source_draft_stable_key);
+    const proposal = suggestSubquestions(node, sourceNode);
     setSplitProposal(proposal);
     setSplitMessage(proposal ? "" : "小問候補を検出できませんでした。必要なら「小問を追加」を使用してください。");
   }
@@ -188,7 +198,7 @@ export function ReviewWorkspace({ id }: { id: string }) {
     setSplitProposal({ ...splitProposal, placements, children, parentItems });
   }
   function applySplit() {
-    if (!splitProposal || !splitProposal.children.some(child => child.included)) return;
+    if (!splitProposal || !splitProposal.canApply || !splitProposal.children.some(child => child.included)) return;
     const copy = (items: ReviewNode["ordered_content"]) => items.map((item, order) => ({ ...item, order }));
     const retained = splitProposal.placements.filter(place => place.owner === null ||
       !splitProposal.children[place.owner].included).map(place => place.item);
@@ -279,6 +289,16 @@ export function ReviewWorkspace({ id }: { id: string }) {
         <span>{issue.message}</span>
       </li>)}</ol>
     </section>}
+    {internalError && <section className="review-internal-error" role="alert" aria-label="内部データの整合性エラー">
+      <strong>保存処理中に内部データの整合性エラーが発生しました。</strong>
+      <p><b>対象:</b> {internalError.path} &gt; 元資料との対応情報</p>
+      <p>元の問題用紙と、分割・結合した問題文の対応情報に不整合があります。入力欄を直接修正しても解消しない可能性があります。</p>
+      <p>現在の未保存編集は保持されています。最新の内容を読み込むと、この編集は破棄されます。</p>
+      <button type="button" disabled={busy} onClick={() => {
+        if (!dirty || window.confirm("最新の内容を読み込むと、現在の未保存編集は失われます。読み込みますか？")) void load();
+      }}>最新の内容を再読み込み</button>
+      <details><summary>技術情報</summary>{internalError.code}</details>
+    </section>}
     {current.state === "reviewed" && !historical && <p className="notice">確認済みのため編集操作は停止しています。内容を直す場合は「新しい修正版で編集を再開」を押してください。</p>}
     {historical && <p className="notice">過去の修正版は編集できません。最新版を再読み込みすると編集できます。</p>}
     <div className="review-toolbar">
@@ -325,7 +345,7 @@ export function ReviewWorkspace({ id }: { id: string }) {
             </section>)}
             {splitProposal.notes.map(note => <p className="notice" key={note}>{note}</p>)}
             {node.score_semantics === "direct" && <p className="notice">現在の大問への直接配点は小問へ自動配分しません。分割後に配点を確認してください。</p>}
-            <div className="review-toolbar"><button className="button" type="button" disabled={!splitProposal.children.some(child => child.included && child.label.trim())} onClick={applySplit}>この内容で分割</button><button type="button" onClick={() => setSplitProposal(null)}>キャンセル</button></div>
+            <div className="review-toolbar"><button className="button" type="button" disabled={!splitProposal.canApply || !splitProposal.children.some(child => child.included && child.label.trim())} onClick={applySplit}>この内容で分割</button><button type="button" onClick={() => setSplitProposal(null)}>キャンセル</button></div>
           </div>}
         </section>}
         <div className="review-toolbar">{[...new Set((document.source_regions[activeSourceKey || ""] || []).map(r => r.page_index))].map(p => <button key={p} onClick={() => { setPage(p); setRegionId(""); }}>元の問題用紙 {p + 1}ページ</button>)}</div>

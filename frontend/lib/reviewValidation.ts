@@ -28,6 +28,7 @@ export function reviewFieldId(nodeKey: string, fieldKey: string): string {
 }
 
 export function reviewFieldLabel(node: ReviewNode, fieldKey: string): string {
+  if (fieldKey === "source_mapping") return "元資料との対応情報";
   if (fieldKey === "label") return "設問名";
   if (fieldKey === "score") return "配点";
   if (fieldKey === "parent") return "設問の階層";

@@ -81,9 +81,17 @@ def router(db, root):
         try:
             return getattr(QuestionReviewService(s, root), method)(*args, **kw)
         except ReviewError as e:
+            internal_codes = {"invalid_source_slice", "source_anchor_changed", "source_identity_changed",
+                              "immutable_evidence_changed", "invalid_teacher_content"}
+            details = {"node_key": e.node_key, "field_key": e.field_key}
+            if e.status == 422:
+                category = "internal_consistency" if e.code in internal_codes else "user_validation"
+                details.update({"category": category,
+                                "recoverable": category != "internal_consistency",
+                                "recovery_action": "reload_latest" if category == "internal_consistency" else None})
             raise HTTPException(
                 e.status, detail={"error": {"code": e.code, "message": "レビューを処理できません",
-                                           "details": {"node_key": e.node_key, "field_key": e.field_key}}}
+                                           "details": details}}
             ) from e
 
     @r.post("/question-import-reviews/{review_id}/import-plan")

@@ -84,6 +84,8 @@ def _content_evidence(item):
 
 
 def _validate_content_provenance(nodes, source, by_key):
+    # source_slice indexes the immutable OCR text in the original draft, not
+    # the teacher-edited Markdown string currently shown in the textarea.
     groups = {key: [] for key in source}
     for node in nodes:
         owner = _source_owner(node, by_key)
@@ -117,43 +119,43 @@ def _validate_content_provenance(nodes, source, by_key):
                     try:
                         anchors.remove(anchor)
                     except ValueError:
-                        raise ReviewError("source_anchor_changed", 422) from None
+                        raise ReviewError("source_anchor_changed", 422, node_key=node["stable_key"], field_key="source_mapping") from None
                     present.append(anchor)
                     continue
                 evidence = _content_evidence(item)
                 if evidence or "source_slice" in item:
-                    refs.append((evidence, item.get("source_slice")))
+                    refs.append((evidence, item.get("source_slice"), node["stable_key"]))
                 segments = item.get("merged_source_segments", [])
                 if not isinstance(segments, list) or len(segments) > 2000:
-                    raise ReviewError("source_anchor_changed", 422)
+                    raise ReviewError("source_anchor_changed", 422, node_key=node["stable_key"], field_key="source_mapping")
                 for segment in segments:
                     if not isinstance(segment, dict) or not segment:
-                        raise ReviewError("source_anchor_changed", 422)
+                        raise ReviewError("source_anchor_changed", 422, node_key=node["stable_key"], field_key="source_mapping")
                     if segment.get("type") == "formula_region":
-                        formula_segments.append((segment, item["text"]))
+                        formula_segments.append((segment, item["text"], node["stable_key"]))
                     else:
-                        refs.append((_content_evidence(segment), segment.get("source_slice")))
+                        refs.append((_content_evidence(segment), segment.get("source_slice"), node["stable_key"]))
         original_text = [item for item in original if item.get("type") == "text"]
         used = [[] for _ in original_text]
-        for evidence, source_slice in refs:
+        for evidence, source_slice, target_node in refs:
             matches = [index for index, item in enumerate(original_text)
                        if _content_evidence(item) == evidence]
             if len(matches) != 1 or not evidence:
-                raise ReviewError("source_anchor_changed", 422)
+                raise ReviewError("source_anchor_changed", 422, node_key=target_node, field_key="source_mapping")
             index = matches[0]
             if source_slice is None:
                 if used[index]:
-                    raise ReviewError("source_anchor_changed", 422)
+                    raise ReviewError("source_anchor_changed", 422, node_key=target_node, field_key="source_mapping")
                 used[index].append(None)
             else:
                 if (not isinstance(source_slice, list) or len(source_slice) != 3 or
                         any(type(value) is not int for value in source_slice)):
-                    raise ReviewError("invalid_source_slice", 422)
+                    raise ReviewError("invalid_source_slice", 422, node_key=target_node, field_key="source_mapping")
                 start, end, total = source_slice
                 if not 0 <= start < end <= total == len(original_text[index]["text"]) or any(
                         old is None or old[2] != total or max(start, old[0]) < min(end, old[1])
                         for old in used[index]):
-                    raise ReviewError("invalid_source_slice", 422)
+                    raise ReviewError("invalid_source_slice", 422, node_key=target_node, field_key="source_mapping")
                 used[index].append(source_slice)
         for anchor in original:
             if anchor.get("type") != "formula_region":
@@ -165,20 +167,21 @@ def _validate_content_provenance(nodes, source, by_key):
                 if state in {"excluded", "merged_into_text"}:
                     raise ReviewError("formula_content_decision_mismatch", 422)
             elif state == "merged_into_text":
-                matches = [text for segment, text in formula_segments if segment == evidence]
+                matches = [text for segment, text, _ in formula_segments if segment == evidence]
                 latex = decision.get("teacher_transcription", "").strip()
                 if len(matches) != 1:
-                    raise ReviewError("source_anchor_changed", 422)
+                    target_node = next((node_key for segment, _, node_key in formula_segments if segment == evidence), owner)
+                    raise ReviewError("source_anchor_changed", 422, node_key=target_node, field_key="source_mapping")
                 if not latex or f"${latex}$" not in matches[0]:
                     raise ReviewError("merged_formula_text_missing", 422)
             elif state != "excluded":
                 raise ReviewError("formula_content_decision_mismatch", 422)
         if any(anchor.get("type") != "formula_region" for anchor in anchors):
-            raise ReviewError("source_anchor_changed", 422)
-        for segment, _ in formula_segments:
+            raise ReviewError("source_anchor_changed", 422, node_key=owner, field_key="source_mapping")
+        for segment, _, target_node in formula_segments:
             if not any({key: value for key, value in item.items() if key != "order"} == segment
                        and item.get("type") == "formula_region" for item in original):
-                raise ReviewError("source_anchor_changed", 422)
+                raise ReviewError("source_anchor_changed", 422, node_key=target_node, field_key="source_mapping")
 
 
 def validate_snapshot(snapshot, current, draft, pin, *, mark=False):

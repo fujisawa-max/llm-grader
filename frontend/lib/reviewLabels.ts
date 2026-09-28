@@ -75,8 +75,8 @@ const reviewSaveIssues: Record<string, string> = {
   invalid_ordered_content: "問題文・数式・図の内容と順序を確認してください。",
   teacher_transcription_required: "数式の内容を入力してください。",
   merged_formula_text_missing: "問題文に結合した数式を確認してください。",
-  source_anchor_changed: "元の問題用紙との対応を確認してください。",
-  invalid_source_slice: "元の問題文との対応範囲を確認してください。",
+  source_anchor_changed: "元資料との対応情報に不整合があります。入力欄を編集せず、最新の内容を再読み込みしてください。",
+  invalid_source_slice: "元資料との対応情報に不整合があります。入力欄を編集せず、最新の内容を再読み込みしてください。",
   duplicate_region_decision: "数式または図の確認結果が重複しています。",
   formula_content_decision_mismatch: "数式の内容と確認結果を一致させてください。",
 };

@@ -179,8 +179,10 @@ class ReviewTextEditingTests(unittest.TestCase):
         self.assertEqual(result["nodes"][2]["ordered_content"][0]["source_element_ids"], ["span-1"])
         forged = deepcopy(changed)
         forged["nodes"][2]["ordered_content"][0]["source_slice"] = [0, 5, len(source_text)]
-        with self.assertRaisesRegex(ReviewError, "invalid_source_slice"):
+        with self.assertRaisesRegex(ReviewError, "invalid_source_slice") as context:
             validate_snapshot(forged, current, self.draft, self.pin)
+        self.assertEqual(context.exception.node_key, "teacher-child-1")
+        self.assertEqual(context.exception.field_key, "source_mapping")
 
     def test_save_validation_identifies_node_and_field(self):
         invalid = deepcopy(self.current)
