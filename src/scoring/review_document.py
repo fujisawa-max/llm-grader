@@ -168,15 +168,22 @@ def validate_snapshot(snapshot, current, draft, pin, *, mark=False):
             raise ReviewError("invalid_ordered_content", 422)
         prior = previous.get(key, {})
         if original is not None:
-            # Teacher text may be inserted, removed, or moved.  The PDF-derived
-            # formula/figure/score anchors and text provenance remain immutable.
-            def anchors(rows):
-                return [{k: v for k, v in item.items() if k != "order"}
-                        for item in rows if item.get("type") != "text"]
-            if anchors(items) != anchors(original):
+            # Order is editable, but every non-text source anchor must still
+            # occur exactly once with its original provenance.
+            anchors = [{k: v for k, v in item.items() if k != "order"}
+                       for item in original if item.get("type") != "text"]
+            for item in items:
+                if item.get("type") != "text":
+                    anchor = {k: v for k, v in item.items() if k != "order"}
+                    try:
+                        anchors.remove(anchor)
+                    except ValueError:
+                        raise ReviewError("source_anchor_changed", 422) from None
+            if anchors:
                 raise ReviewError("source_anchor_changed", 422)
             def text_evidence(item):
-                return {k: v for k, v in item.items() if k not in {"type", "order", "text"}}
+                return {k: v for k, v in item.items()
+                        if k not in {"type", "order", "text", "merged_source_segments"}}
             available = [text_evidence(item) for item in original if item.get("type") == "text"]
         for i, item in enumerate(items):
             if type(item.get("order")) is not int or (items != prior.get("ordered_content") and item["order"] != i):
@@ -184,14 +191,18 @@ def validate_snapshot(snapshot, current, draft, pin, *, mark=False):
             if original is not None:
                 if item.get("type") == "text":
                     evidence = text_evidence(item)
+                    segments = item.get("merged_source_segments", [])
+                    if not isinstance(segments, list) or len(segments) > 2000 or any(
+                            not isinstance(segment, dict) or not segment for segment in segments):
+                        raise ReviewError("source_anchor_changed", 422)
                     # Only text items carrying PDF provenance are source-locked.
                     # Plain teacher-authored text uses no provenance and may be
                     # freely inserted, removed, or edited.
-                    if evidence:
+                    for segment in ([evidence] if evidence else []) + segments:
                         # Python structural equality treats JSON 60 and 60.0 as
                         # the same source coordinate after a browser round trip.
                         try:
-                            available.remove(evidence)
+                            available.remove(segment)
                         except ValueError:
                             raise ReviewError("source_anchor_changed", 422) from None
             elif item.get("type") != "text" or set(item) - {"type", "order", "text"}:

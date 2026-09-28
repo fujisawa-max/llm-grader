@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useRef, type ReactNode } from "react";
 import type { AutomaticNode, ContentItem, Region, ReviewNode } from "@/types/reviews";
 import { questionTypeLabel, reviewContentLabel, reviewDecisionLabel, scoreSemanticsLabel } from "@/lib/reviewLabels";
 import { MathText, MathPreview, mathInputHelp } from "@/components/MathText";
@@ -14,6 +14,7 @@ export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange
   const modified = automatic && (JSON.stringify(automatic.ordered_content) !== JSON.stringify(node.ordered_content) ||
     automatic.label.raw !== node.label.raw || automatic.score.points !== node.score_points || automatic.score.semantics !== node.score_semantics);
   const regionById = new Map(regions.map(region => [region.region_id, region]));
+  const mergeFocusIndex = useRef<number | null>(null);
   const updateItems = (items: ContentItem[]) => onChange({ ...node, ordered_content: items.map((item, order) => ({ ...item, order })) });
   const addText = () => updateItems([...node.ordered_content, { type: "text", order: node.ordered_content.length, text: "" }]);
   const removeText = (index: number, value: string) => {
@@ -25,6 +26,25 @@ export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange
     if (next < 0 || next >= node.ordered_content.length) return;
     const copy = [...node.ordered_content]; [copy[index], copy[next]] = [copy[next], copy[index]];
     updateItems(copy);
+  };
+  const mergeText = (index: number) => {
+    const previous = node.ordered_content[index - 1];
+    const current = node.ordered_content[index];
+    if (previous?.type !== "text" || current?.type !== "text" ||
+        typeof previous.text !== "string" || typeof current.text !== "string") return;
+    if (previous.text.length + current.text.length > 20000) return;
+    const evidence = (item: ContentItem) => Object.fromEntries(
+      Object.entries(item).filter(([key]) => !["type", "order", "text", "merged_source_segments"].includes(key))
+    );
+    const segments = [
+      ...((previous.merged_source_segments as Record<string, unknown>[] | undefined) || []),
+      ...(Object.keys(evidence(current)).length ? [evidence(current)] : []),
+      ...((current.merged_source_segments as Record<string, unknown>[] | undefined) || []),
+    ];
+    const joined = String(previous.text) + String(current.text);
+    const merged = { ...previous, text: joined, ...(segments.length ? { merged_source_segments: segments } : {}) };
+    mergeFocusIndex.current = index - 1;
+    updateItems(node.ordered_content.flatMap((item, at) => at === index - 1 ? [merged] : at === index ? [] : [item]));
   };
   const fieldIssues = (key: string) => issues[key] || [];
   const errors = (key: string) => fieldIssues(key).map((issue, index) => <small key={index} className="review-field-error" role="alert">{issue}</small>);
@@ -49,11 +69,15 @@ export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange
       {node.ordered_content.map((item, index) => {
         if (item.type === "text" && typeof item.text === "string") {
           const number = ++textNumber, key = `text:${index}`;
+          const preceding = node.ordered_content[index - 1];
+          const precedingText = preceding?.type === "text" && typeof preceding.text === "string" ? preceding.text : null;
+          const canMerge = precedingText !== null;
+          const mergeTooLong = precedingText !== null && precedingText.length + item.text.length > 20000;
           return <section className="review-content-item" id={`review-field-text-${index}`} key={`text-${index}`} data-content-type="text">
-            <label>問題文 {number} <span className="review-required" aria-label="必須">*</span><textarea aria-label={`問題文 ${number}`} maxLength={20000} value={item.text} aria-invalid={!!fieldIssues(key).length}
+            <label>問題文 {number} <span className="review-required" aria-label="必須">*</span><textarea ref={element => { if (element && mergeFocusIndex.current === index) { element.focus(); mergeFocusIndex.current = null; } }} aria-label={`問題文 ${number}`} maxLength={20000} value={item.text} aria-invalid={!!fieldIssues(key).length}
               onChange={e => updateItems(node.ordered_content.map((value, at) => at === index ? { ...value, text: e.target.value } : value))} /></label>
             {errors(key)}<small className="math-help">{mathInputHelp}</small><MathPreview source={item.text} />
-            <div className="review-content-actions"><button type="button" onClick={() => moveItem(index, -1)} disabled={index === 0}>上へ</button><button type="button" onClick={() => moveItem(index, 1)} disabled={index === node.ordered_content.length - 1}>下へ</button><button type="button" onClick={() => removeText(index, String(item.text))}>問題文 {number}を削除</button></div>
+            <div className="review-content-actions"><button type="button" onClick={() => moveItem(index, -1)} disabled={index === 0}>上へ</button><button type="button" onClick={() => moveItem(index, 1)} disabled={index === node.ordered_content.length - 1}>下へ</button>{canMerge && <button type="button" onClick={() => mergeText(index)} disabled={mergeTooLong} title={mergeTooLong ? "結合後の問題文が文字数上限を超えます" : undefined}>上の問題文とマージ</button>}<button type="button" onClick={() => removeText(index, String(item.text))}>問題文 {number}を削除</button></div>
           </section>;
         }
         if ((item.type === "formula_region" || item.type === "figure_region") && typeof item.region_id === "string") {
@@ -67,6 +91,7 @@ export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange
             <div className="review-content-heading"><h5>{reviewContentLabel(item.type)} {number}</h5><span className={decision?.decision && decision.decision !== "unreviewed" ? "review-confirmed" : "review-needs-check"}>{decision?.decision && decision.decision !== "unreviewed" ? reviewDecisionLabel(decision.decision) : "要確認"}</span></div>
             {formula ? <><label>数式 {number}のLaTeX<textarea aria-label={`数式 ${number}のLaTeX`} maxLength={20000} value={String(source)} aria-invalid={!!fieldIssues(key).length} onFocus={() => onRegion(regionId)} onChange={e => onChange({ ...node, formula_decisions: { ...node.formula_decisions, [regionId]: { ...decision, decision: "teacher_edit", teacher_transcription: e.target.value } } })} /></label>{errors(key)}<MathPreview source={String(source)} mathOnly /></> : <p className="muted">原問題用紙の図を確認し、確認結果を選択してください。</p>}
             <button type="button" onClick={() => onRegion(regionId)}>{formula ? "読み取り候補と確認方法を表示" : "図の原文と確認方法を表示"}</button>
+            <div className="review-content-actions"><button type="button" onClick={() => moveItem(index, -1)} disabled={index === 0}>上へ</button><button type="button" onClick={() => moveItem(index, 1)} disabled={index === node.ordered_content.length - 1}>下へ</button></div>
             {activeRegionId === regionId && renderEvidence?.(regionId)}
           </section>;
         }

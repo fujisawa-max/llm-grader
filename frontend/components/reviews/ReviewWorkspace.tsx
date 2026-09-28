@@ -166,6 +166,8 @@ export function ReviewWorkspace({ id }: { id: string }) {
       {dirty && <span>集計は保存済みの修正版の値です</span>}
     </div>
     {error && <p role="alert" className="error">{error}</p>}
+    {current.state === "reviewed" && !historical && <p className="notice">確認済みのため編集操作は停止しています。内容を直す場合は「新しい修正版で編集を再開」を押してください。</p>}
+    {historical && <p className="notice">過去の修正版は編集できません。最新版を再読み込みすると編集できます。</p>}
     <div className="review-toolbar">
       <button className="button" disabled={readonly || !dirty} onClick={() => save()}>変更を保存</button>
       <button className="button secondary" disabled={readonly || dirty} onClick={() => save(true)}>確認済みにする</button>

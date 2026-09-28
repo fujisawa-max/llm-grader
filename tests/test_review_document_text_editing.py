@@ -46,6 +46,35 @@ class ReviewTextEditingTests(unittest.TestCase):
         changed["nodes"][0]["ordered_content"][1]["region_id"] = "other"
         with self.assertRaisesRegex(ReviewError, "source_anchor_changed"):
             validate_snapshot(changed, self.current, self.draft, self.pin)
+
+    def test_formula_reorder_and_text_merge_preserve_both_sources(self):
+        second = {"type": "text", "order": 1, "text": "後半", "page_index": 0,
+                  "bbox": [60, 75, 285, 95], "source_element_ids": ["span-2"]}
+        self.draft["nodes"][0]["ordered_content"].insert(1, second)
+        for index, item in enumerate(self.draft["nodes"][0]["ordered_content"]):
+            item["order"] = index
+        current = initial_snapshot("draft-hash", self.draft, self.pin)
+        changed = deepcopy(current)
+        items = changed["nodes"][0]["ordered_content"]
+        # Move the formula past the trailing text, then merge two adjacent
+        # PDF-backed text spans without discarding the second span's evidence.
+        items[2], items[3] = items[3], items[2]
+        source = {k: v for k, v in items[1].items() if k not in {"type", "order", "text"}}
+        items[0]["text"] += items[1]["text"]
+        items[0]["merged_source_segments"] = [source]
+        del items[1]
+        for index, item in enumerate(items):
+            item["order"] = index
+        result = validate_snapshot(changed, current, self.draft, self.pin)
+        merged = result["nodes"][0]["ordered_content"][0]
+        self.assertEqual(merged["source_element_ids"], ["span-1"])
+        self.assertEqual(merged["merged_source_segments"][0]["source_element_ids"], ["span-2"])
+        self.assertEqual([item["type"] for item in result["nodes"][0]["ordered_content"]],
+                         ["text", "text", "formula_region"])
+        forged = deepcopy(result)
+        forged["nodes"][0]["ordered_content"][0]["merged_source_segments"][0]["source_element_ids"] = ["fake"]
+        with self.assertRaisesRegex(ReviewError, "source_anchor_changed"):
+            validate_snapshot(forged, result, self.draft, self.pin)
         changed = deepcopy(self.current)
         changed["nodes"][0]["ordered_content"].append({
             "type": "text", "order": 3, "text": "偽造", "page_index": 999})

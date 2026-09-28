@@ -2,7 +2,7 @@ export type Json = null | boolean | number | string | Json[] | { [key: string]: 
 export type BBox = [number, number, number, number];
 interface ContentBase { order: number; page_index?: number; bbox?: BBox; source_element_ids?: string[]; }
 export type OrderedContent =
-  | (ContentBase & { type: "text"; text: string })
+  | (ContentBase & { type: "text"; text: string; merged_source_segments?: Record<string, unknown>[] })
   | (ContentBase & { type: "formula_region" | "figure_region"; region_id: string })
   | (ContentBase & { type: "score_expression"; text?: string; expression_id?: string });
 // Unrecognized server items retain all fields and are rendered without editing.
