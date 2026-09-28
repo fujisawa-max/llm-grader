@@ -30,7 +30,7 @@ function ordered(nodes: ReviewNode[], parent: string | null = null, depth = 0): 
 function message(e: unknown) {
   if (e instanceof ApiRequestError && e.status === 409 && e.code === "revision_conflict") return "別の画面で新しい修正版が保存されています。未保存内容を控え、最新の内容を再読み込みしてください。";
   if (e instanceof ApiRequestError) {
-    if (e.status === 422) return "入力内容を確認してください。";
+    if (e.status === 422) return `保存できませんでした。${reviewIssueLabel(e.code || "validation_error")}。該当する設問の入力欄を確認してください。`;
     if (e.status === 403) return "この操作を行う権限がありません。";
     if (e.status === 404) return "確認内容が見つかりませんでした。";
     return "処理に失敗しました。再試行してください。";
@@ -45,6 +45,7 @@ export function ReviewWorkspace({ id }: { id: string }) {
   const [regionId, setRegionId] = useState("");
   const [page, setPage] = useState(0);
   const [error, setError] = useState("");
+  const [fieldIssues, setFieldIssues] = useState<Record<string, Record<string, string[]>>>({});
   const [busy, setBusy] = useState(false);
   const [history, setHistory] = useState<RevisionInfo[]>([]);
   const [historical, setHistorical] = useState(false);
@@ -53,7 +54,7 @@ export function ReviewWorkspace({ id }: { id: string }) {
   const dirty = !!data && !!snapshot && JSON.stringify(snapshot) !== JSON.stringify(data.snapshot);
   const install = useCallback((d: ReviewDocument) => { setData(d); setSnapshot(structuredClone(d.snapshot)); setSelected(prev => prev || d.snapshot.nodes[0]?.stable_key || ""); }, []);
   const load = useCallback(async (revision?: number) => {
-    setBusy(true); setError("");
+    setBusy(true); setError(""); setFieldIssues({});
     try { install(await reviews.get(id, revision)); setPlan(undefined); setConfirmation(await reviews.confirmation(id)); setHistorical(!!revision); setHistory((await reviews.history(id)).revisions); }
     catch (e) { setError(message(e)); } finally { setBusy(false); }
   }, [id, install]);
@@ -73,7 +74,7 @@ export function ReviewWorkspace({ id }: { id: string }) {
   const readonly = historical || busy || current.state === "reviewed";
   const region = document.regions.find(r => r.region_id === regionId);
   const owner = region && current.nodes.find(n => n.source_draft_stable_key === region.assigned_question_key);
-  function updateNode(next: ReviewNode) { setSnapshot({ ...current, nodes: current.nodes.map(n => n.review_node_id === next.review_node_id ? next : n) }); }
+  function updateNode(next: ReviewNode) { setFieldIssues(previous => ({ ...previous, [next.stable_key]: {} })); setSnapshot({ ...current, nodes: current.nodes.map(n => n.review_node_id === next.review_node_id ? next : n) }); }
   function chooseNode(n: ReviewNode) {
     setSelected(n.stable_key); setRegionId("");
     const first = n.source_draft_stable_key && document.source_regions[n.source_draft_stable_key]?.[0];
@@ -89,10 +90,28 @@ export function ReviewWorkspace({ id }: { id: string }) {
     updateNode({ ...owner, [field]: { ...owner[field], [regionId]: d } });
   }
   async function save(mark = false) {
+    if (!mark) {
+      const found: Record<string, Record<string, string[]>> = {};
+      for (const candidate of current.nodes.filter(item => item.included)) {
+        const fields: Record<string, string[]> = {};
+        if (!candidate.label.raw.trim()) fields.label = ["設問番号・見出しを入力してください。"];
+        candidate.ordered_content.forEach((item, index) => { if (item.type === "text" && typeof item.text === "string" && !item.text.trim()) fields[`text:${index}`] = ["問題文が空です。不要な項目は削除してください。"] });
+        if (["direct", "each_child"].includes(candidate.score_semantics) && candidate.score_points === null) fields.score = ["配点を入力してください。"];
+        for (const [key, value] of Object.entries(candidate.formula_decisions)) if (value.decision === "teacher_edit" && !value.teacher_transcription?.trim()) fields[`formula:${key}`] = ["修正した数式を入力してください。"];
+        if (Object.keys(fields).length) found[candidate.stable_key] = fields;
+      }
+      if (Object.keys(found).length) {
+        setFieldIssues(found);
+        const first = current.nodes.find(candidate => found[candidate.stable_key]);
+        if (first) { setSelected(first.stable_key); setRegionId(""); }
+        setError(`保存前に確認が必要な入力欄が ${Object.values(found).reduce((sum, fields) => sum + Object.keys(fields).length, 0)} 件あります。${first?.label.raw || "設問"}の印が付いた項目を確認してください。`);
+        return;
+      }
+    }
     setBusy(true); setError("");
     try {
       const d = mark ? await reviews.reviewed(id, document.current_revision) : await reviews.save(id, current, document.current_revision);
-      install(d); setHistory((await reviews.history(id)).revisions);
+      install(d); setFieldIssues({}); setHistory((await reviews.history(id)).revisions);
     } catch (e) { setError(message(e)); } finally { setBusy(false); }
   }
   async function prepareImport() { setBusy(true); setError(""); try { setPlan(await reviews.importPlan(id)); } catch (e) { setError(message(e)); } finally { setBusy(false); } }
@@ -116,12 +135,32 @@ export function ReviewWorkspace({ id }: { id: string }) {
   }
   const counts = document.summary;
   const activeRegions = document.regions.filter(r => r.assigned_question_key === node.source_draft_stable_key);
+  function warningTarget(warning: typeof document.warnings[number]) {
+    const relevant = document.regions.find(r => r.region_id === warning.source_id);
+    const target = current.nodes.find(n => n.source_draft_stable_key === (relevant?.assigned_question_key || warning.owner || warning.source_id));
+    if (relevant && target) {
+      const kind = relevant.region_type === "formula" ? "formula_region" : "figure_region";
+      const number = target.ordered_content.filter(item => item.type === kind).findIndex(item => "region_id" in item && item.region_id === relevant.region_id) + 1;
+      return `${target.label.raw}・${relevant.region_type === "formula" ? "数式" : "図"} ${Math.max(1, number)}`;
+    }
+    return target?.label.raw || (warning.scope === "draft" ? "試験全体" : "該当する設問");
+  }
+  function jumpToWarning(warning: typeof document.warnings[number]) {
+    const relevant = document.regions.find(r => r.region_id === warning.source_id);
+    const target = current.nodes.find(n => n.source_draft_stable_key === (relevant?.assigned_question_key || warning.owner || warning.source_id));
+    if (target) chooseNode(target);
+    if (relevant) chooseRegion(relevant.region_id);
+    window.setTimeout(() => {
+      const element = relevant ? window.document.getElementById(`review-field-region-${relevant.region_id}`) : window.document.querySelector("[aria-label='選択問題エディタ']");
+      element?.scrollIntoView({ block: "center", behavior: "smooth" });
+    }, 50);
+  }
   return <div className="teacher-review">
     <Link href={`/tests/${document.test_id}?section=questions`}>← 試験の問題画面に戻る</Link>
     <header className="review-toolbar"><h1>教師による確認</h1><span className="badge badge-draft">{reviewStateLabel(current.state)}</span><span>修正版 {document.revision_number}</span>{dirty && <strong className="warn">未保存の変更</strong>}</header>
     <p className="muted">元の問題用紙と自動解析結果を比較し、設問構造や内容を確認・修正します。ここでの確認は、設問の最終確定とは別の操作です。</p>
     <div className="review-summary" aria-label="確認状況">
-      <span>設問 {counts.included_questions} / 除外 {counts.excluded_questions}</span><span>警告 未確認 {counts.unresolved_warnings}</span>
+      <span>設問 {counts.included_questions} / 除外 {counts.excluded_questions}</span><button type="button" onClick={() => { const first = document.warnings.find(w => (current.warning_states?.[w.id]?.state || "unreviewed") === "unreviewed"); if (first) jumpToWarning(first); }}>警告 未確認 {counts.unresolved_warnings} · 対象へ移動</button>
       <span>数式 確認済み {counts.formula_reviewed} / 未確認 {counts.formula_unreviewed}</span><span>図 確認済み {counts.figure_reviewed} / 未確認 {counts.figure_unreviewed}</span>
       <span>配点 未解決 {counts.score_unresolved} · 合計点候補 {counts.total_points_candidate ?? "要確認"}</span>
       {dirty && <span>集計は保存済みの修正版の値です</span>}
@@ -148,11 +187,11 @@ export function ReviewWorkspace({ id }: { id: string }) {
         </nav><div className="review-toolbar"><button disabled={readonly} onClick={() => add(false)}>大問を追加</button><button disabled={readonly} onClick={() => add(true)}>小問を追加</button></div></section>
         <div className="review-toolbar">{[...new Set((document.source_regions[node.source_draft_stable_key || ""] || []).map(r => r.page_index))].map(p => <button key={p} onClick={() => { setPage(p); setRegionId(""); }}>元の問題用紙 {p + 1}ページ</button>)}</div>
         <NodeEditor node={node} nodes={current.nodes} automatic={document.automatic_nodes.find(n => n.stable_key === node.source_draft_stable_key)} regions={activeRegions}
-          readonly={readonly} onChange={updateNode} onParent={reparent} onMove={move} onRegion={chooseRegion} />
-        {region && <EvidencePanel key={regionId} id={id} regionId={regionId} ownerLabel={owner?.label.raw || "未割当"} readonly={readonly || !owner} onDecision={decision}
-          decision={owner?.[region.region_type === "formula" ? "formula_decisions" : "figure_decisions"][regionId] || { decision: "unreviewed" }} />}
+          readonly={readonly} onChange={updateNode} onParent={reparent} onMove={move} onRegion={chooseRegion} activeRegionId={regionId} issues={fieldIssues[node.stable_key]}
+          renderEvidence={key => region?.region_id === key && owner ? <EvidencePanel key={key} id={id} regionId={key} ownerLabel={owner.label.raw || "未割当"} readonly={readonly} onDecision={decision}
+            decision={owner[region.region_type === "formula" ? "formula_decisions" : "figure_decisions"][key] || { decision: "unreviewed" }} /> : null} />
         <WarningPanel warnings={document.warnings} states={current.warning_states || {}} readonly={readonly}
-          onChange={(key, resolution) => setSnapshot({ ...current, warning_states: { ...current.warning_states, [key]: resolution } })} />
+          onChange={(key, resolution) => setSnapshot({ ...current, warning_states: { ...current.warning_states, [key]: resolution } })} targetLabel={warningTarget} onJump={jumpToWarning} />
       </div>
     </div>
     <section className="panel section"><h2>変更履歴</h2>{historical && <p className="notice">過去の修正版を読み取り専用で表示しています。</p>}

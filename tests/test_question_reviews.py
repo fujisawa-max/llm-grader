@@ -108,6 +108,33 @@ class ReviewApiTests(unittest.TestCase):
         old = self.client.get(self.url + "/revisions/1").json()
         self.assertNotIn("Teacher text", old["snapshot"]["nodes"][0]["body_text"])
 
+    def test_teacher_text_can_be_inserted_removed_and_reordered_without_changing_source_anchors(self):
+        snap = deepcopy(self.data["snapshot"])
+        node = next(n for n in snap["nodes"] if any(i["type"] == "text" for i in n["ordered_content"]))
+        original_anchors = [{k: v for k, v in i.items() if k != "order"}
+                            for i in node["ordered_content"] if i["type"] != "text"]
+        node["ordered_content"].insert(0, {"type": "text", "order": 0, "text": "追加した問題文"})
+        for index, item in enumerate(node["ordered_content"]):
+            item["order"] = index
+        node_key = node["stable_key"]
+        self.save(snap)
+        self.assertEqual(next(n for n in self.data["snapshot"]["nodes"] if n["stable_key"] == node_key)
+                         ["ordered_content"][0]["text"], "追加した問題文")
+        snap = deepcopy(self.data["snapshot"])
+        node = next(n for n in snap["nodes"] if n["stable_key"] == node["stable_key"])
+        node["ordered_content"] = [i for i in node["ordered_content"]
+                                   if i.get("text") != "追加した問題文"]
+        for index, item in enumerate(node["ordered_content"]):
+            item["order"] = index
+        self.save(snap)
+        self.assertEqual([{k: v for k, v in i.items() if k != "order"}
+                          for i in node["ordered_content"] if i["type"] != "text"], original_anchors)
+        if original_anchors:
+            snap = deepcopy(self.data["snapshot"])
+            node = next(n for n in snap["nodes"] if n["stable_key"] == node["stable_key"])
+            next(i for i in node["ordered_content"] if i["type"] != "text")["region_id"] = "forged"
+            self.save(snap, expected=422)
+
     def test_formula_figure_warning_decisions_and_source_immutability(self):
         for decision in ("use_native", "use_vision", "teacher_edit"):
             snap = self.ready()

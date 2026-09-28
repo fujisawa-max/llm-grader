@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { reviews } from "@/lib/api/reviews";
 import type { Decision, Json, RegionEvidence } from "@/types/reviews";
 import { reviewDecisionLabel, reviewIssueLabel } from "@/lib/reviewLabels";
+import { MathPreview } from "@/components/MathText";
 
 export function EvidencePanel({ id, regionId, ownerLabel, decision, readonly, onDecision }: {
   id: string; regionId: string; ownerLabel: string; decision: Decision; readonly: boolean; onDecision: (d: Decision) => void;
@@ -70,7 +71,7 @@ export function EvidencePanel({ id, regionId, ownerLabel, decision, readonly, on
           : <><option value="accepted_as_evidence">{reviewDecisionLabel("accepted_as_evidence")}</option><option value="needs_correction">{reviewDecisionLabel("needs_correction")}</option></>}
       </select></label>
       {formula && decision.decision === "teacher_edit" && <label>教師が確認した数式<textarea aria-label="教師が確認した数式" maxLength={20000} value={decision.teacher_transcription || ""}
-        onChange={e => onDecision({ ...decision, teacher_transcription: e.target.value })} /><small>入力内容を修正版に保存します。</small></label>}
+        onChange={e => onDecision({ ...decision, teacher_transcription: e.target.value })} /><small>入力内容を修正版に保存します。</small><MathPreview source={decision.teacher_transcription || ""} mathOnly /></label>}
       <label>教師メモ<textarea aria-label="教師メモ" maxLength={2000} value={decision.note || ""} onChange={e => onDecision({ ...decision, note: e.target.value })} /></label>
     </fieldset>
     <details><summary>技術情報</summary><pre>{JSON.stringify({ region_id: regionId, bbox: region.bbox, source_elements: region.source_element_ids, pin }, null, 2)}</pre></details>

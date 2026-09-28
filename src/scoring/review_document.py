@@ -164,23 +164,41 @@ def validate_snapshot(snapshot, current, draft, pin, *, mark=False):
         items = n.get("ordered_content")
         if not isinstance(items, list) or len(items) > 2000:
             raise ReviewError("invalid_ordered_content", 422)
-        if original is not None and len(items) != len(original):
-            raise ReviewError("source_anchor_changed", 422)
+        if any(not isinstance(item, dict) for item in items):
+            raise ReviewError("invalid_ordered_content", 422)
+        prior = previous.get(key, {})
+        if original is not None:
+            # Teacher text may be inserted, removed, or moved.  The PDF-derived
+            # formula/figure/score anchors and text provenance remain immutable.
+            def anchors(rows):
+                return [{k: v for k, v in item.items() if k != "order"}
+                        for item in rows if item.get("type") != "text"]
+            if anchors(items) != anchors(original):
+                raise ReviewError("source_anchor_changed", 422)
+            def text_evidence(item):
+                return {k: v for k, v in item.items() if k not in {"type", "order", "text"}}
+            available = [text_evidence(item) for item in original if item.get("type") == "text"]
         for i, item in enumerate(items):
-            if not isinstance(item, dict):
+            if type(item.get("order")) is not int or (items != prior.get("ordered_content") and item["order"] != i):
                 raise ReviewError("invalid_ordered_content", 422)
             if original is not None:
-                old = original[i]
-                ignored = {"text"} if old["type"] == "text" else set()
-                if {k: v for k, v in item.items() if k not in ignored} != {
-                        k: v for k, v in old.items() if k not in ignored}:
-                    raise ReviewError("source_anchor_changed", 422)
+                if item.get("type") == "text":
+                    evidence = text_evidence(item)
+                    # Only text items carrying PDF provenance are source-locked.
+                    # Plain teacher-authored text uses no provenance and may be
+                    # freely inserted, removed, or edited.
+                    if evidence:
+                        # Python structural equality treats JSON 60 and 60.0 as
+                        # the same source coordinate after a browser round trip.
+                        try:
+                            available.remove(evidence)
+                        except ValueError:
+                            raise ReviewError("source_anchor_changed", 422) from None
             elif item.get("type") != "text" or set(item) - {"type", "order", "text"}:
                 raise ReviewError("invalid_teacher_content", 422)
             if item.get("type") == "text":
                 _text(item.get("text"))
         # Preserve the historical body field until ordered text is actually edited.
-        prior = previous.get(key, {})
         if items != prior.get("ordered_content"):
             n["body_text"] = "\n".join(i["text"] for i in items if i.get("type") == "text")
         elif key in previous and n["body_text"] != prior["body_text"]:

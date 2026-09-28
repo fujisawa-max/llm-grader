@@ -57,3 +57,16 @@ const reviewIssues: Record<string, string> = {
 };
 
 export const reviewIssueLabel = (code: string) => reviewIssues[code.split(":", 1)[0]] ?? "内容を確認してください";
+
+const reviewIssueReasons: Record<string, string> = {
+  ambiguous_score: "配点の読み取り方が一つに定まりません。原問題用紙と照合してください。",
+  score_conflict: "親設問の配点と小問の合計が一致しません。配点欄を確認してください。",
+  formula_unresolved: "数式の読み取り結果がまだ確定していません。原問題用紙と照合してください。",
+  native_formula_requires_teacher_edit: "PDFから得た数式をそのまま確定できません。正しい式を入力してください。",
+  figure_unresolved: "図の内容について確認結果が未選択です。原問題用紙を確認してください。",
+  reasoning_output_requires_review: "画像解析の読み取り候補を教師が確認する必要があります。",
+  native_vision_disagreement: "PDFと画像解析の候補が異なります。原問題用紙を基準に確認してください。",
+  total_unresolved: "設問の配点から合計点を確定できません。各設問の配点を確認してください。",
+};
+
+export const reviewIssueReason = (code: string) => reviewIssueReasons[code.split(":", 1)[0]] ?? "自動解析で確認が必要と判定されました。原問題用紙と照合してください。";
