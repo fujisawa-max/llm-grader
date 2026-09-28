@@ -2,7 +2,9 @@
 from copy import deepcopy
 import unittest
 
-from scoring.review_document import ReviewError, initial_snapshot, validate_snapshot
+from scoring.review_document import (
+    ReviewError, initial_snapshot, review_summary, validate_snapshot, warning_catalog,
+)
 
 
 class ReviewTextEditingTests(unittest.TestCase):
@@ -75,6 +77,65 @@ class ReviewTextEditingTests(unittest.TestCase):
         forged["nodes"][0]["ordered_content"][0]["merged_source_segments"][0]["source_element_ids"] = ["fake"]
         with self.assertRaisesRegex(ReviewError, "source_anchor_changed"):
             validate_snapshot(forged, result, self.draft, self.pin)
+
+    def test_formula_delete_records_exclusion_without_removing_source_region(self):
+        changed = deepcopy(self.current)
+        node = changed["nodes"][0]
+        node["ordered_content"] = [
+            {**item, "order": index} for index, item in enumerate(
+                item for item in node["ordered_content"] if item.get("region_id") != "f1")]
+        node["formula_decisions"]["f1"] = {"decision": "excluded"}
+        result = validate_snapshot(changed, self.current, self.draft, self.pin)
+        self.assertEqual(result["nodes"][0]["formula_decisions"]["f1"]["decision"], "excluded")
+        self.assertEqual(self.draft["formula_regions"][0]["region_id"], "f1")
+        self.assertEqual(review_summary(result, self.draft, self.pin)["formula_unreviewed"], 0)
+        reviewed = deepcopy(result)
+        reviewed["state"], reviewed["reviewed"] = "reviewed", True
+        validate_snapshot(reviewed, result, self.draft, self.pin, mark=True)
+        forged = deepcopy(changed)
+        forged["nodes"][0]["formula_decisions"]["f1"] = {"decision": "use_native"}
+        with self.assertRaisesRegex(ReviewError, "formula_content_decision_mismatch"):
+            validate_snapshot(forged, self.current, self.draft, self.pin)
+
+    def test_formula_merge_requires_original_anchor_and_inline_text(self):
+        changed = deepcopy(self.current)
+        node = changed["nodes"][0]
+        first, formula, last = node["ordered_content"]
+        anchor = {key: value for key, value in formula.items() if key != "order"}
+        node["ordered_content"] = [
+            {**first, "text": r"元の問題文$\frac{1}{3}$",
+             "merged_source_segments": [anchor]},
+            {**last, "order": 1},
+        ]
+        node["formula_decisions"]["f1"] = {
+            "decision": "merged_into_text", "teacher_transcription": r"\frac{1}{3}"}
+        result = validate_snapshot(changed, self.current, self.draft, self.pin)
+        self.assertEqual(result["nodes"][0]["ordered_content"][0]["merged_source_segments"], [anchor])
+        self.assertEqual(review_summary(result, self.draft, self.pin)["formula_unreviewed"], 0)
+        reviewed = deepcopy(result)
+        reviewed["state"], reviewed["reviewed"] = "reviewed", True
+        validate_snapshot(reviewed, result, self.draft, self.pin, mark=True)
+        forged = deepcopy(changed)
+        forged["nodes"][0]["ordered_content"][0]["merged_source_segments"][0]["region_id"] = "fake"
+        with self.assertRaisesRegex(ReviewError, "source_anchor_changed"):
+            validate_snapshot(forged, self.current, self.draft, self.pin)
+        missing_text = deepcopy(changed)
+        missing_text["nodes"][0]["ordered_content"][0]["text"] = "元の問題文"
+        with self.assertRaisesRegex(ReviewError, "merged_formula_text_missing"):
+            validate_snapshot(missing_text, self.current, self.draft, self.pin)
+
+    def test_formula_warning_remains_traceable_after_exclusion(self):
+        self.draft["formula_regions"][0]["review_flags"] = ["formula_low_confidence"]
+        before = warning_catalog(self.draft, self.pin)
+        changed = deepcopy(self.current)
+        node = changed["nodes"][0]
+        node["ordered_content"] = [
+            {**item, "order": index} for index, item in enumerate(
+                item for item in node["ordered_content"] if item.get("region_id") != "f1")]
+        node["formula_decisions"]["f1"] = {"decision": "excluded"}
+        result = validate_snapshot(changed, self.current, self.draft, self.pin)
+        self.assertEqual(warning_catalog(self.draft, self.pin), before)
+        self.assertEqual(review_summary(result, self.draft, self.pin)["unresolved_warnings"], 1)
         changed = deepcopy(self.current)
         changed["nodes"][0]["ordered_content"].append({
             "type": "text", "order": 3, "text": "偽造", "page_index": 999})

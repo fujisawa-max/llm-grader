@@ -172,14 +172,35 @@ def validate_snapshot(snapshot, current, draft, pin, *, mark=False):
             # occur exactly once with its original provenance.
             anchors = [{k: v for k, v in item.items() if k != "order"}
                        for item in original if item.get("type") != "text"]
+            present_anchors = []
             for item in items:
                 if item.get("type") != "text":
                     anchor = {k: v for k, v in item.items() if k != "order"}
                     try:
                         anchors.remove(anchor)
+                        present_anchors.append(anchor)
                     except ValueError:
                         raise ReviewError("source_anchor_changed", 422) from None
-            if anchors:
+            merged_formulas = []
+            formula_decisions = n.get("formula_decisions", {})
+            if not isinstance(formula_decisions, dict):
+                raise ReviewError("invalid_decision", 422)
+            for anchor in original:
+                if anchor.get("type") != "formula_region":
+                    continue
+                evidence = {k: v for k, v in anchor.items() if k != "order"}
+                entry = formula_decisions.get(anchor["region_id"], {})
+                if not isinstance(entry, dict):
+                    raise ReviewError("invalid_region_decision", 422)
+                decision = entry.get("decision")
+                if evidence in present_anchors:
+                    if decision in {"excluded", "merged_into_text"}:
+                        raise ReviewError("formula_content_decision_mismatch", 422)
+                elif decision == "merged_into_text":
+                    merged_formulas.append(evidence)
+                elif decision != "excluded":
+                    raise ReviewError("formula_content_decision_mismatch", 422)
+            if any(anchor.get("type") != "formula_region" for anchor in anchors):
                 raise ReviewError("source_anchor_changed", 422)
             def text_evidence(item):
                 return {k: v for k, v in item.items()
@@ -202,13 +223,22 @@ def validate_snapshot(snapshot, current, draft, pin, *, mark=False):
                         # Python structural equality treats JSON 60 and 60.0 as
                         # the same source coordinate after a browser round trip.
                         try:
-                            available.remove(segment)
+                            if segment.get("type") == "formula_region":
+                                merged_formulas.remove(segment)
+                                formula_source = formula_decisions.get(
+                                    segment.get("region_id"), {}).get("teacher_transcription", "").strip()
+                                if not formula_source or f"${formula_source}$" not in item.get("text", ""):
+                                    raise ReviewError("merged_formula_text_missing", 422)
+                            else:
+                                available.remove(segment)
                         except ValueError:
                             raise ReviewError("source_anchor_changed", 422) from None
             elif item.get("type") != "text" or set(item) - {"type", "order", "text"}:
                 raise ReviewError("invalid_teacher_content", 422)
             if item.get("type") == "text":
                 _text(item.get("text"))
+        if original is not None and merged_formulas:
+            raise ReviewError("formula_provenance_missing", 422)
         # Preserve the historical body field until ordered text is actually edited.
         if items != prior.get("ordered_content"):
             n["body_text"] = "\n".join(i["text"] for i in items if i.get("type") == "text")
@@ -240,7 +270,8 @@ def validate_snapshot(snapshot, current, draft, pin, *, mark=False):
                 raise ReviewError("each_child_requires_children", 422)
     pinned = {p["region_id"]: p for p in pin.get("results", [])}
     for n in nodes:
-        for kind, allowed in (("formula", {"unreviewed", "use_native", "use_vision", "teacher_edit"}),
+        for kind, allowed in (("formula", {"unreviewed", "use_native", "use_vision", "teacher_edit",
+                                           "excluded", "merged_into_text"}),
                               ("figure", {"unreviewed", "accepted_as_evidence", "needs_correction"})):
             decisions = n.get(f"{kind}_decisions", {})
             if not isinstance(decisions, dict):
@@ -264,6 +295,12 @@ def validate_snapshot(snapshot, current, draft, pin, *, mark=False):
                     raise ReviewError("vision_evidence_missing", 422)
                 if decision == "teacher_edit" and not d.get("teacher_transcription", "").strip():
                     raise ReviewError("teacher_transcription_required", 422)
+                if decision == "merged_into_text":
+                    formula_source = d.get("teacher_transcription", "").strip()
+                    if not formula_source or not any(
+                            item.get("type") == "text" and f"${formula_source}$" in item.get("text", "")
+                            for item in n["ordered_content"]):
+                        raise ReviewError("merged_formula_text_missing", 422)
                 identity = {"native_sha256": canonical_hash(owned[rid]),
                             "vision_result_id": vision.get("result_id"),
                             "normalized_sha256": vision.get("normalized_sha256"),

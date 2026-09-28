@@ -2,6 +2,7 @@ import { useRef, type ReactNode } from "react";
 import type { AutomaticNode, ContentItem, Region, ReviewNode } from "@/types/reviews";
 import { questionTypeLabel, reviewContentLabel, reviewDecisionLabel, scoreSemanticsLabel } from "@/lib/reviewLabels";
 import { MathText, MathPreview, mathInputHelp } from "@/components/MathText";
+import { inlineFormulaSource } from "@/lib/formulaMerge";
 
 export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange, onParent, onMove, onRegion, activeRegionId, renderEvidence, issues = {} }: {
   node: ReviewNode; nodes: ReviewNode[]; automatic?: AutomaticNode; regions: Region[]; readonly: boolean;
@@ -46,6 +47,34 @@ export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange
     mergeFocusIndex.current = index - 1;
     updateItems(node.ordered_content.flatMap((item, at) => at === index - 1 ? [merged] : at === index ? [] : [item]));
   };
+  const removeFormula = (index: number, regionId: string) => {
+    if (!window.confirm("この数式を問題内容から削除しますか？ 元の問題用紙は残ります。")) return;
+    onChange({ ...node,
+      ordered_content: node.ordered_content.filter((_, at) => at !== index).map((item, order) => ({ ...item, order })),
+      formula_decisions: { ...node.formula_decisions,
+        [regionId]: { ...node.formula_decisions[regionId], decision: "excluded" } },
+    });
+  };
+  const mergeFormula = (index: number, regionId: string, source: string) => {
+    const previous = node.ordered_content[index - 1];
+    const formula = node.ordered_content[index];
+    const latex = inlineFormulaSource(source);
+    if (previous?.type !== "text" || typeof previous.text !== "string" ||
+        formula?.type !== "formula_region" || !latex || previous.text.length + latex.length + 2 > 20000) return;
+    const anchor = Object.fromEntries(Object.entries(formula).filter(([key]) => key !== "order"));
+    const segments = [
+      ...(Array.isArray(previous.merged_source_segments) ? previous.merged_source_segments : []),
+      anchor,
+    ];
+    const merged = { ...previous, text: `${previous.text}$${latex}$`, merged_source_segments: segments };
+    mergeFocusIndex.current = index - 1;
+    onChange({ ...node,
+      ordered_content: node.ordered_content.flatMap((item, at) => at === index - 1 ? [merged] : at === index ? [] : [item])
+        .map((item, order) => ({ ...item, order })),
+      formula_decisions: { ...node.formula_decisions,
+        [regionId]: { ...node.formula_decisions[regionId], decision: "merged_into_text", teacher_transcription: latex } },
+    });
+  };
   const fieldIssues = (key: string) => issues[key] || [];
   const errors = (key: string) => fieldIssues(key).map((issue, index) => <small key={index} className="review-field-error" role="alert">{issue}</small>);
   let textNumber = 0, formulaNumber = 0, figureNumber = 0;
@@ -86,12 +115,22 @@ export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange
           const region = regionById.get(regionId);
           const decision = formula ? node.formula_decisions[regionId] : node.figure_decisions[regionId];
           const source = decision?.teacher_transcription ?? region?.text_fragments?.map(fragment => fragment.native_text).join("\n") ?? "";
+          const preceding = node.ordered_content[index - 1];
+          const precedingText = preceding?.type === "text" && typeof preceding.text === "string" ? preceding.text : null;
+          const latex = inlineFormulaSource(String(source));
+          const mergeDisabled = !latex || (decision?.decision === "use_vision" && !decision.teacher_transcription) ||
+            (precedingText !== null && precedingText.length + latex.length + 2 > 20000);
           const key = `${formula ? "formula" : "figure"}:${regionId}`;
           return <section className="review-content-item" id={`review-field-region-${regionId}`} key={regionId} data-content-type={formula ? "formula" : "figure"} data-region-id={regionId}>
             <div className="review-content-heading"><h5>{reviewContentLabel(item.type)} {number}</h5><span className={decision?.decision && decision.decision !== "unreviewed" ? "review-confirmed" : "review-needs-check"}>{decision?.decision && decision.decision !== "unreviewed" ? reviewDecisionLabel(decision.decision) : "要確認"}</span></div>
             {formula ? <><label>数式 {number}のLaTeX<textarea aria-label={`数式 ${number}のLaTeX`} maxLength={20000} value={String(source)} aria-invalid={!!fieldIssues(key).length} onFocus={() => onRegion(regionId)} onChange={e => onChange({ ...node, formula_decisions: { ...node.formula_decisions, [regionId]: { ...decision, decision: "teacher_edit", teacher_transcription: e.target.value } } })} /></label>{errors(key)}<MathPreview source={String(source)} mathOnly /></> : <p className="muted">原問題用紙の図を確認し、確認結果を選択してください。</p>}
             <button type="button" onClick={() => onRegion(regionId)}>{formula ? "読み取り候補と確認方法を表示" : "図の原文と確認方法を表示"}</button>
             <div className="review-content-actions"><button type="button" onClick={() => moveItem(index, -1)} disabled={index === 0}>上へ</button><button type="button" onClick={() => moveItem(index, 1)} disabled={index === node.ordered_content.length - 1}>下へ</button></div>
+            {formula && <div className="review-content-actions">
+              {precedingText !== null && <button type="button" onClick={() => mergeFormula(index, regionId, String(source))} disabled={mergeDisabled}
+                title={mergeDisabled ? "数式の内容を確認・修正してから結合してください" : "数式を直前の問題文にインライン数式として結合します"}>上の問題文とマージ</button>}
+              <button type="button" onClick={() => removeFormula(index, regionId)}>数式 {number}を削除</button>
+            </div>}
             {activeRegionId === regionId && renderEvidence?.(regionId)}
           </section>;
         }

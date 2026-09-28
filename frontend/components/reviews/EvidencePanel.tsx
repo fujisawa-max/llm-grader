@@ -67,7 +67,8 @@ export function EvidencePanel({ id, regionId, ownerLabel, decision, readonly, on
       <label>確認結果<select aria-label="確認結果" value={decision.decision} onChange={e => onDecision({ ...decision, decision: e.target.value })}>
         <option value="unreviewed">{reviewDecisionLabel("unreviewed")}</option>
         {formula ? <><option value="use_native" disabled={!region.text_fragments?.length}>{reviewDecisionLabel("use_native")}</option>
-          <option value="use_vision" disabled={!pin?.has_candidate}>{reviewDecisionLabel("use_vision")}</option><option value="teacher_edit">{reviewDecisionLabel("teacher_edit")}</option></>
+          <option value="use_vision" disabled={!pin?.has_candidate}>{reviewDecisionLabel("use_vision")}</option><option value="teacher_edit">{reviewDecisionLabel("teacher_edit")}</option>
+          {["excluded", "merged_into_text"].includes(decision.decision) && <option value={decision.decision}>{reviewDecisionLabel(decision.decision)}</option>}</>
           : <><option value="accepted_as_evidence">{reviewDecisionLabel("accepted_as_evidence")}</option><option value="needs_correction">{reviewDecisionLabel("needs_correction")}</option></>}
       </select></label>
       {formula && decision.decision === "teacher_edit" && <label>教師が確認した数式<textarea aria-label="教師が確認した数式" maxLength={20000} value={decision.teacher_transcription || ""}

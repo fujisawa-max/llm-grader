@@ -22,6 +22,8 @@ const decisions: Record<string, string> = {
   use_native: "PDFから読み取った内容を採用",
   use_vision: "画像から読み取った候補を採用",
   teacher_edit: "教師が入力した内容を採用",
+  excluded: "問題内容から除外",
+  merged_into_text: "問題文に結合",
   accepted_as_evidence: "図の資料として採用",
   needs_correction: "修正が必要",
 };

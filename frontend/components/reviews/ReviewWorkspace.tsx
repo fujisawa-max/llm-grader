@@ -141,6 +141,11 @@ export function ReviewWorkspace({ id }: { id: string }) {
     if (relevant && target) {
       const kind = relevant.region_type === "formula" ? "formula_region" : "figure_region";
       const number = target.ordered_content.filter(item => item.type === kind).findIndex(item => "region_id" in item && item.region_id === relevant.region_id) + 1;
+      if (!number && relevant.region_type === "formula") {
+        const decision = target.formula_decisions[relevant.region_id]?.decision;
+        if (decision === "merged_into_text") return `${target.label.raw}・問題文に結合した数式`;
+        if (decision === "excluded") return `${target.label.raw}・問題内容から除外した数式`;
+      }
       return `${target.label.raw}・${relevant.region_type === "formula" ? "数式" : "図"} ${Math.max(1, number)}`;
     }
     return target?.label.raw || (warning.scope === "draft" ? "試験全体" : "該当する設問");
@@ -151,7 +156,13 @@ export function ReviewWorkspace({ id }: { id: string }) {
     if (target) chooseNode(target);
     if (relevant) chooseRegion(relevant.region_id);
     window.setTimeout(() => {
-      const element = relevant ? window.document.getElementById(`review-field-region-${relevant.region_id}`) : window.document.querySelector("[aria-label='選択問題エディタ']");
+      const mergedIndex = target?.ordered_content.findIndex(item => item.type === "text" &&
+        Array.isArray(item.merged_source_segments) && item.merged_source_segments.some(
+          segment => segment.type === "formula_region" && segment.region_id === relevant?.region_id));
+      const element = (mergedIndex !== undefined && mergedIndex >= 0
+        ? window.document.getElementById(`review-field-text-${mergedIndex}`) : null)
+        || (relevant ? window.document.getElementById(`review-field-region-${relevant.region_id}`) : null)
+        || window.document.querySelector("[aria-label='選択問題エディタ']");
       element?.scrollIntoView({ block: "center", behavior: "smooth" });
     }, 50);
   }
