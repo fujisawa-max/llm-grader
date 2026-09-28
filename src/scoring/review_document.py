@@ -9,8 +9,9 @@ SCHEMA = "question-import-review.v1"
 
 
 class ReviewError(Exception):
-    def __init__(self, code, status=409):
+    def __init__(self, code, status=409, *, node_key=None, field_key=None):
         self.code, self.status = code, status
+        self.node_key, self.field_key = node_key, field_key
         super().__init__(code)
 
 
@@ -229,7 +230,7 @@ def validate_snapshot(snapshot, current, draft, pin, *, mark=False):
             raise ReviewError("invalid_included", 422)
         parent, order = n.get("parent_key"), n.get("sort_order")
         if parent is not None and not isinstance(parent, str):
-            raise ReviewError("invalid_parent", 422)
+            raise ReviewError("invalid_parent", 422, node_key=key, field_key="parent")
         if type(order) is not int or not 0 <= order <= 10000:
             raise ReviewError("invalid_order", 422)
         if (parent, order) in orders:
@@ -238,24 +239,27 @@ def validate_snapshot(snapshot, current, draft, pin, *, mark=False):
         if not isinstance(n.get("node_type"), str) or n["node_type"] not in {"major_question", "subquestion"}:
             raise ReviewError("invalid_node_type", 422)
         if (parent is None) != (n["node_type"] == "major_question"):
-            raise ReviewError("parent_type_mismatch", 422)
+            raise ReviewError("parent_type_mismatch", 422, node_key=key, field_key="parent")
         label = n.get("label")
         if not isinstance(label, dict) or set(label) != {"raw", "normalized"}:
             raise ReviewError("invalid_label", 422)
         for text in label.values():
-            _text(text, 200)
+            try:
+                _text(text, 200)
+            except ReviewError as exc:
+                raise ReviewError(exc.code, exc.status, node_key=key, field_key="label") from exc
         if n["included"] and not (label["raw"].strip() or label["normalized"].strip()):
-            raise ReviewError("label_required", 422)
+            raise ReviewError("label_required", 422, node_key=key, field_key="label")
         _text(n.get("body_text", ""))
         semantics, points = n.get("score_semantics"), n.get("score_points")
         if not isinstance(semantics, str) or semantics not in {"direct", "each_child", "unset", "ambiguous"}:
-            raise ReviewError("invalid_score_semantics", 422)
+            raise ReviewError("invalid_score_semantics", 422, node_key=key, field_key="score")
         if points is not None and (type(points) not in (int, float) or
                                    not math.isfinite(points) or points < 0 or points > 1e9):
-            raise ReviewError("invalid_score", 422)
+            raise ReviewError("invalid_score", 422, node_key=key, field_key="score")
         if (semantics == "unset" and points is not None or
                 semantics in {"direct", "each_child"} and points is None):
-            raise ReviewError("score_type_mismatch", 422)
+            raise ReviewError("score_type_mismatch", 422, node_key=key, field_key="score")
         src = n.get("source_draft_stable_key")
         if src is not None and not isinstance(src, str):
             raise ReviewError("invalid_source_node", 422)
@@ -281,9 +285,12 @@ def validate_snapshot(snapshot, current, draft, pin, *, mark=False):
         prior = previous.get(key, {})
         for i, item in enumerate(items):
             if type(item.get("order")) is not int or (items != prior.get("ordered_content") and item["order"] != i):
-                raise ReviewError("invalid_ordered_content", 422)
+                raise ReviewError("invalid_ordered_content", 422, node_key=key, field_key=f"text:{i}" if item.get("type") == "text" else "node")
             if item.get("type") == "text":
-                _text(item.get("text"))
+                try:
+                    _text(item.get("text"))
+                except ReviewError as exc:
+                    raise ReviewError(exc.code, exc.status, node_key=key, field_key=f"text:{i}") from exc
         # Preserve the historical body field until ordered text is actually edited.
         if items != prior.get("ordered_content"):
             n["body_text"] = "\n".join(i["text"] for i in items if i.get("type") == "text")
@@ -298,9 +305,9 @@ def validate_snapshot(snapshot, current, draft, pin, *, mark=False):
         depth = 0
         while parent is not None:
             if parent in seen:
-                raise ReviewError("cycle", 422)
+                raise ReviewError("cycle", 422, node_key=key, field_key="parent")
             if parent not in by_key or n["included"] and not by_key[parent]["included"]:
-                raise ReviewError("orphan_node", 422)
+                raise ReviewError("orphan_node", 422, node_key=key, field_key="parent")
             seen.add(parent)
             depth += 1
             parent = by_key[parent].get("parent_key")
@@ -341,7 +348,7 @@ def validate_snapshot(snapshot, current, draft, pin, *, mark=False):
                 if decision == "use_vision" and not vision.get("has_candidate"):
                     raise ReviewError("vision_evidence_missing", 422)
                 if decision == "teacher_edit" and not d.get("teacher_transcription", "").strip():
-                    raise ReviewError("teacher_transcription_required", 422)
+                    raise ReviewError("teacher_transcription_required", 422, node_key=n["stable_key"], field_key=f"formula:{rid}")
                 if decision == "merged_into_text":
                     formula_source = d.get("teacher_transcription", "").strip()
                     if not formula_source or not any(

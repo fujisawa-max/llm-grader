@@ -60,6 +60,28 @@ const reviewIssues: Record<string, string> = {
 
 export const reviewIssueLabel = (code: string) => reviewIssues[code.split(":", 1)[0]] ?? "内容を確認してください";
 
+const reviewSaveIssues: Record<string, string> = {
+  label_required: "設問名を入力してください。",
+  invalid_label: "設問名を確認してください。",
+  invalid_text_length: "文字数または入力内容を確認してください。",
+  invalid_score: "配点は0以上の数値で入力してください。",
+  score_type_mismatch: "配点の扱いと配点を一致させてください。",
+  invalid_score_semantics: "配点の扱いを確認してください。",
+  invalid_parent: "親設問を確認してください。",
+  orphan_node: "親設問が見つかりません。設問の階層を確認してください。",
+  cycle: "設問の階層が循環しています。親設問を確認してください。",
+  parent_type_mismatch: "設問の階層と種別を確認してください。",
+  duplicate_order: "設問の並び順が重複しています。",
+  invalid_ordered_content: "問題文・数式・図の内容と順序を確認してください。",
+  teacher_transcription_required: "数式の内容を入力してください。",
+  merged_formula_text_missing: "問題文に結合した数式を確認してください。",
+  source_anchor_changed: "元の問題用紙との対応を確認してください。",
+  invalid_source_slice: "元の問題文との対応範囲を確認してください。",
+  duplicate_region_decision: "数式または図の確認結果が重複しています。",
+  formula_content_decision_mismatch: "数式の内容と確認結果を一致させてください。",
+};
+export const reviewSaveIssueLabel = (code: string) => reviewSaveIssues[code] ?? "保存内容を確認してください。";
+
 const reviewIssueReasons: Record<string, string> = {
   ambiguous_score: "配点の読み取り方が一つに定まりません。原問題用紙と照合してください。",
   score_conflict: "親設問の配点と小問の合計が一致しません。配点欄を確認してください。",

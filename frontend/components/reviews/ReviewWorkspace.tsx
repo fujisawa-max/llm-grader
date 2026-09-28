@@ -4,7 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import { ApiRequestError } from "@/lib/api/client";
 import { reviews, type ImportPlan, type Confirmation } from "@/lib/api/reviews";
 import type { Decision, ReviewDocument, ReviewNode, ReviewSnapshot, RevisionInfo } from "@/types/reviews";
-import { questionTypeLabel, reviewIssueLabel, reviewStateLabel } from "@/lib/reviewLabels";
+import { questionTypeLabel, reviewIssueLabel, reviewSaveIssueLabel, reviewStateLabel } from "@/lib/reviewLabels";
+import { reviewFieldErrors, reviewFieldId, validateReviewFields, type FieldIssues, type ReviewFieldError } from "@/lib/reviewValidation";
 import { PdfPreview } from "./PdfPreview";
 import { NodeEditor } from "./NodeEditor";
 import { EvidencePanel } from "./EvidencePanel";
@@ -32,7 +33,7 @@ function ordered(nodes: ReviewNode[], parent: string | null = null, depth = 0): 
 function message(e: unknown) {
   if (e instanceof ApiRequestError && e.status === 409 && e.code === "revision_conflict") return "別の画面で新しい修正版が保存されています。未保存内容を控え、最新の内容を再読み込みしてください。";
   if (e instanceof ApiRequestError) {
-    if (e.status === 422) return `保存できませんでした。${reviewIssueLabel(e.code || "validation_error")}。該当する設問の入力欄を確認してください。`;
+    if (e.status === 422) return `保存できませんでした。${reviewSaveIssueLabel(e.code || "validation_error")}`;
     if (e.status === 403) return "この操作を行う権限がありません。";
     if (e.status === 404) return "確認内容が見つかりませんでした。";
     return "処理に失敗しました。再試行してください。";
@@ -47,7 +48,7 @@ export function ReviewWorkspace({ id }: { id: string }) {
   const [regionId, setRegionId] = useState("");
   const [page, setPage] = useState(0);
   const [error, setError] = useState("");
-  const [fieldIssues, setFieldIssues] = useState<Record<string, Record<string, string[]>>>({});
+  const [fieldIssues, setFieldIssues] = useState<FieldIssues>({});
   const [busy, setBusy] = useState(false);
   const [history, setHistory] = useState<RevisionInfo[]>([]);
   const [historical, setHistorical] = useState(false);
@@ -92,7 +93,22 @@ export function ReviewWorkspace({ id }: { id: string }) {
       current.nodes.find(entry => entry.formula_decisions[key] || entry.figure_decisions[key]);
   }
   const owner = region && (regionOwner(region.region_id) || current.nodes.find(n => n.source_draft_stable_key === region.assigned_question_key));
-  function updateNode(next: ReviewNode) { setFieldIssues(previous => ({ ...previous, [next.stable_key]: {} })); setSnapshot({ ...current, nodes: current.nodes.map(n => n.review_node_id === next.review_node_id ? next : n) }); }
+  function updateNode(next: ReviewNode) {
+    setFieldIssues(previous => previous[next.stable_key]
+      ? { ...previous, [next.stable_key]: validateReviewFields([next])[next.stable_key] || {} }
+      : previous);
+    setError("");
+    setSnapshot({ ...current, nodes: current.nodes.map(n => n.review_node_id === next.review_node_id ? next : n) });
+  }
+  function jumpToField(issue: ReviewFieldError) {
+    setSelected(issue.nodeKey); setRegionId("");
+    window.setTimeout(() => {
+      const target = window.document.getElementById(issue.targetId);
+      target?.scrollIntoView({ block: "center", behavior: "smooth" });
+      const focusable = target?.matches("input,textarea,select") ? target : target?.querySelector("input,textarea,select,button");
+      (focusable as HTMLElement | null)?.focus({ preventScroll: true });
+    }, 50);
+  }
   function chooseNode(n: ReviewNode) {
     setSelected(n.stable_key); setRegionId(""); setSplitProposal(null); setSplitMessage("");
     const key = sourceKey(n);
@@ -110,20 +126,10 @@ export function ReviewWorkspace({ id }: { id: string }) {
   }
   async function save(mark = false) {
     if (!mark) {
-      const found: Record<string, Record<string, string[]>> = {};
-      for (const candidate of current.nodes.filter(item => item.included)) {
-        const fields: Record<string, string[]> = {};
-        if (!candidate.label.raw.trim()) fields.label = ["設問番号・見出しを入力してください。"];
-        candidate.ordered_content.forEach((item, index) => { if (item.type === "text" && typeof item.text === "string" && !item.text.trim()) fields[`text:${index}`] = ["問題文が空です。不要な項目は削除してください。"] });
-        if (["direct", "each_child"].includes(candidate.score_semantics) && candidate.score_points === null) fields.score = ["配点を入力してください。"];
-        for (const [key, value] of Object.entries(candidate.formula_decisions)) if (value.decision === "teacher_edit" && !value.teacher_transcription?.trim()) fields[`formula:${key}`] = ["修正した数式を入力してください。"];
-        if (Object.keys(fields).length) found[candidate.stable_key] = fields;
-      }
+      const found = validateReviewFields(current.nodes);
       if (Object.keys(found).length) {
         setFieldIssues(found);
-        const first = current.nodes.find(candidate => found[candidate.stable_key]);
-        if (first) { setSelected(first.stable_key); setRegionId(""); }
-        setError(`保存前に確認が必要な入力欄が ${Object.values(found).reduce((sum, fields) => sum + Object.keys(fields).length, 0)} 件あります。${first?.label.raw || "設問"}の印が付いた項目を確認してください。`);
+        setError("");
         return;
       }
     }
@@ -131,7 +137,16 @@ export function ReviewWorkspace({ id }: { id: string }) {
     try {
       const d = mark ? await reviews.reviewed(id, document.current_revision) : await reviews.save(id, current, document.current_revision);
       install(d); setFieldIssues({}); setHistory((await reviews.history(id)).revisions);
-    } catch (e) { setError(message(e)); } finally { setBusy(false); }
+    } catch (e) {
+      if (!mark && e instanceof ApiRequestError && e.status === 422) {
+        const details = e.details && typeof e.details === "object" ? e.details as Record<string, unknown> : {};
+        const key = typeof details.node_key === "string" && current.nodes.some(n => n.stable_key === details.node_key)
+          ? details.node_key : node.stable_key;
+        const field = typeof details.field_key === "string" ? details.field_key : "node";
+        setFieldIssues({ [key]: { [field]: [reviewSaveIssueLabel(e.code || "validation_error")] } });
+        setError("");
+      } else setError(message(e));
+    } finally { setBusy(false); }
   }
   async function prepareImport() { setBusy(true); setError(""); try { setPlan(await reviews.importPlan(id)); } catch (e) { setError(message(e)); } finally { setBusy(false); } }
   async function confirmImport() { if (!plan || plan.blockers?.length) return; if (!window.confirm("確認済みの内容を、この試験の問題として追加しますか？")) return; setBusy(true); setError(""); try { setConfirmation(await reviews.confirm(id, { expected_revision: plan.revision, expected_revision_sha256: plan.revision_sha256, import_plan_sha256: plan.plan_sha256, mode: "append" })); } catch (e) { setError(message(e)); } finally { setBusy(false); } }
@@ -210,6 +225,7 @@ export function ReviewWorkspace({ id }: { id: string }) {
     setSplitProposal(null); setSplitMessage(""); setSelected(children[0].stable_key);
   }
   const counts = document.summary;
+  const saveErrors = reviewFieldErrors(current.nodes, fieldIssues);
   const activeSourceKey = sourceKey(node);
   const activeRegions = document.regions.filter(r => r.assigned_question_key === activeSourceKey &&
     (node.ordered_content.some(item => "region_id" in item && item.region_id === r.region_id) ||
@@ -239,8 +255,8 @@ export function ReviewWorkspace({ id }: { id: string }) {
         Array.isArray(item.merged_source_segments) && item.merged_source_segments.some(
           segment => segment.type === "formula_region" && segment.region_id === relevant?.region_id));
       const element = (mergedIndex !== undefined && mergedIndex >= 0
-        ? window.document.getElementById(`review-field-text-${mergedIndex}`) : null)
-        || (relevant ? window.document.getElementById(`review-field-region-${relevant.region_id}`) : null)
+        ? window.document.getElementById(reviewFieldId(target?.stable_key || "", `text:${mergedIndex}`)) : null)
+        || (relevant && target ? window.document.getElementById(reviewFieldId(target.stable_key, `${relevant.region_type}:${relevant.region_id}`)) : null)
         || window.document.querySelector("[aria-label='選択問題エディタ']");
       element?.scrollIntoView({ block: "center", behavior: "smooth" });
     }, 50);
@@ -256,6 +272,13 @@ export function ReviewWorkspace({ id }: { id: string }) {
       {dirty && <span>集計は保存済みの修正版の値です</span>}
     </div>
     {error && <p role="alert" className="error">{error}</p>}
+    {saveErrors.length > 0 && <section className="review-save-errors error" role="alert" aria-label="保存エラー">
+      <strong>保存できませんでした。{saveErrors.length}件の項目を確認してください。</strong>
+      <ol>{saveErrors.map((issue, index) => <li key={`${issue.nodeKey}-${issue.fieldKey}-${index}`}>
+        <button type="button" onClick={() => jumpToField(issue)}>{issue.path} &gt; {issue.fieldLabel}</button>
+        <span>{issue.message}</span>
+      </li>)}</ol>
+    </section>}
     {current.state === "reviewed" && !historical && <p className="notice">確認済みのため編集操作は停止しています。内容を直す場合は「新しい修正版で編集を再開」を押してください。</p>}
     {historical && <p className="notice">過去の修正版は編集できません。最新版を再読み込みすると編集できます。</p>}
     <div className="review-toolbar">

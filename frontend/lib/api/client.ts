@@ -1,7 +1,7 @@
 import type { ApiError } from "@/types/domain";
 
 const base = (process.env.NEXT_PUBLIC_API_BASE_URL || "/api/v1").replace(/\/$/, "");
-export class ApiRequestError extends Error { status: number; code?: string; constructor(status: number, body: ApiError) { super(body.error?.message || "通信に失敗しました"); this.status = status; this.code = body.error?.code; } }
+export class ApiRequestError extends Error { status: number; code?: string; details?: unknown; constructor(status: number, body: ApiError) { super(body.error?.message || "通信に失敗しました"); this.status = status; this.code = body.error?.code; this.details = body.error?.details; } }
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const studentPath = path.startsWith("/student/");
   const identityHeaders: Record<string, string> = studentPath && process.env.NEXT_PUBLIC_STUDENT_ID

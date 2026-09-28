@@ -82,7 +82,8 @@ def router(db, root):
             return getattr(QuestionReviewService(s, root), method)(*args, **kw)
         except ReviewError as e:
             raise HTTPException(
-                e.status, detail={"error": {"code": e.code, "message": "レビューを処理できません"}}
+                e.status, detail={"error": {"code": e.code, "message": "レビューを処理できません",
+                                           "details": {"node_key": e.node_key, "field_key": e.field_key}}}
             ) from e
 
     @r.post("/question-import-reviews/{review_id}/import-plan")

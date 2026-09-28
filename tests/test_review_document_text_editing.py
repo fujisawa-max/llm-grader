@@ -181,3 +181,12 @@ class ReviewTextEditingTests(unittest.TestCase):
         forged["nodes"][2]["ordered_content"][0]["source_slice"] = [0, 5, len(source_text)]
         with self.assertRaisesRegex(ReviewError, "invalid_source_slice"):
             validate_snapshot(forged, current, self.draft, self.pin)
+
+    def test_save_validation_identifies_node_and_field(self):
+        invalid = deepcopy(self.current)
+        invalid["nodes"][0]["score_points"] = None
+        with self.assertRaises(ReviewError) as context:
+            validate_snapshot(invalid, self.current, self.draft, self.pin)
+        self.assertEqual(context.exception.code, "score_type_mismatch")
+        self.assertEqual(context.exception.node_key, "q1")
+        self.assertEqual(context.exception.field_key, "score")
