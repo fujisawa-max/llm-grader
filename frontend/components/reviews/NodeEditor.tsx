@@ -1,5 +1,6 @@
 import type { AutomaticNode, Region, ReviewNode } from "@/types/reviews";
 import { questionTypeLabel, reviewContentLabel, scoreSemanticsLabel } from "@/lib/reviewLabels";
+import { MathText, MathPreview, mathInputHelp } from "@/components/MathText";
 
 export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange, onParent, onMove, onRegion }: {
   node: ReviewNode; nodes: ReviewNode[]; automatic?: AutomaticNode; regions: Region[]; readonly: boolean;
@@ -29,7 +30,7 @@ export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange
       <h4>問題文と資料</h4>
       {node.ordered_content.map((item, index) => {
         if (item.type === "text" && typeof item.text === "string") return <label key={index}>問題文 {index + 1}<textarea maxLength={20000} value={item.text}
-          onChange={e => onChange({ ...node, ordered_content: node.ordered_content.map((i, at) => at === index ? { ...i, text: e.target.value } : i) })} /></label>;
+          onChange={e => onChange({ ...node, ordered_content: node.ordered_content.map((i, at) => at === index ? { ...i, text: e.target.value } : i) })} /><small className="math-help">{mathInputHelp}</small><MathPreview source={item.text} /></label>;
         if ((item.type === "formula_region" || item.type === "figure_region") && typeof item.region_id === "string") {
           const regionId = item.region_id;
           return <button type="button" className="review-anchor" data-region-id={regionId} key={index} onClick={() => onRegion(regionId)}>{reviewContentLabel(item.type)} {index + 1} · 読み取り結果を比較</button>;
@@ -40,8 +41,8 @@ export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange
     </fieldset>
     {/* Evidence navigation stays available while reading historical revisions. */}
     <div className="review-toolbar">{regions.map((r, index) => <button key={r.region_id} data-region-id={r.region_id} onClick={() => onRegion(r.region_id)}>{r.region_type === "formula" ? "数式" : "図"} {index + 1}を確認</button>)}</div>
-    <details><summary>保存済みの問題文を表示</summary><pre>{node.body_text}</pre></details>
-    {automatic && <details><summary>自動解析された問題文を表示</summary><pre>{automatic.body_text}</pre></details>}
+    <details><summary>保存済みの問題文を表示</summary><MathText source={node.body_text} /></details>
+    {automatic && <details><summary>自動解析された問題文を表示</summary><MathText source={automatic.body_text} /></details>}
     <details><summary>技術情報</summary><code>{node.stable_key}</code></details>
   </article>;
 }

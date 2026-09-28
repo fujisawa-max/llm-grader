@@ -59,6 +59,10 @@ On an empty database, opening the frontend routes to `/setup` because the API re
 
 Question sheets and model-answer sources support PNG, JPEG, and PDF files. Student answer files can be grouped in page order by student. Uploading files only registers and previews the source; it does not automatically start OCR, reconstruction, or grading. Question PDF parsing is a separate explicit action.
 
+## Math notation
+
+Question text, model answers, and rubric criteria accept LaTeX source. Use `$P=\frac{TP}{TP+FP}$` within a sentence or `$$\sum_{i=1}^{n}x_i$$` for a separate formula. A field containing only a LaTeX command such as `\frac{1}{3}` also renders as math. The editor saves the original source text and shows a separate KaTeX preview; it does not store rendered HTML. Unsupported syntax remains visible as source text.
+
 ## User Roles
 
 **Admin** manages users and can access all courses and tests. **Teacher** manages their own courses and the grading workflow below those courses. Backend authorization enforces ownership.
@@ -94,7 +98,7 @@ Use `.venv/bin/python -m unittest discover -s tests -v`, `.venv/bin/python -m py
 
 ## Current Limitations / Planned Features
 
-Model catalog, model download/install, and runtime switching UI are not yet implemented. Complete fresh-machine browser E2E still requires a provisioned Chromium environment. Production deployments should add HTTPS, operational secret management, and a tested backup/restore environment. Formula rendering and additional model/runtime integrations remain ongoing work.
+Model catalog, model download/install, and runtime switching UI are not yet implemented. Complete fresh-machine browser E2E still requires a provisioned Chromium environment. Production deployments should add HTTPS, operational secret management, and a tested backup/restore environment. KaTeX supports a subset of LaTeX; additional model/runtime integrations remain ongoing work.
 
 ## Security Notes
 

@@ -10,17 +10,18 @@
     "e2e": "playwright test"
   },
   "dependencies": {
+    "katex": "0.18.9",
     "next": "15.5.7",
     "react": "19.1.0",
     "react-dom": "19.1.0"
   },
   "devDependencies": {
+    "@playwright/test": "1.51.1",
     "@types/node": "22.15.0",
     "@types/react": "19.1.0",
     "@types/react-dom": "19.1.0",
     "eslint": "9.22.0",
     "eslint-config-next": "15.5.7",
-    "typescript": "5.8.2",
-    "@playwright/test": "1.51.1"
+    "typescript": "5.8.2"
   }
 }
