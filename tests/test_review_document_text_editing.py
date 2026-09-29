@@ -184,6 +184,52 @@ class ReviewTextEditingTests(unittest.TestCase):
         self.assertEqual(context.exception.node_key, "teacher-child-1")
         self.assertEqual(context.exception.field_key, "source_mapping")
 
+    def test_partial_split_keeps_ambiguous_text_in_parent_without_fabricated_mapping(self):
+        draft = deepcopy(self.draft)
+        source_text = "導入\n1. 元の境界\n2. 領域を示す\n3. 点のクラスを答える"
+        evidence = {"type": "text", "order": 0, "text": source_text, "page_index": 0,
+                    "bbox": [60.0, 55.0, 285.0, 73.0], "source_element_ids": ["span-1"]}
+        draft["nodes"][0]["ordered_content"] = [evidence]
+        draft["formula_regions"] = []
+        current = initial_snapshot("draft-hash", draft, self.pin)
+        changed = deepcopy(current)
+        parent = changed["nodes"][0]
+        parent["ordered_content"] = [
+            {"type": "text", "order": 0, "text": "導入\n", "source_slice": [0, 3, len(source_text)],
+             **{key: value for key, value in evidence.items() if key not in {"type", "order", "text"}}},
+            {"type": "text", "order": 1, "text": "新しく書き直した境界"},
+        ]
+        parent["score_semantics"], parent["score_points"] = "unset", None
+
+        def add_child(key, label, start, end, text):
+            changed["nodes"].append({
+                "review_node_id": key, "stable_key": key, "source_draft_stable_key": None,
+                "source_draft_node_id": None, "parent_key": "q1", "node_type": "subquestion",
+                "depth": 1, "sort_order": len(changed["nodes"]) - 1,
+                "label": {"raw": label, "normalized": label}, "body_text": text,
+                "ordered_content": [{
+                    "type": "text", "order": 0, "text": text,
+                    "source_slice": [start, end, len(source_text)],
+                    **{field: value for field, value in evidence.items() if field not in {"type", "order", "text"}},
+                }],
+                "included": True, "score_semantics": "unset", "score_points": None,
+                "review_flags": [], "formula_decisions": {}, "figure_decisions": {}, "warning_states": {},
+            })
+
+        second = "2. 領域を示す"
+        third = "3. 点のクラスを答える"
+        add_child("teacher-child-2", "(2)", source_text.index(second), source_text.index(second) + len(second), "領域を示す")
+        add_child("teacher-child-3", "(3)", source_text.index(third), source_text.index(third) + len(third), "点のクラスを答える")
+
+        result = validate_snapshot(changed, current, draft, self.pin)
+        self.assertEqual([node["parent_key"] for node in result["nodes"][1:]], ["q1", "q1"])
+        self.assertEqual(result["nodes"][0]["ordered_content"][1]["text"], "新しく書き直した境界")
+        self.assertNotIn("source_slice", result["nodes"][0]["ordered_content"][1])
+        self.assertEqual([node["ordered_content"][0]["source_slice"] for node in result["nodes"][1:]], [
+            [source_text.index(second), source_text.index(second) + len(second), len(source_text)],
+            [source_text.index(third), source_text.index(third) + len(third), len(source_text)],
+        ])
+
     def test_save_validation_identifies_node_and_field(self):
         invalid = deepcopy(self.current)
         invalid["nodes"][0]["score_points"] = None

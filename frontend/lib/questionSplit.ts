@@ -4,6 +4,9 @@ export interface SplitCandidate {
   label: string;
   items: ContentItem[];
   included: boolean;
+  mappingStatus: "valid" | "ambiguous";
+  mappingMessage?: string;
+  contentValid: boolean;
 }
 export interface SplitProposal {
   parentItems: ContentItem[];
@@ -69,8 +72,7 @@ function allMatches(haystack: string[], needle: string[], from: number): number[
   return found;
 }
 
-function locateOrigins(item: ContentItem, decisions: ReviewNode["formula_decisions"], canonicalItems: ContentItem[]): SourceOrigin[] | null {
-  const value = "text" in item && typeof item.text === "string" ? item.text : "";
+function sourceOrigins(item: ContentItem, decisions: ReviewNode["formula_decisions"], canonicalItems: ContentItem[]): UnlocatedOrigin[] | null {
   const evidence = evidenceOf(item as unknown as Record<string, unknown>);
   if (!Object.keys(evidence).length && "source_slice" in item && item.source_slice !== undefined) return null;
   const candidates = canonicalItems.filter(candidate => candidate.type === "text" && stableJson(evidenceOf(candidate as unknown as Record<string, unknown>)) === stableJson(evidence));
@@ -103,6 +105,13 @@ function locateOrigins(item: ContentItem, decisions: ReviewNode["formula_decisio
     if (!origin) return null;
     origins.push({ ...origin, segment });
   }
+  return origins;
+}
+
+function locateOrigins(item: ContentItem, decisions: ReviewNode["formula_decisions"], canonicalItems: ContentItem[]): SourceOrigin[] | null {
+  const value = "text" in item && typeof item.text === "string" ? item.text : "";
+  const origins = sourceOrigins(item, decisions, canonicalItems);
+  if (!origins) return null;
   const current = points(value);
   let cursor = 0;
   const resolved: SourceOrigin[] = [];
@@ -115,6 +124,132 @@ function locateOrigins(item: ContentItem, decisions: ReviewNode["formula_decisio
     cursor = contentEnd;
   }
   return resolved;
+}
+
+function normalizedWithOffsets(value: string): { value: string[]; ranges: [number, number][] } {
+  const input = points(value);
+  const output: string[] = [];
+  const ranges: [number, number][] = [];
+  for (let index = 0; index < input.length;) {
+    if (/\s|\u3000/u.test(input[index])) {
+      const start = index;
+      while (index < input.length && (/\s|\u3000/u.test(input[index]))) index++;
+      if (output.length && index < input.length) {
+        output.push(" ");
+        ranges.push([start, index]);
+      }
+      continue;
+    }
+    output.push(input[index]);
+    ranges.push([index, index + 1]);
+    index++;
+  }
+  return { value: output, ranges };
+}
+
+function normalizedMatches(haystack: string, needle: string): [number, number][] {
+  const source = normalizedWithOffsets(haystack);
+  const target = normalizedWithOffsets(needle);
+  const sourcePoints = points(haystack);
+  const targetPoints = points(needle);
+  if (!target.value.length) return [];
+  return allMatches(source.value, target.value, 0).map(index => {
+    let start = source.ranges[index][0];
+    let end = source.ranges[index + target.value.length - 1][1];
+    if (targetPoints[0] && /\s|\u3000/u.test(targetPoints[0])) {
+      while (start > 0 && /\s|\u3000/u.test(sourcePoints[start - 1])) start--;
+    }
+    if (targetPoints.at(-1) && /\s|\u3000/u.test(targetPoints.at(-1)!)) {
+      while (end < sourcePoints.length && /\s|\u3000/u.test(sourcePoints[end])) end++;
+    }
+    return [start, end];
+  });
+}
+
+function uniqueOriginMatch(rawLine: string, origins: UnlocatedOrigin[] | null): boolean {
+  if (!origins?.length) return false;
+  return normalizedMatches(origins.map(origin => origin.canonicalText).join(""), rawLine).length === 1;
+}
+
+interface TextRangeMapping { origin: UnlocatedOrigin; range: [number, number, number] }
+
+function mappedLinePiece(item: ContentItem, rawLine: string, displayText: string,
+  origins: UnlocatedOrigin[] | null): { item: ContentItem; valid: boolean } {
+  const blank: Record<string, unknown> = { type: "text", order: item.order, text: displayText };
+  const sourceBacked = !!origins?.length;
+  if (!origins) return { item: blank as ContentItem, valid: false };
+  if (!sourceBacked) return { item: blank as ContentItem, valid: true };
+
+  const formulaOrigins = origins.filter(origin => origin.segment?.type === "formula_region");
+  const textOrigins = origins.filter(origin => origin.segment?.type !== "formula_region");
+  const rawPoints = points(rawLine);
+  const formulaRanges: { origin: UnlocatedOrigin; start: number; end: number }[] = [];
+  let ambiguous = false;
+  for (const origin of formulaOrigins) {
+    const positions = allMatches(rawPoints, points(origin.canonicalText), 0);
+    if (positions.length > 1) ambiguous = true;
+    if (positions.length === 1) formulaRanges.push({ origin, start: positions[0], end: positions[0] + points(origin.canonicalText).length });
+  }
+  formulaRanges.sort((a, b) => a.start - b.start);
+  if (formulaRanges.some((range, index) => index > 0 && range.start < formulaRanges[index - 1].end)) ambiguous = true;
+
+  const textMappings: TextRangeMapping[] = [];
+  let spanStart = 0;
+  const spans = [...formulaRanges.map(range => [range.start, range.end] as [number, number]), [rawPoints.length, rawPoints.length] as [number, number]];
+  for (const [formulaStart, formulaEnd] of spans) {
+    const span = rawPoints.slice(spanStart, formulaStart).join("");
+    if (span.trim()) {
+      const matches = textOrigins.flatMap(origin => normalizedMatches(origin.canonicalText, span).map(([start, end]) => ({ origin, start, end })));
+      if (matches.length !== 1) ambiguous = true;
+      else {
+        const match = matches[0];
+        textMappings.push({ origin: match.origin, range: [match.origin.sourceStart + match.start, match.origin.sourceStart + match.end, match.origin.sourceTotal] });
+      }
+    }
+    if (formulaStart < rawPoints.length) spanStart = formulaEnd;
+  }
+
+  // If no formula divided the line, the full numbered line (including its marker)
+  // must map uniquely to one immutable OCR text anchor.
+  if (!formulaRanges.length && rawLine.trim()) {
+    const matches = textOrigins.flatMap(origin => normalizedMatches(origin.canonicalText, rawLine).map(([start, end]) => ({ origin, start, end })));
+    textMappings.length = 0;
+    if (matches.length === 1) {
+      const match = matches[0];
+      textMappings.push({ origin: match.origin, range: [match.origin.sourceStart + match.start, match.origin.sourceStart + match.end, match.origin.sourceTotal] });
+      ambiguous = false;
+    } else ambiguous = true;
+  }
+
+  const mapped: Record<string, unknown> = { ...blank };
+  const merged: Record<string, unknown>[] = [];
+  let primaryUsed = false;
+  for (const mapping of textMappings) {
+    if (!mapping.origin.segment && !primaryUsed) {
+      Object.assign(mapped, mapping.origin.evidence);
+      mapped.source_slice = mapping.range;
+      primaryUsed = true;
+    } else {
+      merged.push({ ...mapping.origin.evidence, source_slice: mapping.range });
+    }
+  }
+  for (const formula of formulaRanges) merged.push(formula.origin.segment!);
+  if (merged.length) mapped.merged_source_segments = merged;
+  return { item: mapped as ContentItem, valid: !ambiguous };
+}
+
+function retainedAmbiguousLine(item: ContentItem, mapped: ContentItem, rawLine: string): ContentItem {
+  const source = mapped as ContentItem & { merged_source_segments?: Record<string, unknown>[] };
+  const segments = [...(source.merged_source_segments || [])];
+  if (Array.isArray(source.source_slice)) {
+    const evidence = evidenceOf(source as unknown as Record<string, unknown>);
+    segments.unshift({ ...evidence, source_slice: source.source_slice });
+  }
+  const retained: ContentItem & { merged_source_segments?: Record<string, unknown>[] } = {
+    type: "text", order: item.order, text: rawLine,
+  };
+  if (segments.length) retained.merged_source_segments = segments;
+  return retained;
 }
 
 function splitRange(origin: SourceOrigin, start: number, end: number): [number, number, number] | null {
@@ -163,13 +298,12 @@ export function suggestSubquestions(node: ReviewNode, canonicalNode?: Pick<Revie
   const children: SplitCandidate[] = [];
   const notes: string[] = [];
   const placements: SplitProposal["placements"] = [];
-  let canApply = true;
   const canonicalItems = canonicalNode?.ordered_content || node.ordered_content;
   let current: SplitCandidate | null = null;
-  const append = (item: ContentItem, owner: number | null) => {
+  const append = (item: ContentItem, owner: number | null, retainedItem: ContentItem = item) => {
     if (owner === null) parentItems.push(item);
     else children[owner].items.push(item);
-    placements.push({ owner, item });
+    placements.push({ owner, item: retainedItem });
   };
   for (const item of node.ordered_content) {
     if (item.type === "text" && typeof item.text === "string") {
@@ -194,23 +328,41 @@ export function suggestSubquestions(node: ReviewNode, canonicalNode?: Pick<Revie
         append(item, current ? children.length - 1 : null);
         continue;
       }
-      const origins = locateOrigins(item, node.formula_decisions, canonicalItems);
-      if (!origins) {
-        canApply = false;
-        notes.push("編集済みの問題文と元の読み取り範囲を一意に照合できません。内容は保持されています。分割前に問題文を元の読み取り状態へ戻すか、小問を手動で追加してください。");
-      }
-      lines.forEach((line, lineIndex) => {
+      const origins = sourceOrigins(item, node.formula_decisions, canonicalItems);
+      // Explicit, previously verified slices are authoritative. For content
+      // without a slice, resolve each candidate independently so repeated OCR
+      // text cannot inherit an occurrence merely from its surrounding block.
+      const hasExplicitSlice = "source_slice" in item && item.source_slice !== undefined;
+      const located = origins && hasExplicitSlice ? locateOrigins(item, node.formula_decisions, canonicalItems) : null;
+      lines.forEach(line => {
         if (line.match) {
-          current = { label: labelFor(line.match), items: [], included: true };
+          current = { label: labelFor(line.match), items: [], included: true, mappingStatus: "valid", contentValid: true };
           children.push(current);
         }
         const text = line.match ? line.value.slice(line.match[0].length) : line.value;
-        const piece = origins ? textPiece(item, line.start, line.end, text, origins) : { ...item, text };
-        if (!piece) {
-          canApply = false;
-          notes.push("問題文の出典範囲を安全に分けられません。分割案は確認用で、適用できません。");
-          append({ ...item, text }, current ? children.length - 1 : null);
-        } else append(piece, current ? children.length - 1 : null);
+        const owner = current ? children.length - 1 : null;
+        const exactPiece = located ? textPiece(item, line.start, line.end, text, located) : null;
+        const mapped = exactPiece && uniqueOriginMatch(line.value, origins)
+          ? { item: exactPiece, valid: true }
+          : mappedLinePiece(item, line.value, text, origins);
+        if (!mapped.valid) {
+          if (owner !== null) {
+            const candidate = children[owner];
+            candidate.mappingStatus = "ambiguous";
+            candidate.mappingMessage = "元資料との対応を一意に決められません。この候補は自動分割できず、大問に残ります。";
+            candidate.included = false;
+          } else {
+            notes.push("導入文の一部は元資料の範囲を特定できないため、分割後も大問に残します。問題用紙との設問単位の対応情報は引き継げません。");
+          }
+        }
+        // Keep the original numbered line intact if an ambiguous candidate is
+        // returned to the parent. The child preview may omit its marker, but
+        // that marker is part of the teacher-visible source text and must not
+        // disappear when the safe subset is applied.
+        const retainedItem = mapped.valid
+          ? { ...mapped.item, text: line.value } as ContentItem
+          : retainedAmbiguousLine(item, mapped.item, line.value);
+        append(mapped.item, owner, retainedItem);
       });
       continue;
     }
@@ -222,5 +374,14 @@ export function suggestSubquestions(node: ReviewNode, canonicalNode?: Pick<Revie
     }
   }
   if (children.length < 2) return null;
+  for (const child of children) {
+    child.contentValid = child.items.some(item => item.type !== "text" ||
+      ("text" in item && typeof item.text === "string" && !!item.text.trim()));
+    if (!child.contentValid && child.mappingStatus === "valid") child.mappingMessage = "小問本文が空です。本文を確認してから分割してください。";
+  }
+  const canApply = children.some(child => child.mappingStatus === "valid" && child.contentValid);
+  const ambiguousCount = children.filter(child => child.mappingStatus === "ambiguous").length;
+  if (ambiguousCount && canApply) notes.push(`${children.length}件中${children.length - ambiguousCount}件を自動分割できます。${ambiguousCount}件は元資料との対応を確認できないため大問に残ります。`);
+  if (ambiguousCount && !canApply) notes.push("元資料との対応を安全に確定できる候補がありません。問題文を元の読み取り状態へ戻すか、小問を手動で追加してください。");
   return { parentItems, children, notes: [...new Set(notes)], placements, canApply };
 }

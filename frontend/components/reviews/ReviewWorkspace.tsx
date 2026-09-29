@@ -198,7 +198,9 @@ export function ReviewWorkspace({ id }: { id: string }) {
     setSplitProposal({ ...splitProposal, placements, children, parentItems });
   }
   function applySplit() {
-    if (!splitProposal || !splitProposal.canApply || !splitProposal.children.some(child => child.included)) return;
+    if (!splitProposal || !splitProposal.canApply) return;
+    const chosen = splitProposal.children.filter(child => child.included);
+    if (!chosen.length || chosen.some(child => child.mappingStatus !== "valid" || !child.contentValid || !child.label.trim())) return;
     const copy = (items: ReviewNode["ordered_content"]) => items.map((item, order) => ({ ...item, order }));
     const retained = splitProposal.placements.filter(place => place.owner === null ||
       !splitProposal.children[place.owner].included).map(place => place.item);
@@ -333,7 +335,11 @@ export function ReviewWorkspace({ id }: { id: string }) {
                   <option value="parent">大問で共通利用する</option>{splitProposal.children.map((child, at) => <option key={at} value={at}>{child.label}</option>)}
                 </select></label>}</div>) : <p className="muted">共通の導入文はありません。</p>}
             {splitProposal.children.map((child, index) => <section className="review-content-item" key={index}>
-              <label><input type="checkbox" checked={child.included} onChange={event => setSplitProposal({
+              <p className={child.mappingStatus === "valid" && child.contentValid ? "ok" : "warn"} role="status">
+                元資料との対応: {child.mappingStatus === "valid" && child.contentValid ? "確認済み" : "要手動確認"}
+              </p>
+              {child.mappingMessage && <p className="notice">{child.mappingMessage}</p>}
+              <label><input type="checkbox" checked={child.included} disabled={child.mappingStatus !== "valid" || !child.contentValid} onChange={event => setSplitProposal({
                 ...splitProposal, children: splitProposal.children.map((entry, at) => at === index ? { ...entry, included: event.target.checked } : entry),
               })} /> この候補を小問にする</label>
               <label>小問名<input value={child.label} maxLength={200} onChange={event => setSplitProposal({
@@ -345,7 +351,7 @@ export function ReviewWorkspace({ id }: { id: string }) {
             </section>)}
             {splitProposal.notes.map(note => <p className="notice" key={note}>{note}</p>)}
             {node.score_semantics === "direct" && <p className="notice">現在の大問への直接配点は小問へ自動配分しません。分割後に配点を確認してください。</p>}
-            <div className="review-toolbar"><button className="button" type="button" disabled={!splitProposal.canApply || !splitProposal.children.some(child => child.included && child.label.trim())} onClick={applySplit}>この内容で分割</button><button type="button" onClick={() => setSplitProposal(null)}>キャンセル</button></div>
+            <div className="review-toolbar"><button className="button" type="button" disabled={!splitProposal.canApply || !splitProposal.children.some(child => child.included) || splitProposal.children.some(child => child.included && (child.mappingStatus !== "valid" || !child.contentValid || !child.label.trim()))} onClick={applySplit}>この内容で分割</button><button type="button" onClick={() => setSplitProposal(null)}>キャンセル</button></div>
           </div>}
         </section>}
         <div className="review-toolbar">{[...new Set((document.source_regions[activeSourceKey || ""] || []).map(r => r.page_index))].map(p => <button key={p} onClick={() => { setPage(p); setRegionId(""); }}>元の問題用紙 {p + 1}ページ</button>)}</div>
