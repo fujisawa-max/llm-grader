@@ -238,3 +238,61 @@ class ReviewTextEditingTests(unittest.TestCase):
         self.assertEqual(context.exception.code, "score_type_mismatch")
         self.assertEqual(context.exception.node_key, "q1")
         self.assertEqual(context.exception.field_key, "score")
+
+    def _teacher_child(self, current, *, decision, content):
+        child = {
+            "review_node_id": "teacher-split-1", "stable_key": "teacher-split-1",
+            "source_draft_stable_key": None, "source_draft_node_id": None,
+            "parent_key": "q1", "node_type": "subquestion", "depth": 1, "sort_order": 0,
+            "label": {"raw": "(1)", "normalized": "(1)"}, "body_text": "小問本文",
+            "ordered_content": content, "included": True, "score_semantics": "unset", "score_points": None,
+            "review_flags": [], "formula_decisions": {}, "figure_decisions": {}, "warning_states": {},
+            "source_mapping_decision": decision,
+        }
+        current["nodes"].append(child)
+        return child
+
+    def test_split_mapping_decisions_require_provenance_or_explicit_unmapped_override(self):
+        unmapped = deepcopy(self.current)
+        self._teacher_child(unmapped, decision="teacher_unmapped_override", content=[
+            {"type": "text", "order": 0, "text": "小問本文"},
+        ])
+        result = validate_snapshot(unmapped, self.current, self.draft, self.pin)
+        self.assertEqual(result["nodes"][1]["source_mapping_decision"], "teacher_unmapped_override")
+        self.assertNotIn("source_slice", result["nodes"][1]["ordered_content"][0])
+
+        missing = deepcopy(self.current)
+        self._teacher_child(missing, decision="automatic", content=[
+            {"type": "text", "order": 0, "text": "小問本文"},
+        ])
+        with self.assertRaisesRegex(ReviewError, "missing_source_mapping_decision"):
+            validate_snapshot(missing, self.current, self.draft, self.pin)
+
+        forged = deepcopy(self.current)
+        self._teacher_child(forged, decision="teacher_unmapped_override", content=[
+            {"type": "text", "order": 0, "text": "小問本文", "source_slice": [0, 1, 1]},
+        ])
+        with self.assertRaisesRegex(ReviewError, "invalid_unmapped_source_decision"):
+            validate_snapshot(forged, self.current, self.draft, self.pin)
+
+    def test_manual_split_mapping_reuses_only_existing_source_evidence(self):
+        changed = deepcopy(self.current)
+        original = changed["nodes"][0]["ordered_content"][0]
+        evidence = {key: value for key, value in original.items()
+                    if key not in {"type", "order", "text", "merged_source_segments", "source_slice"}}
+        changed["nodes"][0]["ordered_content"] = changed["nodes"][0]["ordered_content"][1:]
+        changed["nodes"][0]["ordered_content"] = [
+            {**item, "order": index} for index, item in enumerate(changed["nodes"][0]["ordered_content"])
+        ]
+        child_content = [{"type": "text", "order": 0, "text": "編集済みの小問本文",
+                          "merged_source_segments": [evidence]}]
+        self._teacher_child(changed, decision="teacher_manual_mapping", content=child_content)
+        result = validate_snapshot(changed, self.current, self.draft, self.pin)
+        mapped = result["nodes"][1]["ordered_content"][0]["merged_source_segments"][0]
+        self.assertEqual(mapped["source_element_ids"], ["span-1"])
+        self.assertNotIn("source_slice", mapped)
+
+        forged = deepcopy(changed)
+        forged["nodes"][1]["ordered_content"][0]["merged_source_segments"][0]["source_element_ids"] = ["fake"]
+        with self.assertRaisesRegex(ReviewError, "source_anchor_changed"):
+            validate_snapshot(forged, changed, self.draft, self.pin)

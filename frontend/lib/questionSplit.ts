@@ -4,23 +4,31 @@ export interface SplitCandidate {
   label: string;
   items: ContentItem[];
   included: boolean;
-  mappingStatus: "valid" | "ambiguous";
+  mappingStatus: "automatic" | "manual_required" | "manual_mapped" | "unmapped_override";
   mappingMessage?: string;
   contentValid: boolean;
+  selectedSourceIds: string[];
+}
+export interface SplitSourceOption {
+  id: string;
+  label: string;
+  excerpt: string;
+  evidence: Record<string, unknown>;
 }
 export interface SplitProposal {
   parentItems: ContentItem[];
   children: SplitCandidate[];
+  sourceOptions: SplitSourceOption[];
   notes: string[];
   placements: { owner: number | null; item: ContentItem }[];
   canApply: boolean;
 }
 
 const circled = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳";
-const marker = /^\s*(?:([1-9]\d?)[.)]|[（(]([1-9]\d?)[)）]|([①-⑳]))(?=\s|[^\d\s])\s*/u;
+const marker = /^\s*(?:([1-9]\d?)[.)]|[（(]([1-9]\d?)[)）]|([①-⑳])|問\s*([1-9]\d?)(?=\s|[.:：、)]|$))(?=\s|[^\d\s]|$)\s*/u;
 
 function labelFor(match: RegExpMatchArray): string {
-  const number = match[1] || match[2] || String(circled.indexOf(match[3] || "") + 1);
+  const number = match[1] || match[2] || match[4] || String(circled.indexOf(match[3] || "") + 1);
   return `(${number})`;
 }
 
@@ -32,6 +40,66 @@ const stableJson = (value: Record<string, unknown>) => JSON.stringify(
   Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)))
 );
 const points = (value: string) => Array.from(value);
+
+function sourceOptions(items: ContentItem[]): SplitSourceOption[] {
+  const seen = new Set<string>();
+  const result: SplitSourceOption[] = [];
+  for (const [index, item] of items.entries()) {
+    if (item.type !== "text" || typeof item.text !== "string") continue;
+    const evidence = evidenceOf(item as unknown as Record<string, unknown>);
+    if (!Object.keys(evidence).length) continue;
+    const id = stableJson(evidence);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const ids = Array.isArray(evidence.source_element_ids)
+      ? evidence.source_element_ids.filter((value): value is string => typeof value === "string") : [];
+    const page = typeof evidence.page_index === "number" ? ` ${evidence.page_index + 1}ページ` : "";
+    result.push({
+      id,
+      label: ids.length ? `${ids.join(", ")}${page}` : `読み取り項目 ${result.length + 1}${page}`,
+      excerpt: item.text.trim().replace(/\s+/gu, " ").slice(0, 180) || `読み取り項目 ${index + 1}`,
+      evidence,
+    });
+  }
+  return result;
+}
+
+export function mapCandidateToSources(items: ContentItem[], sourceIds: string[], options: SplitSourceOption[]): ContentItem[] | null {
+  const selected = options.filter(option => sourceIds.includes(option.id));
+  if (!selected.length || selected.length !== new Set(sourceIds).size) return null;
+  const textIndex = items.findIndex(item => item.type === "text");
+  if (textIndex < 0) return null;
+  const mapped = items.map(item => {
+    if (item.type !== "text") return { ...item };
+    const textItem = { ...item } as ContentItem & { merged_source_segments?: Record<string, unknown>[] };
+    delete textItem.source_slice;
+    delete textItem.page_index;
+    delete textItem.bbox;
+    delete textItem.source_element_ids;
+    // Keep only independently verified formula provenance. Text source refs
+    // are replaced by the teacher's explicit source-element selection below.
+    const formulaSegments = (textItem.merged_source_segments || []).filter(segment => segment.type === "formula_region");
+    if (formulaSegments.length) textItem.merged_source_segments = formulaSegments;
+    else delete textItem.merged_source_segments;
+    return textItem;
+  });
+  const anchor = mapped[textIndex] as ContentItem & { merged_source_segments?: Record<string, unknown>[] };
+  anchor.merged_source_segments = [
+    ...(anchor.merged_source_segments || []),
+    ...selected.map(option => ({ ...option.evidence })),
+  ];
+  return mapped;
+}
+
+export function clearTextSourceMapping(items: ContentItem[]): ContentItem[] {
+  return items.map(item => {
+    if (item.type !== "text") return { ...item };
+    const cleared = { type: "text", order: item.order, text: item.text } as ContentItem & { merged_source_segments?: Record<string, unknown>[] };
+    const formulaSegments = (item.merged_source_segments || []).filter(segment => segment.type === "formula_region");
+    if (formulaSegments.length) cleared.merged_source_segments = formulaSegments;
+    return cleared;
+  });
+}
 
 interface SourceOrigin {
   evidence: Record<string, unknown>;
@@ -178,7 +246,7 @@ function mappedLinePiece(item: ContentItem, rawLine: string, displayText: string
   const blank: Record<string, unknown> = { type: "text", order: item.order, text: displayText };
   const sourceBacked = !!origins?.length;
   if (!origins) return { item: blank as ContentItem, valid: false };
-  if (!sourceBacked) return { item: blank as ContentItem, valid: true };
+  if (!sourceBacked) return { item: blank as ContentItem, valid: false };
 
   const formulaOrigins = origins.filter(origin => origin.segment?.type === "formula_region");
   const textOrigins = origins.filter(origin => origin.segment?.type !== "formula_region");
@@ -299,6 +367,7 @@ export function suggestSubquestions(node: ReviewNode, canonicalNode?: Pick<Revie
   const notes: string[] = [];
   const placements: SplitProposal["placements"] = [];
   const canonicalItems = canonicalNode?.ordered_content || node.ordered_content;
+  const options = sourceOptions(canonicalItems);
   let current: SplitCandidate | null = null;
   const append = (item: ContentItem, owner: number | null, retainedItem: ContentItem = item) => {
     if (owner === null) parentItems.push(item);
@@ -336,7 +405,7 @@ export function suggestSubquestions(node: ReviewNode, canonicalNode?: Pick<Revie
       const located = origins && hasExplicitSlice ? locateOrigins(item, node.formula_decisions, canonicalItems) : null;
       lines.forEach(line => {
         if (line.match) {
-          current = { label: labelFor(line.match), items: [], included: true, mappingStatus: "valid", contentValid: true };
+          current = { label: labelFor(line.match), items: [], included: true, mappingStatus: "automatic", contentValid: true, selectedSourceIds: [] };
           children.push(current);
         }
         const text = line.match ? line.value.slice(line.match[0].length) : line.value;
@@ -348,8 +417,8 @@ export function suggestSubquestions(node: ReviewNode, canonicalNode?: Pick<Revie
         if (!mapped.valid) {
           if (owner !== null) {
             const candidate = children[owner];
-            candidate.mappingStatus = "ambiguous";
-            candidate.mappingMessage = "元資料との対応を一意に決められません。この候補は自動分割できず、大問に残ります。";
+            candidate.mappingStatus = "manual_required";
+            candidate.mappingMessage = "元資料との対応を一意に決められません。対応する読み取り項目を指定するか、対応情報なしで分割してください。";
             candidate.included = false;
           } else {
             notes.push("導入文の一部は元資料の範囲を特定できないため、分割後も大問に残します。問題用紙との設問単位の対応情報は引き継げません。");
@@ -362,7 +431,17 @@ export function suggestSubquestions(node: ReviewNode, canonicalNode?: Pick<Revie
         const retainedItem = mapped.valid
           ? { ...mapped.item, text: line.value } as ContentItem
           : retainedAmbiguousLine(item, mapped.item, line.value);
-        append(mapped.item, owner, retainedItem);
+        // A marker on its own (for example a standalone "（1）" OCR item)
+        // labels the child but is not child body content. Keeping the empty
+        // post-marker text as an ordered item makes the backend reject the
+        // otherwise valid split as an empty question-text field. Retain the
+        // original marker only as the unselected-candidate fallback; the
+        // canonical source draft remains unchanged either way.
+        if (owner !== null && line.match && !text.trim()) {
+          placements.push({ owner, item: retainedItem });
+        } else {
+          append(mapped.item, owner, retainedItem);
+        }
       });
       continue;
     }
@@ -377,11 +456,12 @@ export function suggestSubquestions(node: ReviewNode, canonicalNode?: Pick<Revie
   for (const child of children) {
     child.contentValid = child.items.some(item => item.type !== "text" ||
       ("text" in item && typeof item.text === "string" && !!item.text.trim()));
-    if (!child.contentValid && child.mappingStatus === "valid") child.mappingMessage = "小問本文が空です。本文を確認してから分割してください。";
+    if (!child.contentValid && child.mappingStatus === "automatic") child.mappingMessage = "小問本文が空です。本文を確認してから分割してください。";
   }
-  const canApply = children.some(child => child.mappingStatus === "valid" && child.contentValid);
-  const ambiguousCount = children.filter(child => child.mappingStatus === "ambiguous").length;
-  if (ambiguousCount && canApply) notes.push(`${children.length}件中${children.length - ambiguousCount}件を自動分割できます。${ambiguousCount}件は元資料との対応を確認できないため大問に残ります。`);
-  if (ambiguousCount && !canApply) notes.push("元資料との対応を安全に確定できる候補がありません。問題文を元の読み取り状態へ戻すか、小問を手動で追加してください。");
-  return { parentItems, children, notes: [...new Set(notes)], placements, canApply };
+  const canApply = children.some(child => child.mappingStatus === "automatic" && child.contentValid);
+  const ambiguousCount = children.filter(child => child.mappingStatus === "manual_required").length;
+  const automaticCount = children.filter(child => child.mappingStatus === "automatic" && child.contentValid).length;
+  if (ambiguousCount && automaticCount) notes.push(`${children.length}件中${automaticCount}件は自動で対応を確認できました。残り${ambiguousCount}件は対応方法を選択してください。`);
+  if (ambiguousCount && !automaticCount) notes.push("自動で対応を確認できない候補があります。元資料の読み取り項目を指定するか、対応情報なしで分割してください。");
+  return { parentItems, children, sourceOptions: options, notes: [...new Set(notes)], placements, canApply };
 }

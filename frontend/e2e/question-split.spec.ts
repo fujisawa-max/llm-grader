@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { suggestSubquestions } from "../lib/questionSplit";
+import { clearTextSourceMapping, mapCandidateToSources, suggestSubquestions } from "../lib/questionSplit";
 import type { ContentItem, ReviewNode } from "../types/reviews";
 
 const contentText = (item: ContentItem | undefined) => item && "text" in item ? item.text : "";
@@ -75,7 +75,7 @@ test("an ambiguous candidate does not block safe candidates and remains unanchor
   }] };
   const proposal = suggestSubquestions(edited, canonical);
   expect(proposal?.canApply).toBe(true);
-  expect(proposal?.children.map(child => child.mappingStatus)).toEqual(["ambiguous", "valid", "valid"]);
+  expect(proposal?.children.map(child => child.mappingStatus)).toEqual(["manual_required", "automatic", "automatic"]);
   expect(proposal?.children.map(child => child.included)).toEqual([false, true, true]);
   expect(proposal?.children[0].items[0]).toEqual({ type: "text", order: 0, text: "新しく書き直した内容\n" });
   expect(contentText(proposal?.placements[1]?.item)).toBe("1. 新しく書き直した内容\n");
@@ -85,7 +85,7 @@ test("an ambiguous candidate does not block safe candidates and remains unanchor
     ? proposal.placements[2].item.source_slice : null).toEqual([16, 25, Array.from(original).length]);
   expect(proposal?.children[1].items[0] && "source_slice" in proposal.children[1].items[0]
     ? proposal.children[1].items[0].source_slice : null).toEqual([16, 25, Array.from(original).length]);
-  expect(proposal?.notes.join(" ")).toContain("大問に残ります");
+  expect(proposal?.notes.join(" ")).toContain("対応方法を選択してください");
 });
 
 test("ambiguous retained text keeps only verified formula provenance", () => {
@@ -99,7 +99,7 @@ test("ambiguous retained text keeps only verified formula provenance", () => {
   const canonical = { ordered_content: [{ type: "text", order: 0, text: canonicalText, page_index: 0,
     source_element_ids: ["source-1"] }] };
   const proposal = suggestSubquestions(edited, canonical);
-  expect(proposal?.children.map(child => child.mappingStatus)).toEqual(["ambiguous", "valid"]);
+  expect(proposal?.children.map(child => child.mappingStatus)).toEqual(["manual_required", "automatic"]);
   const retained = proposal?.placements.find(place => place.owner === 0)?.item as ContentItem & { merged_source_segments?: Record<string, unknown>[] };
   expect(contentText(retained)).toBe("1. 書き換えた説明 $x+1$\n");
   expect(retained).not.toHaveProperty("source_slice");
@@ -114,9 +114,9 @@ test("all ambiguous candidates stay out of automatic split", () => {
   }] };
   const proposal = suggestSubquestions(edited, canonical);
   expect(proposal?.canApply).toBe(false);
-  expect(proposal?.children.map(child => child.mappingStatus)).toEqual(["ambiguous", "ambiguous"]);
+  expect(proposal?.children.map(child => child.mappingStatus)).toEqual(["manual_required", "manual_required"]);
   expect(proposal?.children.every(child => !child.included)).toBe(true);
-  expect(proposal?.notes.join(" ")).toContain("手動で追加してください");
+  expect(proposal?.notes.join(" ")).toContain("対応情報なしで分割してください");
 });
 
 test("repeated source text is ambiguous instead of choosing an arbitrary occurrence", () => {
@@ -126,7 +126,7 @@ test("repeated source text is ambiguous instead of choosing an arbitrary occurre
     type: "text", order: 0, text: original, page_index: 0, source_element_ids: ["source-1"],
   }] };
   const proposal = suggestSubquestions(edited, canonical);
-  expect(proposal?.children.map(child => child.mappingStatus)).toEqual(["ambiguous", "ambiguous"]);
+  expect(proposal?.children.map(child => child.mappingStatus)).toEqual(["manual_required", "manual_required"]);
   expect(proposal?.canApply).toBe(false);
 });
 
@@ -137,7 +137,50 @@ test("candidate matching normalizes only whitespace while preserving canonical o
     type: "text", order: 0, text: original, page_index: 0, source_element_ids: ["source-1"],
   }] };
   const proposal = suggestSubquestions(edited, canonical);
-  expect(proposal?.children.map(child => child.mappingStatus)).toEqual(["valid", "valid"]);
+  expect(proposal?.children.map(child => child.mappingStatus)).toEqual(["automatic", "automatic"]);
   expect(proposal?.children[0].items[0] && "source_slice" in proposal.children[0].items[0]
     ? proposal.children[0].items[0].source_slice : null).toEqual([0, 9, Array.from(original).length]);
+});
+
+test("fragmented marker and text items are detected without changing the ordered content", () => {
+  const sourceItems: ContentItem[] = [
+    { type: "text", order: 0, text: "共通の導入文。", page_index: 0, source_element_ids: ["intro"] },
+    { type: "text", order: 1, text: "(1)", page_index: 0, source_element_ids: ["marker-1"] },
+    { type: "text", order: 2, text: "決定境界を描く。", page_index: 0, source_element_ids: ["body-1"] },
+    { type: "text", order: 3, text: "（2）", page_index: 0, source_element_ids: ["marker-2"] },
+    { type: "text", order: 4, text: "領域を斜線で示す。", page_index: 0, source_element_ids: ["body-2"] },
+    { type: "text", order: 5, text: "問3", page_index: 0, source_element_ids: ["marker-3"] },
+    { type: "text", order: 6, text: "点Aのクラスを記入する。", page_index: 0, source_element_ids: ["body-3"] },
+  ];
+  const edited = node("");
+  edited.ordered_content = structuredClone(sourceItems);
+  const before = structuredClone(edited.ordered_content);
+  const proposal = suggestSubquestions(edited, { ordered_content: sourceItems });
+  expect(proposal?.children.map(child => child.label)).toEqual(["(1)", "(2)", "(3)"]);
+  expect(proposal?.children.map(child => child.mappingStatus)).toEqual(["automatic", "automatic", "automatic"]);
+  expect(contentText(proposal?.parentItems[0])).toBe("共通の導入文。");
+  expect(edited.ordered_content).toEqual(before);
+});
+
+test("manual mapping reuses selected canonical evidence and override leaves source slices absent", () => {
+  const canonical: ContentItem[] = [
+    { type: "text", order: 0, text: "導入文。", page_index: 0, source_element_ids: ["intro"] },
+    { type: "text", order: 1, text: "1. 元の境界", page_index: 0, source_element_ids: ["source-1"] },
+    { type: "text", order: 2, text: "2. 元の領域", page_index: 0, source_element_ids: ["source-2"] },
+  ];
+  const edited = node("");
+  edited.ordered_content = [
+    { ...canonical[0] },
+    { ...canonical[1], text: "1. 書き換えた境界" },
+    { ...canonical[2] },
+  ];
+  const proposal = suggestSubquestions(edited, { ordered_content: canonical });
+  expect(proposal?.children.map(child => child.mappingStatus)).toEqual(["manual_required", "automatic"]);
+  const candidate = proposal!.children[0];
+  const option = proposal!.sourceOptions.find(source => source.label.startsWith("source-1"))!;
+  const mapped = mapCandidateToSources(candidate.items, [option.id], proposal!.sourceOptions);
+  expect(mapped?.[0]).toHaveProperty("merged_source_segments", [option.evidence]);
+  const unanchored = clearTextSourceMapping(candidate.items);
+  expect(unanchored.every(item => !("source_slice" in item))).toBe(true);
+  expect(unanchored.every(item => item.type !== "text" || !("source_element_ids" in item))).toBe(true);
 });

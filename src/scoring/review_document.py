@@ -214,10 +214,10 @@ def validate_snapshot(snapshot, current, draft, pin, *, mark=False):
                           "parent_key", "node_type", "depth", "sort_order", "label", "body_text",
                           "ordered_content", "included", "score_semantics", "score_points",
                           "effective_points_candidate", "review_flags", "formula_decisions",
-                          "figure_decisions", "warning_states"}
+                          "figure_decisions", "warning_states", "source_mapping_decision"}
         if set(n) - allowed_fields:
             raise ReviewError("unknown_node_fields", 422)
-        required_fields = allowed_fields - {"effective_points_candidate", "depth"}
+        required_fields = allowed_fields - {"effective_points_candidate", "depth", "source_mapping_decision"}
         if not required_fields.issubset(n):
             raise ReviewError("missing_node_fields", 422)
         key, identity = n.get("stable_key"), n.get("review_node_id")
@@ -323,6 +323,38 @@ def validate_snapshot(snapshot, current, draft, pin, *, mark=False):
                 raise ReviewError("node_content_required", 422)
             if n["score_semantics"] == "each_child" and not has_children:
                 raise ReviewError("each_child_requires_children", 422)
+        mapping_decision = n.get("source_mapping_decision")
+        if mapping_decision is not None:
+            if (not isinstance(mapping_decision, str) or mapping_decision not in
+                    {"automatic", "teacher_manual_mapping", "teacher_unmapped_override"}
+                    or n.get("source_draft_stable_key") is not None
+                    or n.get("node_type") != "subquestion" or n.get("parent_key") is None
+                    or _source_owner(n, by_key) is None):
+                raise ReviewError("invalid_source_mapping_decision", 422, node_key=key, field_key="source_mapping")
+            has_text_mapping = False
+            for item in n["ordered_content"]:
+                if item.get("type") != "text":
+                    continue
+                if _content_evidence(item) or "source_slice" in item:
+                    has_text_mapping = True
+                segments = item.get("merged_source_segments", [])
+                if not isinstance(segments, list):
+                    raise ReviewError("invalid_source_mapping_decision", 422, node_key=key, field_key="source_mapping")
+                for segment in segments:
+                    if not isinstance(segment, dict):
+                        raise ReviewError("invalid_source_mapping_decision", 422, node_key=key, field_key="source_mapping")
+                    if segment.get("type") != "formula_region" and (
+                            _content_evidence(segment) or "source_slice" in segment):
+                        has_text_mapping = True
+            if mapping_decision == "teacher_unmapped_override":
+                if has_text_mapping or any(
+                        item.get("type") == "text" and any(
+                            segment.get("type") != "formula_region"
+                            for segment in item.get("merged_source_segments", []) if isinstance(segment, dict))
+                        for item in n["ordered_content"]):
+                    raise ReviewError("invalid_unmapped_source_decision", 422, node_key=key, field_key="source_mapping")
+            elif not has_text_mapping:
+                raise ReviewError("missing_source_mapping_decision", 422, node_key=key, field_key="source_mapping")
     _validate_content_provenance(nodes, source, by_key)
     pinned = {p["region_id"]: p for p in pin.get("results", [])}
     for n in nodes:

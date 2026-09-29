@@ -27,12 +27,12 @@ test("ambiguous candidates are excluded while safe candidates split through the 
   const splitButton = page.getByRole("button", { name: "この内容で分割" });
   const choices = page.getByLabel("この候補を小問にする");
   await expect(choices).toHaveCount(3);
-  await expect(page.getByText("元資料との対応: 要手動確認")).toHaveCount(3);
+  await expect(page.getByText("元資料との対応: 要対応")).toHaveCount(3);
   await expect(choices.nth(0)).toBeDisabled();
   await expect(choices.nth(1)).toBeDisabled();
   await expect(choices.nth(2)).toBeDisabled();
   await expect(splitButton).toBeDisabled();
-  const noSafeMapping = page.locator(".review-split-preview").getByText(/安全に確定できる候補がありません/);
+  const noSafeMapping = page.locator(".review-split-preview").getByText(/自動で対応を確認できない候補があります/);
   await expect(noSafeMapping).toHaveCount(1);
   await expect(noSafeMapping).toBeVisible();
   await page.getByRole("button", { name: "キャンセル" }).click();
@@ -45,9 +45,9 @@ test("ambiguous candidates are excluded while safe candidates split through the 
   await secondText.fill(originalThird);
   await page.getByRole("button", { name: "小問に分割" }).click();
   await expect(choices).toHaveCount(3);
-  await expect(page.locator(".review-split-preview").getByText(/3件中2件を自動分割できます/)).toBeVisible();
-  await expect(page.getByText("元資料との対応: 要手動確認")).toHaveCount(1);
-  await expect(page.getByText("元資料との対応: 確認済み")).toHaveCount(2);
+  await expect(page.locator(".review-split-preview").getByText(/3件中2件は自動で対応を確認できました/)).toBeVisible();
+  await expect(page.getByText("元資料との対応: 要対応")).toHaveCount(1);
+  await expect(page.getByText("元資料との対応: 自動確認済み")).toHaveCount(2);
   await expect(choices.nth(0)).toBeDisabled();
   await expect(choices.nth(0)).not.toBeChecked();
   await expect(choices.nth(1)).toBeEnabled();
