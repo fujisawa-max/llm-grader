@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { clearTextSourceMapping, mapCandidateToSources, suggestSubquestions } from "../lib/questionSplit";
+import { mergeContiguousText } from "../lib/reviewTextMerge";
 import type { ContentItem, ReviewNode } from "../types/reviews";
 
 const contentText = (item: ContentItem | undefined) => item && "text" in item ? item.text : "";
@@ -44,10 +45,13 @@ test("split partitions a merged text item across its original source anchors", (
   expect(contentText(proposal?.parentItems[0])).toBe("導入文です。\n");
   const first = proposal?.children[0].items[0];
   const second = proposal?.children[1].items[0];
+  const partsChars = Array.from(parts.text);
+  const firstBodyStart = partsChars.indexOf("境");
+  const secondBodyStart = partsChars.indexOf("領");
   expect(first && "merged_source_segments" in first ? first.merged_source_segments?.[0].source_slice : null)
-    .toEqual([0, Array.from("1. 境界を描く\n").length, Array.from(parts.text).length]);
+    .toEqual([firstBodyStart, firstBodyStart + Array.from("境界を描く\n").length, partsChars.length]);
   expect(second && "merged_source_segments" in second ? second.merged_source_segments?.[0].source_slice : null)
-    .toEqual([Array.from("1. 境界を描く\n").length, Array.from(parts.text).length, Array.from(parts.text).length]);
+    .toEqual([secondBodyStart, secondBodyStart + Array.from("領域を示す").length, partsChars.length]);
 });
 
 test("formula merged between text sources stays with its source line after splitting", () => {
@@ -84,7 +88,7 @@ test("an ambiguous candidate does not block safe candidates and remains unanchor
   expect(proposal?.placements[2]?.item && "source_slice" in proposal.placements[2].item
     ? proposal.placements[2].item.source_slice : null).toEqual([16, 25, Array.from(original).length]);
   expect(proposal?.children[1].items[0] && "source_slice" in proposal.children[1].items[0]
-    ? proposal.children[1].items[0].source_slice : null).toEqual([16, 25, Array.from(original).length]);
+    ? proposal.children[1].items[0].source_slice : null).toEqual([19, 25, Array.from(original).length]);
   expect(proposal?.notes.join(" ")).toContain("対応方法を選択してください");
 });
 
@@ -139,7 +143,7 @@ test("candidate matching normalizes only whitespace while preserving canonical o
   const proposal = suggestSubquestions(edited, canonical);
   expect(proposal?.children.map(child => child.mappingStatus)).toEqual(["automatic", "automatic"]);
   expect(proposal?.children[0].items[0] && "source_slice" in proposal.children[0].items[0]
-    ? proposal.children[0].items[0].source_slice : null).toEqual([0, 9, Array.from(original).length]);
+    ? proposal.children[0].items[0].source_slice : null).toEqual([3, 9, Array.from(original).length]);
 });
 
 test("fragmented marker and text items are detected without changing the ordered content", () => {
@@ -183,4 +187,80 @@ test("manual mapping reuses selected canonical evidence and override leaves sour
   const unanchored = clearTextSourceMapping(candidate.items);
   expect(unanchored.every(item => !("source_slice" in item))).toBe(true);
   expect(unanchored.every(item => item.type !== "text" || !("source_element_ids" in item))).toBe(true);
+});
+
+test("a subquestion can be recursively split while matching the original source draft", () => {
+  const canonicalText = "1. Accuracy\n2. Precision\n3. Recall";
+  const canonicalItems: ContentItem[] = [{
+    type: "text", order: 0, text: canonicalText, page_index: 0, source_element_ids: ["accuracy-list"],
+  }];
+  const nested = node(canonicalText);
+  nested.stable_key = "q2.2";
+  nested.review_node_id = "q2.2";
+  nested.source_draft_stable_key = null;
+  nested.node_type = "subquestion";
+  nested.parent_key = "q2";
+  nested.depth = 1;
+  nested.ordered_content = structuredClone(canonicalItems);
+  const proposal = suggestSubquestions(nested, { ordered_content: canonicalItems });
+  expect(proposal?.children.map(child => child.label)).toEqual(["1.", "2.", "3."]);
+  expect(proposal?.children.map(child => child.mappingStatus)).toEqual(["automatic", "automatic", "automatic"]);
+  expect(proposal?.children.every(child => child.items.length === 1)).toBe(true);
+  const originalChars = Array.from(canonicalText);
+  const expectedSourceSlices = ["Accuracy", "Precision", "Recall"].map((value, index) => {
+    const start = originalChars.join("").indexOf(value);
+    return [start, start + Array.from(value).length + (index < 2 ? 1 : 0), originalChars.length];
+  });
+  expect(proposal?.children.map(child => child.items[0] && "source_slice" in child.items[0]
+    ? child.items[0].source_slice : null)).toEqual(expectedSourceSlices);
+});
+
+test("recursive candidate detection keeps merged formula provenance with its nested subquestion", () => {
+  const first = { type: "text", order: 0, text: "1. 値を求めよ: ", page_index: 0, source_element_ids: ["nested-first"] };
+  const formula = { type: "formula_region", order: 1, region_id: "nested-formula", page_index: 0,
+    source_element_ids: ["nested-formula-source"] };
+  const second = { type: "text", order: 2, text: "\n2. 結果を説明せよ", page_index: 0,
+    source_element_ids: ["nested-second"] };
+  const merged = node("1. 値を求めよ: $x+1$\n2. 結果を説明せよ");
+  merged.node_type = "subquestion";
+  merged.depth = 1;
+  merged.parent_key = "q2";
+  merged.ordered_content = [{ ...first, text: "1. 値を求めよ: $x+1$\n2. 結果を説明せよ",
+    merged_source_segments: [formula, second] }];
+  merged.formula_decisions = { "nested-formula": {
+    decision: "merged_into_text", teacher_transcription: "x+1",
+  } };
+  const proposal = suggestSubquestions(merged, { ordered_content: [first, formula, second] });
+  expect(proposal?.children.map(child => child.label)).toEqual(["1.", "2."]);
+  expect(proposal?.children.map(child => child.mappingStatus)).toEqual(["automatic", "automatic"]);
+  expect(proposal?.children[0].items[0] && "merged_source_segments" in proposal.children[0].items[0]
+    ? proposal.children[0].items[0].merged_source_segments?.map(segment => segment.type) : [])
+    .toContain("formula_region");
+  const secondCandidateItem = proposal?.children[1].items[0];
+  const secondCandidateSegments = secondCandidateItem && "merged_source_segments" in secondCandidateItem
+    ? secondCandidateItem.merged_source_segments || [] : [];
+  expect(secondCandidateSegments.some(segment => Array.isArray(segment.source_element_ids) &&
+    segment.source_element_ids[0] === "nested-second")).toBe(true);
+});
+
+test("multi-text merge keeps every source anchor and rejects gaps or non-text items", () => {
+  const items: ContentItem[] = [
+    { type: "text", order: 0, text: "前半", page_index: 0, source_element_ids: ["a"] },
+    { type: "text", order: 1, text: "$x+1$", page_index: 0, source_element_ids: ["b"],
+      merged_source_segments: [{ page_index: 0, source_element_ids: ["c"] }] },
+    { type: "text", order: 2, text: "後半", page_index: 0, source_element_ids: ["c"] },
+    { type: "formula_region", order: 3, region_id: "f1" },
+    { type: "text", order: 4, text: "別の段落" },
+  ];
+  const merged = mergeContiguousText(items, [0, 1, 2]);
+  expect(merged?.map(item => item.type)).toEqual(["text", "formula_region", "text"]);
+  expect(merged?.[0]).toMatchObject({
+    text: "前半$x+1$後半", source_element_ids: ["a"],
+    merged_source_segments: [
+      { page_index: 0, source_element_ids: ["b"] },
+      { page_index: 0, source_element_ids: ["c"] },
+    ],
+  });
+  expect(mergeContiguousText(items, [1, 4])).toBeNull();
+  expect(mergeContiguousText(items, [2, 3])).toBeNull();
 });

@@ -27,7 +27,8 @@ export interface SplitProposal {
 const circled = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳";
 const marker = /^\s*(?:([1-9]\d?)[.)]|[（(]([1-9]\d?)[)）]|([①-⑳])|問\s*([1-9]\d?)(?=\s|[.:：、)]|$))(?=\s|[^\d\s]|$)\s*/u;
 
-function labelFor(match: RegExpMatchArray): string {
+function labelFor(match: RegExpMatchArray, preserveSourceMarker = false): string {
+  if (preserveSourceMarker) return match[0].trim();
   const number = match[1] || match[2] || match[4] || String(circled.indexOf(match[3] || "") + 1);
   return `(${number})`;
 }
@@ -241,7 +242,7 @@ function uniqueOriginMatch(rawLine: string, origins: UnlocatedOrigin[] | null): 
 
 interface TextRangeMapping { origin: UnlocatedOrigin; range: [number, number, number] }
 
-function mappedLinePiece(item: ContentItem, rawLine: string, displayText: string,
+function mappedLinePiece(item: ContentItem, _rawLine: string, displayText: string,
   origins: UnlocatedOrigin[] | null): { item: ContentItem; valid: boolean } {
   const blank: Record<string, unknown> = { type: "text", order: item.order, text: displayText };
   const sourceBacked = !!origins?.length;
@@ -250,7 +251,9 @@ function mappedLinePiece(item: ContentItem, rawLine: string, displayText: string
 
   const formulaOrigins = origins.filter(origin => origin.segment?.type === "formula_region");
   const textOrigins = origins.filter(origin => origin.segment?.type !== "formula_region");
-  const rawPoints = points(rawLine);
+  // Candidate markers are stored in the child label, so provenance ranges
+  // should describe only the body that remains in the child text.
+  const rawPoints = points(displayText);
   const formulaRanges: { origin: UnlocatedOrigin; start: number; end: number }[] = [];
   let ambiguous = false;
   for (const origin of formulaOrigins) {
@@ -277,10 +280,9 @@ function mappedLinePiece(item: ContentItem, rawLine: string, displayText: string
     if (formulaStart < rawPoints.length) spanStart = formulaEnd;
   }
 
-  // If no formula divided the line, the full numbered line (including its marker)
-  // must map uniquely to one immutable OCR text anchor.
-  if (!formulaRanges.length && rawLine.trim()) {
-    const matches = textOrigins.flatMap(origin => normalizedMatches(origin.canonicalText, rawLine).map(([start, end]) => ({ origin, start, end })));
+  // The marker is represented by the child label, not duplicated in its body.
+  if (!formulaRanges.length && displayText.trim()) {
+    const matches = textOrigins.flatMap(origin => normalizedMatches(origin.canonicalText, displayText).map(([start, end]) => ({ origin, start, end })));
     textMappings.length = 0;
     if (matches.length === 1) {
       const match = matches[0];
@@ -361,7 +363,8 @@ function textPiece(item: ContentItem, start: number, end: number, value: string,
 
 /** Suggest a split from already reviewed content; this never mutates the source node. */
 export function suggestSubquestions(node: ReviewNode, canonicalNode?: Pick<ReviewNode, "ordered_content">): SplitProposal | null {
-  if (node.node_type !== "major_question") return null;
+  // Review questions share one recursive node model: any question, including
+  // a subquestion, can be the parent of another level of subquestions.
   const parentItems: ContentItem[] = [];
   const children: SplitCandidate[] = [];
   const notes: string[] = [];
@@ -405,15 +408,18 @@ export function suggestSubquestions(node: ReviewNode, canonicalNode?: Pick<Revie
       const located = origins && hasExplicitSlice ? locateOrigins(item, node.formula_decisions, canonicalItems) : null;
       lines.forEach(line => {
         if (line.match) {
-          current = { label: labelFor(line.match), items: [], included: true, mappingStatus: "automatic", contentValid: true, selectedSourceIds: [] };
+          current = { label: labelFor(line.match, node.depth > 0), items: [], included: true, mappingStatus: "automatic", contentValid: true, selectedSourceIds: [] };
           children.push(current);
         }
         const text = line.match ? line.value.slice(line.match[0].length) : line.value;
         const owner = current ? children.length - 1 : null;
-        const exactPiece = located ? textPiece(item, line.start, line.end, text, located) : null;
-        const mapped = exactPiece && uniqueOriginMatch(line.value, origins)
-          ? { item: exactPiece, valid: true }
-          : mappedLinePiece(item, line.value, text, origins);
+        const displayedStart = line.start + (line.match?.[0].length || 0);
+        const exactPiece = located ? textPiece(item, displayedStart, line.end, text, located) : null;
+        const mapped = line.match && !text.trim()
+          ? { item: { type: "text", order: item.order, text } as ContentItem, valid: true }
+          : exactPiece && uniqueOriginMatch(text, origins)
+            ? { item: exactPiece, valid: true }
+            : mappedLinePiece(item, line.value, text, origins);
         if (!mapped.valid) {
           if (owner !== null) {
             const candidate = children[owner];
@@ -428,8 +434,12 @@ export function suggestSubquestions(node: ReviewNode, canonicalNode?: Pick<Revie
         // returned to the parent. The child preview may omit its marker, but
         // that marker is part of the teacher-visible source text and must not
         // disappear when the safe subset is applied.
+        const rawPiece = line.match
+          ? (located ? textPiece(item, line.start, line.end, line.value, located) : null) ||
+            mappedLinePiece(item, line.value, line.value, origins).item
+          : mapped.item;
         const retainedItem = mapped.valid
-          ? { ...mapped.item, text: line.value } as ContentItem
+          ? { ...rawPiece, text: line.value } as ContentItem
           : retainedAmbiguousLine(item, mapped.item, line.value);
         // A marker on its own (for example a standalone "（1）" OCR item)
         // labels the child but is not child body content. Keeping the empty

@@ -24,6 +24,60 @@ class ReviewTextEditingTests(unittest.TestCase):
         self.pin = {"run_id": None, "results": []}
         self.current = initial_snapshot("draft-hash", self.draft, self.pin)
 
+    def test_recursive_subquestion_hierarchy_preserves_source_ranges_and_rejects_cycles(self):
+        source_text = "導入\n1. Accuracy\n2. Precision"
+        source_node = {
+            "stable_key": "q1", "parent_key": None, "node_type": "major_question", "depth": 0,
+            "sort_order": 0, "label": {"raw": "問題1", "normalized": "問題1"},
+            "body_text": source_text, "ordered_content": [
+                {"type": "text", "order": 0, "text": source_text, "page_index": 0,
+                 "source_element_ids": ["accuracy-list"]}],
+            "review_flags": [], "score": {"semantics": "unset", "points": None,
+                                           "effective_points_candidate": None},
+        }
+        draft = {"nodes": [source_node], "formula_regions": [], "figure_regions": [], "review_flags": []}
+        current = initial_snapshot("nested-draft", draft, self.pin)
+        changed = deepcopy(current)
+        anchor = {"type": "text", "page_index": 0, "source_element_ids": ["accuracy-list"]}
+        total = len(source_text)
+        changed["nodes"][0]["ordered_content"] = [{
+            **anchor, "order": 0, "text": "導入\n", "source_slice": [0, 3, total],
+        }]
+
+        def teacher_node(key, parent, order, label, text, source_slice=None, decision=None):
+            item = {"type": "text", "order": 0, "text": text}
+            if source_slice is not None:
+                item.update(anchor)
+                item["source_slice"] = source_slice
+            node = {
+                "review_node_id": key, "stable_key": key, "source_draft_stable_key": None,
+                "source_draft_node_id": None, "parent_key": parent, "node_type": "subquestion",
+                "depth": 0, "sort_order": order, "label": {"raw": label, "normalized": label},
+                "body_text": text, "ordered_content": [item] if text else [], "included": True,
+                "score_semantics": "unset", "score_points": None, "review_flags": [],
+                "formula_decisions": {}, "figure_decisions": {}, "warning_states": {},
+            }
+            if decision:
+                node["source_mapping_decision"] = decision
+            return node
+
+        parent = teacher_node("q1.2", "q1", 0, "(2)", "", decision="teacher_unmapped_override")
+        first = teacher_node("q1.2.1", "q1.2", 0, "1.", "Accuracy", [6, 14, total], "automatic")
+        second = teacher_node("q1.2.2", "q1.2", 1, "2.", "Precision", [18, 27, total], "automatic")
+        changed["nodes"].extend([parent, first, second])
+        result = validate_snapshot(changed, current, draft, self.pin)
+        self.assertEqual([(node["stable_key"], node["parent_key"], node["depth"]) for node in result["nodes"]],
+                         [("q1", None, 0), ("q1.2", "q1", 1), ("q1.2.1", "q1.2", 2), ("q1.2.2", "q1.2", 2)])
+
+        cyclic = deepcopy(result)
+        cyclic["nodes"][1]["parent_key"] = "q1.2.1"
+        with self.assertRaisesRegex(ReviewError, "cycle"):
+            validate_snapshot(cyclic, result, draft, self.pin)
+        cross_review = deepcopy(result)
+        cross_review["nodes"][1]["parent_key"] = "another-review-node"
+        with self.assertRaisesRegex(ReviewError, "orphan_node"):
+            validate_snapshot(cross_review, result, draft, self.pin)
+
     def test_text_insert_reorder_and_delete_keep_formula_anchor(self):
         changed = deepcopy(self.current)
         items = changed["nodes"][0]["ordered_content"]

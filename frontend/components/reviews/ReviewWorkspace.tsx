@@ -179,11 +179,8 @@ export function ReviewWorkspace({ id }: { id: string }) {
   }
   function startSplit() {
     setPendingUnmappedOverride(null);
-    if (current.nodes.some(candidate => candidate.parent_key === node.stable_key)) {
-      setSplitMessage("既に小問があります。設問構成を確認し、必要なら手動で小問を追加してください。");
-      return;
-    }
-    const sourceNode = document.automatic_nodes.find(entry => entry.stable_key === node.source_draft_stable_key);
+    const sourceStableKey = sourceKey(node);
+    const sourceNode = document.automatic_nodes.find(entry => entry.stable_key === sourceStableKey);
     const proposal = suggestSubquestions(node, sourceNode);
     setSplitProposal(proposal);
     setSplitMessage(proposal ? "" : "小問候補を検出できませんでした。必要なら「小問を追加」を使用してください。");
@@ -269,6 +266,13 @@ export function ReviewWorkspace({ id }: { id: string }) {
       score_points: node.score_semantics === "direct" ? null : node.score_points,
       formula_decisions: Object.fromEntries(Object.entries(node.formula_decisions).filter(([key]) => !movedFormula.has(key))),
       figure_decisions: Object.fromEntries(Object.entries(node.figure_decisions).filter(([key]) => !movedFigure.has(key))) };
+    const parentHasTextMapping = parentItems.some(item => item.type === "text" && (
+      Object.keys(item).some(key => !["type", "order", "text", "merged_source_segments"].includes(key)) ||
+      "source_slice" in item || Array.isArray(item.merged_source_segments) &&
+      item.merged_source_segments.some(segment => segment.type !== "formula_region" &&
+        Object.keys(segment).some(key => !["type", "order", "text", "merged_source_segments"].includes(key)) ||
+        segment.type !== "formula_region" && "source_slice" in segment)));
+    if (!parentHasTextMapping) delete updated.source_mapping_decision;
     setSnapshot({ ...current, nodes: renumber([...ordered(current.nodes).map(entry => entry.node).map(entry =>
       entry.stable_key === node.stable_key ? updated : entry), ...children]) });
     setSplitProposal(null); setSplitMessage(""); setPendingUnmappedOverride(null); setSelected(children[0].stable_key);
@@ -359,7 +363,7 @@ export function ReviewWorkspace({ id }: { id: string }) {
             className={n.stable_key === node.stable_key ? "active" : ""} style={{ paddingLeft: `${12 + depth * 18}px` }} onClick={() => chooseNode(n)}>
             {n.label.raw} <small>{questionTypeLabel(n.node_type)} {!n.included && "（除外）"}</small></button>)}
         </nav><div className="review-toolbar"><button disabled={readonly} onClick={() => add(false)}>大問を追加</button><button disabled={readonly} onClick={() => add(true)}>小問を追加</button></div></section>
-        {node.node_type === "major_question" && <section className="panel" aria-label="小問への分割">
+        <section className="panel" aria-label="小問への分割">
           <button type="button" className="button secondary" disabled={readonly} onClick={startSplit}>小問に分割</button>
           {splitMessage && <p className="notice">{splitMessage}</p>}
           {splitProposal && <div className="review-split-preview">
@@ -416,7 +420,7 @@ export function ReviewWorkspace({ id }: { id: string }) {
               <p className="warn">{splitProposal.children.filter(child => child.included && child.mappingStatus === "manual_required").map(child => `${child.label} の元資料との対応方法を選択してください。`).join(" ")}</p>}
             <div className="review-toolbar"><button className="button" type="button" disabled={!splitProposal.children.some(child => child.included && ["automatic", "manual_mapped", "unmapped_override"].includes(child.mappingStatus) && child.contentValid && !!child.label.trim()) || splitProposal.children.some(child => child.included && (child.mappingStatus === "manual_required" || !child.contentValid || !child.label.trim()))} onClick={applySplit}>この内容で分割</button><button type="button" onClick={() => { setSplitProposal(null); setPendingUnmappedOverride(null); }}>キャンセル</button></div>
           </div>}
-        </section>}
+        </section>
         <div className="review-toolbar">{[...new Set((document.source_regions[activeSourceKey || ""] || []).map(r => r.page_index))].map(p => <button key={p} onClick={() => { setPage(p); setRegionId(""); }}>元の問題用紙 {p + 1}ページ</button>)}</div>
         {node.source_mapping_decision === "teacher_unmapped_override" && <p className="notice" role="status">この小問は元資料との詳細な対応情報なしで作成されています。</p>}
         {node.source_mapping_decision === "teacher_manual_mapping" && <p className="notice" role="status">この小問の元資料との対応は教師が指定しました。</p>}
