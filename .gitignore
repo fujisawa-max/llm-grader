@@ -7,13 +7,11 @@
 .env
 .env.*
 !.env.example
-!.env.dev.example
 *.gguf
 __pycache__/
 .venv/
 
 /testData/
-/AGENTS.md
 /imported-conversation.md
 /docs/auto-grading-system-spec-v4.md
 frontend/node_modules/
@@ -74,3 +72,16 @@ student-answer/
 student-visual/
 
 *.tsbuildinfo
+
+# Local-only Codex development environment. Never commit these files.
+/AGENTS.md
+/.agents/
+/.codex/
+/.env.dev
+/.env.dev.*
+/Dockerfile.codex
+/compose.dev.yaml
+/docker/codex/
+/docs/operations/codex-container-development.md
+/scripts/codex-dev-entrypoint.sh
+/scripts/dev-codex.sh
