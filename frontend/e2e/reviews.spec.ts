@@ -175,7 +175,7 @@ test("teacher edits ordered text and formula with field guidance, preview, and r
   await page.getByRole("button", { name: "＋ 問題文を追加" }).click();
   await expect(page.getByLabel("問題文 3")).toHaveValue("");
   await page.getByRole("button", { name: "変更を保存", exact: true }).click();
-  await expect(page.getByRole("alert").first()).toContainText("保存前に確認が必要な入力欄");
+  await expect(page.getByRole("alert").first()).toContainText("問題1 > 問題文3");
   await expect(page.locator(".review-field-error")).toContainText("問題文が空です");
   expect(saved).toHaveLength(0);
   await page.getByLabel("問題文 3").fill("次の値 $x^2+y^2$ を求めよ。");

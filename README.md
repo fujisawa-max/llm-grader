@@ -83,6 +83,8 @@ Use `docker compose restart` for a restart or `docker compose down` to stop. Sta
 
 Python sources are under `src/`, migrations under `migrations/`, and the Next.js app under `frontend/`. Outside Docker, create a virtual environment and run `pip install -e '.[dev]'`; install frontend dependencies with `npm ci` in `frontend`.
 
+For the isolated containerized Codex workflow, see [Containerized Codex Development](docs/operations/codex-container-development.md). `compose.yaml` remains the normal deployment stack; use `compose.dev.yaml` only for local development.
+
 ## Testing
 
 Use `.venv/bin/python -m unittest discover -s tests -v`, `.venv/bin/python -m pytest -q`, `.venv/bin/ruff check src tests`, and in `frontend`, `npm run typecheck`, `npm run lint`, and `npm run build`. Browser E2E uses `npm run e2e` with a provisioned Playwright/Chromium installation.

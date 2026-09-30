@@ -1,0 +1,64 @@
+ARG CODEX_BASE_IMAGE=ghcr.io/openai/codex-universal:latest
+FROM ${CODEX_BASE_IMAGE}
+
+ARG CODEX_CLI_VERSION=0.159.1
+ARG LOCAL_UID=1000
+ARG LOCAL_GID=1000
+
+ENV HOME=/root \
+    NVM_DIR=/root/.nvm \
+    PYENV_ROOT=/root/.pyenv \
+    CODEX_ENV_PYTHON_VERSION=3.12 \
+    CODEX_ENV_NODE_VERSION=22 \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /opt/llm-scoring
+
+COPY pyproject.toml README.md ./
+COPY src ./src
+COPY frontend/package.json frontend/package-lock.json ./frontend/
+COPY docker/codex/config.toml /usr/local/share/codex-dev/config.toml
+COPY scripts/codex-dev-entrypoint.sh /usr/local/bin/codex-dev-entrypoint
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends bubblewrap \
+    && rm -rf /var/lib/apt/lists/* \
+    && printf '\n# Prefer IPv4 when the host has limited IPv6 routing.\nprecedence ::ffff:0:0/96  100\n' >> /etc/gai.conf \
+    && chmod +x /usr/local/bin/codex-dev-entrypoint
+
+RUN /bin/bash -lc 'set -euxo pipefail; \
+    pyenv global "$CODEX_ENV_PYTHON_VERSION"; \
+    python3 -m venv /opt/codex-venv; \
+    /opt/codex-venv/bin/python -m pip install --upgrade pip; \
+    /opt/codex-venv/bin/python -m pip install -e ".[dev]"; \
+    nvm use "$CODEX_ENV_NODE_VERSION"; \
+    npm install --global "@openai/codex@${CODEX_CLI_VERSION}"; \
+    node_bin="$(dirname "$(command -v node)")"; \
+    ln -sf "$node_bin/node" /usr/local/bin/node; \
+    ln -sf "$node_bin/npm" /usr/local/bin/npm; \
+    ln -sf "$node_bin/npx" /usr/local/bin/npx; \
+    ln -sf "$node_bin/codex" /usr/local/bin/codex; \
+    cd /opt/llm-scoring/frontend; \
+    npm ci; \
+    npx playwright install-deps chromium; \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers npx playwright install chromium; \
+    mkdir -p /opt/codex-venv /home/codex/.codex /home/codex/.cache /opt/playwright-browsers /opt/llm-scoring/frontend/.next; \
+    sha256sum /opt/llm-scoring/pyproject.toml | cut -d " " -f 1 > /opt/codex-venv/.codex-project-pyproject.sha256; \
+    sha256sum /opt/llm-scoring/frontend/package-lock.json | cut -d " " -f 1 > /opt/llm-scoring/frontend/node_modules/.codex-project-package-lock.sha256; \
+    if ! getent group "$LOCAL_GID" >/dev/null; then groupadd --gid "$LOCAL_GID" codex; fi; \
+    if ! getent passwd "$LOCAL_UID" >/dev/null; then useradd --uid "$LOCAL_UID" --gid "$LOCAL_GID" --home-dir /home/codex --shell /bin/bash codex; fi; \
+    chown -R "$LOCAL_UID:$LOCAL_GID" /opt/codex-venv /opt/llm-scoring/frontend/node_modules /opt/llm-scoring/frontend/.next /home/codex; \
+    chmod 0755 /root /root/.pyenv /root/.nvm /root/.local /root/.local/bin; \
+    chmod -R a+rX /opt/playwright-browsers; \
+    ' 
+
+ENV HOME=/home/codex \
+    CODEX_HOME=/home/codex/.codex \
+    VIRTUAL_ENV=/opt/codex-venv \
+    PATH=/opt/codex-venv/bin:/usr/local/bin:/root/.local/bin:${PATH}
+
+ENTRYPOINT ["/usr/local/bin/codex-dev-entrypoint"]
+CMD ["sleep", "infinity"]
