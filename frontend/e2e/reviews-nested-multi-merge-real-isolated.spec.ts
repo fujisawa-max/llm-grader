@@ -125,18 +125,18 @@ test("multi-text merge preserves source ranges and cannot cross a formula", asyn
   const expectedText = sourceItems.slice(0, 4).map(item => item.text).join("");
   const expectedSlices = sourceItems.slice(0, 4).map(item => item.source_slice);
   await page.goto("/question-import-reviews/" + id);
-  await page.getByRole("button", { name: "問題文をまとめて結合" }).click();
+  await page.getByRole("button", { name: "内容をまとめて結合" }).click();
   const checkbox = (number: number) => page.getByLabel("まとめて結合する 問題文 " + number);
   await checkbox(2).check();
   await checkbox(5).check();
-  const invalidSelection = page.getByRole("button", { name: "選択した2件を結合" });
+  const invalidSelection = page.getByRole("button", { name: "選択した2件の内容を結合" });
   await expect(invalidSelection).toBeDisabled();
-  await expect(page.getByText(/数式や図をまたぐ選択/)).toBeVisible();
+  await expect(page.getByText(/連続する内容だけを結合できます/)).toBeVisible();
   await checkbox(2).uncheck();
   await checkbox(5).uncheck();
 
   for (const number of [1, 2, 3, 4]) await checkbox(number).check();
-  const merge = page.getByRole("button", { name: "選択した4件を結合" });
+  const merge = page.getByRole("button", { name: "選択した4件の内容を結合" });
   await expect(merge).toBeEnabled();
   await merge.click();
   await expect(page.getByLabel("問題文 1")).toHaveValue(expectedText);

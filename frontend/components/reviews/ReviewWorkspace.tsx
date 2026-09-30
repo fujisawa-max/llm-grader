@@ -12,6 +12,7 @@ import { EvidencePanel } from "./EvidencePanel";
 import { WarningPanel } from "./WarningPanel";
 import { MarkdownMathText } from "@/components/MarkdownMathText";
 import { clearTextSourceMapping, mapCandidateToSources, suggestSubquestions, type SplitProposal } from "@/lib/questionSplit";
+import { formulaIsConfirmed } from "@/lib/formulaConfirmation";
 
 function renumber(nodes: ReviewNode[]) {
   const counts = new Map<string | null, number>();
@@ -278,6 +279,31 @@ export function ReviewWorkspace({ id }: { id: string }) {
     setSplitProposal(null); setSplitMessage(""); setPendingUnmappedOverride(null); setSelected(children[0].stable_key);
   }
   const counts = document.summary;
+  const activeSourceOwners = new Set(current.nodes.filter(entry => entry.included).map(entry => sourceKey(entry)).filter(Boolean));
+  const formulaRegions = document.regions.filter(entry => entry.region_type === "formula" && entry.assigned_question_key &&
+    activeSourceOwners.has(entry.assigned_question_key));
+  const formulaReviewed = formulaRegions.filter(entry => {
+    const decisionNode = current.nodes.find(candidate => sourceKey(candidate) === entry.assigned_question_key && candidate.formula_decisions[entry.region_id]);
+    return formulaIsConfirmed(decisionNode?.formula_decisions[entry.region_id]);
+  }).length;
+  const formulaUnreviewed = formulaRegions.length - formulaReviewed;
+  function jumpToUnreviewedFormula() {
+    const pending = formulaRegions.find(entry => {
+      const decisionNode = current.nodes.find(candidate => sourceKey(candidate) === entry.assigned_question_key && candidate.formula_decisions[entry.region_id]);
+      return !formulaIsConfirmed(decisionNode?.formula_decisions[entry.region_id]);
+    });
+    if (!pending) return;
+    const target = regionOwner(pending.region_id) || current.nodes.find(candidate => candidate.source_draft_stable_key === pending.assigned_question_key);
+    if (!target) return;
+    chooseNode(target); chooseRegion(pending.region_id);
+    window.setTimeout(() => {
+      const mergedIndex = target.ordered_content.findIndex(item => item.type === "text" &&
+        Array.isArray(item.merged_source_segments) && item.merged_source_segments.some(segment => segment.region_id === pending.region_id));
+      const element = window.document.getElementById(reviewFieldId(target.stable_key,
+        mergedIndex >= 0 ? `text:${mergedIndex}` : `formula:${pending.region_id}`));
+      element?.scrollIntoView({ block: "center", behavior: "smooth" });
+    }, 50);
+  }
   const saveErrors = reviewFieldErrors(current.nodes, fieldIssues);
   const activeSourceKey = sourceKey(node);
   const activeRegions = document.regions.filter(r => r.assigned_question_key === activeSourceKey &&
@@ -320,7 +346,10 @@ export function ReviewWorkspace({ id }: { id: string }) {
     <p className="muted">元の問題用紙と自動解析結果を比較し、設問構造や内容を確認・修正します。ここでの確認は、設問の最終確定とは別の操作です。</p>
     <div className="review-summary" aria-label="確認状況">
       <span>設問 {counts.included_questions} / 除外 {counts.excluded_questions}</span><button type="button" onClick={() => { const first = document.warnings.find(w => (current.warning_states?.[w.id]?.state || "unreviewed") === "unreviewed"); if (first) jumpToWarning(first); }}>警告 未確認 {counts.unresolved_warnings} · 対象へ移動</button>
-      <span>数式 確認済み {counts.formula_reviewed} / 未確認 {counts.formula_unreviewed}</span><span>図 確認済み {counts.figure_reviewed} / 未確認 {counts.figure_unreviewed}</span>
+      {formulaUnreviewed > 0
+        ? <button type="button" onClick={jumpToUnreviewedFormula}>数式 確認済み {formulaReviewed} / {formulaRegions.length} · 未確認 {formulaUnreviewed} · 未確認を表示</button>
+        : <span>数式 確認済み {formulaReviewed} / {formulaRegions.length} · 未確認 0</span>}
+      <span>図 確認済み {counts.figure_reviewed} / 未確認 {counts.figure_unreviewed}</span>
       <span>配点 未解決 {counts.score_unresolved} · 合計点候補 {counts.total_points_candidate ?? "要確認"}</span>
       {dirty && <span>集計は保存済みの修正版の値です</span>}
     </div>

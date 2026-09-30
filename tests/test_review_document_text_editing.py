@@ -178,6 +178,82 @@ class ReviewTextEditingTests(unittest.TestCase):
         with self.assertRaisesRegex(ReviewError, "merged_formula_text_missing"):
             validate_snapshot(missing_text, self.current, self.draft, self.pin)
 
+    def test_each_formula_requires_its_own_confirmation_before_review_completion(self):
+        for index in (2, 3):
+            rid = f"f{index}"
+            self.draft["formula_regions"].append({
+                "region_id": rid, "assigned_question_key": "q1",
+                "text_fragments": [{"native_text": f"x+{index}", "element_id": f"formula-{index}", "bbox": [1, 1, 2, 2]}],
+            })
+            self.draft["nodes"][0]["ordered_content"].append({"type": "formula_region", "order": index + 1, "region_id": rid})
+        for index, item in enumerate(self.draft["nodes"][0]["ordered_content"]):
+            item["order"] = index
+        current = initial_snapshot("three-formulas", self.draft, self.pin)
+        changed = deepcopy(current)
+        changed["nodes"][0]["formula_decisions"] = {
+            "f1": {"decision": "teacher_edit", "teacher_transcription": "x+1",
+                   "confirmation_status": "confirmed", "confirmation_method": "individual"},
+            "f2": {"decision": "use_native", "confirmation_status": "unreviewed"},
+            "f3": {"decision": "unreviewed"},
+        }
+        result = validate_snapshot(changed, current, self.draft, self.pin)
+        summary = review_summary(result, self.draft, self.pin)
+        self.assertEqual((summary["formula_reviewed"], summary["formula_unreviewed"]), (1, 2))
+        reviewed = deepcopy(result)
+        reviewed["state"], reviewed["reviewed"] = "reviewed", True
+        with self.assertRaisesRegex(ReviewError, "formula_review_required"):
+            validate_snapshot(reviewed, result, self.draft, self.pin, mark=True)
+
+        changed = deepcopy(result)
+        changed["nodes"][0]["formula_decisions"]["f2"].update(
+            confirmation_status="confirmed", confirmation_method="bulk")
+        changed["nodes"][0]["formula_decisions"]["f3"] = {
+            "decision": "unreviewed", "confirmation_status": "confirmed", "confirmation_method": "bulk",
+        }
+        result = validate_snapshot(changed, result, self.draft, self.pin)
+        self.assertEqual(review_summary(result, self.draft, self.pin)["formula_unreviewed"], 0)
+        reviewed = deepcopy(result)
+        reviewed["state"], reviewed["reviewed"] = "reviewed", True
+        validate_snapshot(reviewed, result, self.draft, self.pin, mark=True)
+
+    def test_merged_unconfirmed_formula_remains_a_completion_blocker(self):
+        changed = deepcopy(self.current)
+        node = changed["nodes"][0]
+        text, formula, tail = node["ordered_content"]
+        anchor = {key: value for key, value in formula.items() if key != "order"}
+        node["ordered_content"] = [
+            {**text, "text": "元の問題文$x+1$", "merged_source_segments": [anchor]},
+            {**tail, "order": 1},
+        ]
+        node["formula_decisions"]["f1"] = {
+            "decision": "merged_into_text", "teacher_transcription": "x+1", "confirmation_status": "unreviewed",
+        }
+        result = validate_snapshot(changed, self.current, self.draft, self.pin)
+        self.assertEqual(review_summary(result, self.draft, self.pin)["formula_unreviewed"], 1)
+        reviewed = deepcopy(result)
+        reviewed["state"], reviewed["reviewed"] = "reviewed", True
+        with self.assertRaisesRegex(ReviewError, "formula_review_required"):
+            validate_snapshot(reviewed, result, self.draft, self.pin, mark=True)
+
+        result["nodes"][0]["formula_decisions"]["f1"].update(
+            confirmation_status="confirmed", confirmation_method="individual")
+        result = validate_snapshot(result, result, self.draft, self.pin)
+        self.assertEqual(review_summary(result, self.draft, self.pin)["formula_unreviewed"], 0)
+
+    def test_formula_confirmation_metadata_rejects_unknown_ids_and_methods(self):
+        changed = deepcopy(self.current)
+        changed["nodes"][0]["formula_decisions"]["not-a-source"] = {
+            "decision": "unreviewed", "confirmation_status": "confirmed", "confirmation_method": "bulk",
+        }
+        with self.assertRaisesRegex(ReviewError, "invalid_region_decision"):
+            validate_snapshot(changed, self.current, self.draft, self.pin)
+        changed = deepcopy(self.current)
+        changed["nodes"][0]["formula_decisions"]["f1"] = {
+            "decision": "unreviewed", "confirmation_status": "confirmed", "confirmation_method": "forged",
+        }
+        with self.assertRaisesRegex(ReviewError, "invalid_formula_confirmation"):
+            validate_snapshot(changed, self.current, self.draft, self.pin)
+
     def test_formula_warning_remains_traceable_after_exclusion(self):
         self.draft["formula_regions"][0]["review_flags"] = ["formula_low_confidence"]
         before = warning_catalog(self.draft, self.pin)

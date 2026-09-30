@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { clearTextSourceMapping, mapCandidateToSources, suggestSubquestions } from "../lib/questionSplit";
-import { mergeContiguousText } from "../lib/reviewTextMerge";
+import { mergeContiguousContent, mergeContiguousText } from "../lib/reviewTextMerge";
+import { formulaIsConfirmed, setFormulaConfirmation } from "../lib/formulaConfirmation";
 import type { ContentItem, ReviewNode } from "../types/reviews";
 
 const contentText = (item: ContentItem | undefined) => item && "text" in item ? item.text : "";
@@ -121,6 +122,34 @@ test("all ambiguous candidates stay out of automatic split", () => {
   expect(proposal?.children.map(child => child.mappingStatus)).toEqual(["manual_required", "manual_required"]);
   expect(proposal?.children.every(child => !child.included)).toBe(true);
   expect(proposal?.notes.join(" ")).toContain("対応情報なしで分割してください");
+});
+
+test("mixed multi-merge keeps order, inline math, and every source anchor", () => {
+  const items: ContentItem[] = [
+    { type: "text", order: 0, text: "次の式", page_index: 0, source_element_ids: ["text-a"] },
+    { type: "formula_region", order: 1, region_id: "f1", page_index: 0, source_element_ids: ["formula-a"] },
+    { type: "text", order: 2, text: "について、", page_index: 0, source_element_ids: ["text-b"] },
+    { type: "formula_region", order: 3, region_id: "f2", page_index: 0, source_element_ids: ["formula-b"] },
+    { type: "text", order: 4, text: "を考える。", page_index: 0, source_element_ids: ["text-c"] },
+  ];
+  const merged = mergeContiguousContent(items, [0, 1, 2, 3, 4], { f1: "$$x^2$$", f2: "y=1" });
+  expect(merged).toHaveLength(1);
+  expect(contentText(merged?.[0])).toBe("次の式$x^2$について、$y=1$を考える。");
+  expect((merged?.[0] as ContentItem & { merged_source_segments?: Record<string, unknown>[] }).merged_source_segments?.map(segment => segment.region_id))
+    .toEqual(["f1", undefined, "f2", undefined]);
+  expect(mergeContiguousContent(items, [0, 2], { f1: "x^2", f2: "y=1" })).toBeNull();
+  const withFigure = [...items.slice(0, 1), { type: "figure_region", order: 1, region_id: "fig" } as ContentItem, ...items.slice(2)];
+  expect(mergeContiguousContent(withFigure, [0, 1, 2], { f1: "x^2" })).toBeNull();
+  expect(mergeContiguousContent(items, [1, 2], { f1: "x^2" })).toBeNull();
+});
+
+test("formula confirmation remains separate from independent or embedded state", () => {
+  expect(formulaIsConfirmed({ decision: "unreviewed" })).toBe(false);
+  expect(formulaIsConfirmed({ decision: "merged_into_text", teacher_transcription: "x+1", confirmation_status: "unreviewed" })).toBe(false);
+  expect(formulaIsConfirmed({ decision: "merged_into_text", teacher_transcription: "x+1", confirmation_status: "confirmed" })).toBe(true);
+  expect(formulaIsConfirmed({ decision: "excluded" })).toBe(true);
+  const bulk = setFormulaConfirmation({ decision: "unreviewed" }, "confirmed", "bulk");
+  expect(bulk).toMatchObject({ decision: "unreviewed", confirmation_status: "confirmed", confirmation_method: "bulk" });
 });
 
 test("repeated source text is ambiguous instead of choosing an arbitrary occurrence", () => {

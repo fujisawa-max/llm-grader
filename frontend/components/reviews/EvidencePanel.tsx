@@ -4,6 +4,8 @@ import { reviews } from "@/lib/api/reviews";
 import type { Decision, Json, RegionEvidence } from "@/types/reviews";
 import { reviewDecisionLabel, reviewIssueLabel } from "@/lib/reviewLabels";
 import { MathPreview } from "@/components/MathText";
+import { FormulaConfirmation } from "@/components/reviews/FormulaConfirmation";
+import { setFormulaConfirmation } from "@/lib/formulaConfirmation";
 
 export function EvidencePanel({ id, regionId, ownerLabel, decision, readonly, onDecision }: {
   id: string; regionId: string; ownerLabel: string; decision: Decision; readonly: boolean; onDecision: (d: Decision) => void;
@@ -64,13 +66,22 @@ export function EvidencePanel({ id, regionId, ownerLabel, decision, readonly, on
       {raw !== undefined && <pre data-testid="raw-vision-output">{JSON.stringify(raw, null, 2)}</pre>}
     </details>}
     <fieldset disabled={readonly} className="review-fields"><legend>教師の判断</legend>
-      <label>確認結果<select aria-label="確認結果" value={decision.decision} onChange={e => onDecision({ ...decision, decision: e.target.value })}>
+      <label>{formula ? "読み取り内容の採用方法" : "確認結果"}<select aria-label={formula ? "読み取り内容の採用方法" : "確認結果"}
+        value={decision.decision} disabled={formula && decision.decision === "merged_into_text"}
+        onChange={e => {
+          const value = e.target.value;
+          const next = { ...decision, decision: value };
+          if (formula) onDecision(setFormulaConfirmation(next, value === "unreviewed" ? "unreviewed" : "confirmed", "individual"));
+          else onDecision(next);
+        }}>
         <option value="unreviewed">{reviewDecisionLabel("unreviewed")}</option>
         {formula ? <><option value="use_native" disabled={!region.text_fragments?.length}>{reviewDecisionLabel("use_native")}</option>
           <option value="use_vision" disabled={!pin?.has_candidate}>{reviewDecisionLabel("use_vision")}</option><option value="teacher_edit">{reviewDecisionLabel("teacher_edit")}</option>
           {["excluded", "merged_into_text"].includes(decision.decision) && <option value={decision.decision}>{reviewDecisionLabel(decision.decision)}</option>}</>
           : <><option value="accepted_as_evidence">{reviewDecisionLabel("accepted_as_evidence")}</option><option value="needs_correction">{reviewDecisionLabel("needs_correction")}</option></>}
       </select></label>
+      {formula && <FormulaConfirmation label="教師による数式確認" decision={decision} disabled={readonly}
+        onChange={status => onDecision(setFormulaConfirmation(decision, status, "individual"))} />}
       {formula && decision.decision === "teacher_edit" && <label>教師が確認した数式<textarea aria-label="教師が確認した数式" maxLength={20000} value={decision.teacher_transcription || ""}
         onChange={e => onDecision({ ...decision, teacher_transcription: e.target.value })} /><small>入力内容を修正版に保存します。</small><MathPreview source={decision.teacher_transcription || ""} mathOnly /></label>}
       <label>教師メモ<textarea aria-label="教師メモ" maxLength={2000} value={decision.note || ""} onChange={e => onDecision({ ...decision, note: e.target.value })} /></label>

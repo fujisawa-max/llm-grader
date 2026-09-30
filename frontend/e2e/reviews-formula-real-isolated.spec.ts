@@ -32,19 +32,37 @@ test("formula merges into adjacent text with both PDF sources intact", async ({ 
   await page.goto(`/question-import-reviews/${mergeId}`);
   const formula = page.locator('[data-content-type="formula"]');
   await expect(formula.getByRole("button", { name: "上の問題文とマージ" })).toBeEnabled();
+  await formula.getByLabel("数式 1の確認").selectOption("unreviewed");
   await page.getByLabel("数式 1のLaTeX").fill("$$x_1 + x_2 = 3$$");
   await formula.getByRole("button", { name: "上の問題文とマージ" }).click();
   await expect(page.getByLabel("問題文 1")).toHaveValue("問題1 次の式を計算しなさい。$x_1 + x_2 = 3$");
-  await expect(page.locator('[data-content-type="text"]').first().locator(".math-inline .katex")).toBeVisible();
+  await expect(page.locator('[data-content-type="text"]').first().locator(".katex")).toBeVisible();
+  await expect(page.getByLabel("結合済み数式 1")).toHaveValue("unreviewed");
   await expect(formula).toHaveCount(0);
   const response = page.waitForResponse(r => r.url().includes(`${path}/revisions`) && r.request().method() === "POST");
   await page.getByRole("button", { name: "変更を保存", exact: true }).click();
   expect((await response).status()).toBe(200);
   await page.reload();
   await expect(page.getByLabel("問題文 1")).toHaveValue("問題1 次の式を計算しなさい。$x_1 + x_2 = 3$");
-  await expect(page.locator('[data-content-type="text"]').first().locator(".math-inline .katex")).toBeVisible();
+  await expect(page.locator('[data-content-type="text"]').first().locator(".katex")).toBeVisible();
+  await expect(page.getByLabel("結合済み数式 1")).toHaveValue("unreviewed");
+  await page.getByLabel("結合済み数式 1").selectOption("confirmed");
+  const individualConfirmation = page.waitForResponse(r => r.url().includes(`${path}/revisions`) && r.request().method() === "POST");
+  await page.getByRole("button", { name: "変更を保存", exact: true }).click();
+  expect((await individualConfirmation).status()).toBe(200);
+  await page.reload();
+  await expect(page.getByLabel("結合済み数式 1")).toHaveValue("confirmed");
+  await page.getByLabel("結合済み数式 1").selectOption("unreviewed");
+  page.once("dialog", dialog => dialog.accept());
+  await page.getByRole("button", { name: /未確認の数式を一括確認（1件）/ }).click();
+  await expect(page.getByLabel("結合済み数式 1")).toHaveValue("confirmed");
+  const bulkConfirmation = page.waitForResponse(r => r.url().includes(`${path}/revisions`) && r.request().method() === "POST");
+  await page.getByRole("button", { name: "変更を保存", exact: true }).click();
+  expect((await bulkConfirmation).status()).toBe(200);
+  await page.reload();
+  await expect(page.getByLabel("結合済み数式 1")).toHaveValue("confirmed");
   const saved = await read();
-  expect(saved.current_revision).toBe(before.current_revision + 1);
+  expect(saved.current_revision).toBe(before.current_revision + 3);
   expect(saved.snapshot.nodes[0].ordered_content.map((item: { type: string }) => item.type))
     .toEqual(["text", "text", "figure_region"]);
   expect(saved.snapshot.nodes[0].ordered_content[0].source_element_ids).toEqual(textSource);
@@ -52,6 +70,7 @@ test("formula merges into adjacent text with both PDF sources intact", async ({ 
   expect(formulaSegment).toEqual(Object.fromEntries(Object.entries(formulaAnchor).filter(([key]) => key !== "order")));
   expect(saved.snapshot.nodes[0].formula_decisions["formula-fixture-1"]).toMatchObject({
     decision: "merged_into_text", teacher_transcription: "x_1 + x_2 = 3",
+    confirmation_status: "confirmed", confirmation_method: "bulk",
   });
   expect(saved.regions).toEqual(before.regions);
   expect(saved.source_pdf_sha256).toBe(before.source_pdf_sha256);

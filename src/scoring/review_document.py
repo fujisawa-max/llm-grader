@@ -83,6 +83,23 @@ def _content_evidence(item):
             if key not in {"type", "order", "text", "merged_source_segments", "source_slice"}}
 
 
+def _formula_confirmation_resolved(decision):
+    """Resolve the teacher confirmation independently from where a formula lives.
+
+    Older revisions used the source decision as their confirmation signal. Keep
+    reading those revisions that way, while an explicit status on newer
+    revisions takes precedence (notably for a merged but still unreviewed formula).
+    """
+    if not isinstance(decision, dict):
+        return False
+    if decision.get("decision") == "excluded":
+        return True
+    status = decision.get("confirmation_status")
+    if status is not None:
+        return status == "confirmed"
+    return decision.get("decision", "unreviewed") != "unreviewed"
+
+
 def _validate_content_provenance(nodes, source, by_key):
     # source_slice indexes the immutable OCR text in the original draft, not
     # the teacher-edited Markdown string currently shown in the textarea.
@@ -368,12 +385,26 @@ def validate_snapshot(snapshot, current, draft, pin, *, mark=False):
             owned = {r["region_id"]: r for r in draft.get(f"{kind}_regions", [])
                      if r.get("assigned_question_key") == owner}
             for rid, d in decisions.items():
-                if rid not in owned or not isinstance(d, dict) or set(d) - {
-                        "decision", "teacher_transcription", "note", "evidence_identity"}:
+                allowed_decision_fields = {"decision", "teacher_transcription", "note", "evidence_identity"}
+                if kind == "formula":
+                    allowed_decision_fields |= {"confirmation_status", "confirmation_method"}
+                if rid not in owned or not isinstance(d, dict) or set(d) - allowed_decision_fields:
                     raise ReviewError("invalid_region_decision", 422)
                 decision = d.get("decision")
                 if not isinstance(decision, str) or decision not in allowed:
                     raise ReviewError("invalid_decision", 422)
+                if kind == "formula":
+                    confirmation_status = d.get("confirmation_status")
+                    confirmation_method = d.get("confirmation_method")
+                    if confirmation_status is not None and confirmation_status not in {"unreviewed", "confirmed"}:
+                        raise ReviewError("invalid_formula_confirmation", 422,
+                                          node_key=n["stable_key"], field_key=f"formula:{rid}")
+                    if confirmation_method is not None and confirmation_method not in {"individual", "bulk"}:
+                        raise ReviewError("invalid_formula_confirmation", 422,
+                                          node_key=n["stable_key"], field_key=f"formula:{rid}")
+                    if confirmation_method is not None and confirmation_status != "confirmed":
+                        raise ReviewError("invalid_formula_confirmation", 422,
+                                          node_key=n["stable_key"], field_key=f"formula:{rid}")
                 _text(d.get("note", ""), 2000)
                 _text(d.get("teacher_transcription", ""))
                 native = owned[rid].get("text_fragments", [])
@@ -406,8 +437,13 @@ def validate_snapshot(snapshot, current, draft, pin, *, mark=False):
                     continue
                 decisions = [n.get(f"{kind}_decisions", {}).get(region["region_id"], {})
                              for n in nodes if _source_owner(n, by_key) == owner]
-                if not any(d.get("decision", "unreviewed") != "unreviewed" for d in decisions):
-                    raise ReviewError(f"{kind}_review_required", 422)
+                if kind == "formula":
+                    if not any(_formula_confirmation_resolved(d) for d in decisions):
+                        raise ReviewError("formula_review_required", 422, node_key=owner,
+                                          field_key=f"formula:{region['region_id']}")
+                elif not any(d.get("decision", "unreviewed") != "unreviewed" for d in decisions):
+                    raise ReviewError(f"{kind}_review_required", 422, node_key=owner,
+                                      field_key=f"figure:{region['region_id']}")
     catalog = {w["id"]: w for w in warning_catalog(draft, pin)}
     resolutions = snap.get("warning_states", {})
     if not isinstance(resolutions, dict):
@@ -463,7 +499,14 @@ def review_summary(snap, draft, pin):
             values = [n.get(f"{kind}_decisions", {}).get(region["region_id"], {}).get("decision")
                       for n in included if _source_owner(n, all_by_key)
                       == region.get("assigned_question_key")]
-            decisions.append(next((value for value in values if value), "unreviewed"))
+            if kind == "formula":
+                formula_decisions = [n.get("formula_decisions", {}).get(region["region_id"])
+                                     for n in included if _source_owner(n, all_by_key)
+                                     == region.get("assigned_question_key")]
+                decisions.append("reviewed" if any(_formula_confirmation_resolved(value)
+                                                     for value in formula_decisions) else "unreviewed")
+            else:
+                decisions.append(next((value for value in values if value), "unreviewed"))
         result[f"{kind}_unreviewed"] = decisions.count("unreviewed")
         result[f"{kind}_reviewed"] = len(decisions) - decisions.count("unreviewed")
     result["unresolved_warnings"] = sum(

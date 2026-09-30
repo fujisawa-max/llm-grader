@@ -8,7 +8,11 @@ export type OrderedContent =
 // Unrecognized server items retain all fields and are rendered without editing.
 export interface UnknownContent { type: string; order: number; text?: string; region_id?: string; source_slice?: [number, number, number]; merged_source_segments?: Record<string, unknown>[]; [key: string]: unknown; }
 export type ContentItem = OrderedContent | UnknownContent;
-export type Decision = { decision: string; teacher_transcription?: string; note?: string; evidence_identity?: Json };
+export type Decision = {
+  decision: string; teacher_transcription?: string; note?: string; evidence_identity?: Json;
+  confirmation_status?: "unreviewed" | "confirmed";
+  confirmation_method?: "individual" | "bulk";
+};
 export type WarningResolution = { state: "unreviewed" | "acknowledged" | "resolved"; note?: string };
 export interface ReviewNode {
   review_node_id: string; stable_key: string; source_draft_stable_key: string | null;
