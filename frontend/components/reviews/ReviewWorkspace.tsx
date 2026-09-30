@@ -13,6 +13,7 @@ import { WarningPanel } from "./WarningPanel";
 import { MarkdownMathText } from "@/components/MarkdownMathText";
 import { clearTextSourceMapping, mapCandidateToSources, suggestSubquestions, type SplitProposal } from "@/lib/questionSplit";
 import { formulaIsConfirmed } from "@/lib/formulaConfirmation";
+import { collectScoreGuidance, isDetailedScoreGuidanceCode, scoreDifference, scoreDisplay, uncoveredScoreWarnings } from "@/lib/importPlanGuidance";
 
 function renumber(nodes: ReviewNode[]) {
   const counts = new Map<string | null, number>();
@@ -161,6 +162,18 @@ export function ReviewWorkspace({ id }: { id: string }) {
   }
   async function prepareImport() { setBusy(true); setError(""); try { setPlan(await reviews.importPlan(id)); } catch (e) { setError(message(e)); } finally { setBusy(false); } }
   async function confirmImport() { if (!plan || plan.blockers?.length) return; if (!window.confirm("確認済みの内容を、この試験の問題として追加しますか？")) return; setBusy(true); setError(""); try { setConfirmation(await reviews.confirm(id, { expected_revision: plan.revision, expected_revision_sha256: plan.revision_sha256, import_plan_sha256: plan.plan_sha256, mode: "append" })); } catch (e) { setError(message(e)); } finally { setBusy(false); } }
+  function resumeEditingAtQuestion(key: string) {
+    const target = current.nodes.find(candidate => candidate.stable_key === key);
+    if (!target) return;
+    if (current.state === "reviewed") {
+      if (!window.confirm("確認を解除して新しい修正版で編集を再開しますか？修正後は保存して、もう一度確認済みにする必要があります。")) return;
+      setSnapshot({ ...current, state: "editing", reviewed: false });
+    }
+    setPlan(undefined);
+    chooseNode(target);
+    window.setTimeout(() => window.document.getElementById(reviewFieldId(target.stable_key, "node"))
+      ?.scrollIntoView({ block: "center", behavior: "smooth" }), 50);
+  }
   function add(child: boolean) {
     const key = newReviewKey();
     const n: ReviewNode = { review_node_id: key, stable_key: key, source_draft_stable_key: null, source_draft_node_id: null,
@@ -309,6 +322,16 @@ export function ReviewWorkspace({ id }: { id: string }) {
   const activeRegions = document.regions.filter(r => r.assigned_question_key === activeSourceKey &&
     (node.ordered_content.some(item => "region_id" in item && item.region_id === r.region_id) ||
       !!node.formula_decisions[r.region_id] || !!node.figure_decisions[r.region_id]));
+  const planCodes = [...(plan?.blockers || []), ...(plan?.warnings || [])];
+  const scoreGuidance = collectScoreGuidance(planCodes, current.nodes);
+  const blockerScoreGuidance = scoreGuidance.filter(issue => issue.codes.some(code => plan?.blockers.includes(code)));
+  const warningScoreGuidance = scoreGuidance.filter(issue => issue.codes.some(code => plan?.warnings.includes(code)));
+  const independentWarningScoreGuidance = uncoveredScoreWarnings(blockerScoreGuidance, warningScoreGuidance);
+  const detailedScoreCodes = new Set(planCodes.filter(isDetailedScoreGuidanceCode));
+  const generalBlockers = (plan?.blockers || []).filter(code => !detailedScoreCodes.has(code));
+  const generalWarnings = (plan?.warnings || []).filter(code => !detailedScoreCodes.has(code));
+  const blockerCount = generalBlockers.length + blockerScoreGuidance.length;
+  const warningCount = generalWarnings.length + independentWarningScoreGuidance.length;
   function warningTarget(warning: typeof document.warnings[number]) {
     const relevant = document.regions.find(r => r.region_id === warning.source_id);
     const target = relevant && regionOwner(relevant.region_id) || current.nodes.find(n => n.source_draft_stable_key === (relevant?.assigned_question_key || warning.owner || warning.source_id));
@@ -378,12 +401,55 @@ export function ReviewWorkspace({ id }: { id: string }) {
       <button className="button secondary" disabled={readonly || dirty} onClick={() => save(true)}>確認済みにする</button>
       {!historical && current.state === "reviewed" && <button onClick={() => setSnapshot({ ...current, state: "editing", reviewed: false })}>新しい修正版で編集を再開</button>}
       <button disabled={busy} onClick={() => { if (!dirty || window.confirm("未保存内容を破棄して最新版を読み込みますか？")) void load(); }}>最新の内容を再読み込み</button>
-      {current.state === "reviewed" && !historical && !confirmation && <button className="button" disabled={busy} onClick={() => void prepareImport()}>問題への取り込み内容を確認</button>}
-      {plan && !confirmation && current.state === "reviewed" && !dirty && !historical && <button className="button" disabled={busy || !!plan.blockers?.length} onClick={() => void confirmImport()}>問題として追加</button>}
-      {confirmation && <span className="badge badge-success">問題への取り込み済み</span>}
+      {current.state === "reviewed" && !historical && !confirmation && <button className="button" disabled={busy} onClick={() => void prepareImport()}>問題登録前の最終確認へ</button>}
+      {plan && !confirmation && current.state === "reviewed" && !dirty && !historical && <button className="button" disabled={busy || !!plan.blockers?.length} onClick={() => void confirmImport()}>確認した問題を登録</button>}
+      {confirmation && <span className="badge badge-success">問題登録済み</span>}
       {busy && <span role="status">処理中…</span>}
     </div>
-    {plan && !confirmation && current.state === "reviewed" && !dirty && !historical && <section className="panel"><h2>問題への取り込み確認</h2><p>修正版 {plan.revision} · 設問 {plan.nodes?.length} · 構造用 {plan.structural_count} · 採点対象 {plan.gradable_count} · 数式 {plan.formula_count} · 図 {plan.figure_count} · 登録済みの問題 {plan.existing_question_count} · 合計点 {plan.total_points ?? "要確認"}</p>{plan.blockers?.length ? <div className="error">取り込み前に解決が必要な項目が {plan.blockers.length} 件あります。<ul>{plan.blockers.map(code => <li key={code}>{reviewIssueLabel(code)}</li>)}</ul><details><summary>技術情報</summary>{plan.blockers.join(", ")}</details></div> : <div className="notice">取り込み可能です。既存の問題に追加されます。</div>}{plan.warnings?.length > 0 && <div className="warn">確認事項が {plan.warnings.length} 件あります。<ul>{plan.warnings.map(code => <li key={code}>{reviewIssueLabel(code)}</li>)}</ul><details><summary>技術情報</summary>{plan.warnings.join(", ")}</details></div>}</section>}
+    {plan && !confirmation && current.state === "reviewed" && !dirty && !historical && <section className="panel final-question-check" aria-label="問題登録前の最終確認">
+      <h2>問題登録前の最終確認</h2>
+      <p>確認・編集した設問構成、配点、確認事項をチェックし、問題として確定する前の最終確認を行います。</p>
+      <p>修正版 {plan.revision} · 設問 {plan.nodes?.length} · 構造用 {plan.structural_count} · 採点対象 {plan.gradable_count} · 数式 {plan.formula_count} · 図 {plan.figure_count} · 登録済みの問題 {plan.existing_question_count} · 合計点 {plan.total_points ?? "要確認"}</p>
+      {plan.blockers?.length ? <div className="error" aria-label="問題登録前に修正が必要な項目">
+        <strong>問題登録前に修正が必要な項目が {blockerCount} 件あります。</strong>
+        {blockerScoreGuidance.map(issue => {
+          const children = issue.children;
+          const knownChildTotal = children.reduce((sum, child) => sum + (child.score_points ?? 0), 0);
+          const unsetChildren = children.filter(child => child.score_points === null);
+          const difference = scoreDifference(issue.node.score_points, knownChildTotal);
+          return <article className="score-guidance" key={issue.id}>
+            <h3>{issue.code === "parent_direct_score" ? "小問を持つ親設問の配点" : issue.code === "score_conflict" ? "親設問と小問の配点" : "配点の確認"}: {buildQuestionPath(issue.node.stable_key, current.nodes)}</h3>
+            {issue.code === "parent_direct_score" ? <>
+              <p>親設問: {scoreDisplay(issue.node.score_points)}（この親設問の配点方式: {issue.node.score_semantics === "direct" ? "直接配点" : issue.node.score_semantics === "each_child" ? "各小問に配点" : issue.node.score_semantics === "unset" ? "未設定" : "要確認"}）</p>
+              <p>小問ごとの配点:</p>
+              {children.length ? <ul>{children.map(child => <li key={child.stable_key}>{buildQuestionPath(child.stable_key, current.nodes)}: {scoreDisplay(child.score_points)}</li>)}</ul> : <p>小問が見つかりません。</p>}
+              <p>入力済み小問の配点合計: {knownChildTotal}点 / 親設問: {scoreDisplay(issue.node.score_points)}</p>
+              {difference && <p>{difference}です。{unsetChildren.length > 0 && ` ${unsetChildren.map(child => buildQuestionPath(child.stable_key, current.nodes)).join("、")}の配点が未設定です。`}</p>}
+              {!difference && unsetChildren.length > 0 && <p>合計には未設定の小問が含まれていません。{unsetChildren.map(child => buildQuestionPath(child.stable_key, current.nodes)).join("、")}の配点を確認してください。</p>}
+              <p>小問がある親設問には直接配点を設定できません。親の配点方式を「未設定」にして小問へ配点するか、原問題用紙で同じ点数が各小問に適用される場合は「各小問に配点」を選んでください。</p>
+            </> : issue.code === "score_conflict" ? <>
+              <p>親設問: {buildQuestionPath(issue.node.stable_key, current.nodes)}（各小問 {scoreDisplay(issue.node.score_points)}）</p>
+              <p>小問ごとの配点:</p>
+              {children.length ? <ul>{children.map(child => {
+                const mismatch = child.score_points !== null && issue.node.score_points !== null && child.score_points !== issue.node.score_points;
+                return <li key={child.stable_key}>{buildQuestionPath(child.stable_key, current.nodes)}: {scoreDisplay(child.score_points)}{mismatch ? `（親の${scoreDisplay(issue.node.score_points)}と不一致）` : child.score_points === null ? `（親から${scoreDisplay(issue.node.score_points)}を適用）` : ""}</li>;
+              })}</ul> : <p>{buildQuestionPath(issue.node.stable_key, current.nodes)}の配点が親設問の設定と一致しません。</p>}
+              <p>親設問の「各小問に配点」と異なる小問の配点があります。各小問の配点を親に合わせるか、親設問の配点方式を見直してください。</p>
+            </> : issue.code === "each_child_structural_child" ? <p>{buildQuestionPath(issue.node.stable_key, current.nodes)}の親設問で「各小問に配点」が選ばれていますが、間に構造用の設問があります。配点対象となる階層を見直してください。</p>
+              : <p>{buildQuestionPath(issue.node.stable_key, current.nodes)}の配点方式または配点を見直してください。</p>}
+            <button type="button" className="button secondary" onClick={() => resumeEditingAtQuestion(issue.node.stable_key)}>確認を解除して編集</button>
+          </article>;
+        })}
+        {generalBlockers.length > 0 && <ul>{generalBlockers.map(code => <li key={code}>{reviewIssueLabel(code)}</li>)}</ul>}
+        <details><summary>技術情報</summary>{plan.blockers.join(", ")}</details>
+      </div> : <div className="notice">問題を登録できます。登録すると、この試験の問題として確定されます。</div>}
+      {independentWarningScoreGuidance.filter(issue => issue.code === "score_unset").map(issue => <article className="score-guidance warn" key={issue.id}>
+        <h3>配点未設定: {buildQuestionPath(issue.node.stable_key, current.nodes)}</h3>
+        <p>{buildQuestionPath(issue.node.stable_key, current.nodes)}の配点は未設定です。採点対象にする場合は配点を入力してください。</p>
+        <button type="button" className="button secondary" onClick={() => resumeEditingAtQuestion(issue.node.stable_key)}>確認を解除して編集</button>
+      </article>)}
+      {warningCount > 0 && <div className="warn">確認事項が {warningCount} 件あります。{generalWarnings.length > 0 && <ul>{generalWarnings.map(code => <li key={code}>{reviewIssueLabel(code)}</li>)}</ul>}<details><summary>技術情報</summary>{generalWarnings.join(", ")}</details></div>}
+    </section>}
     <div className="review-layout">
       <PdfPreview id={id} page={page} pages={document.page_count} selected={regionId || activeSourceKey || ""} onPage={setPage} />
       <div className="review-panel">
