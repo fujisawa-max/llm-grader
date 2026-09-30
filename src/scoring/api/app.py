@@ -21,6 +21,7 @@ from .domain import router as domain_router
 from .question_drafts import router as question_draft_router
 from .question_vision import router as question_vision_router
 from .question_reviews import router as question_review_router
+from .model_answer_imports import router as model_answer_import_router
 from .student_answers import router as student_answer_router
 from .grading_review import router as grading_review_router
 from .student_results import router as student_results_router
@@ -786,6 +787,8 @@ def create_app(session_factory=None, *, allowed_roots=None, runtime_client=None,
     app.include_router(question_draft_router(db, import_root),
                        dependencies=[Depends(staff_dependency)])
     app.include_router(question_review_router(db, import_root),
+                       dependencies=[Depends(staff_dependency)])
+    app.include_router(model_answer_import_router(db, action_root),
                        dependencies=[Depends(staff_dependency)])
     app.include_router(student_answer_router(db, action_root),
                        dependencies=[Depends(domain_authorized)])

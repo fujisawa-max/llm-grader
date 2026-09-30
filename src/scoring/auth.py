@@ -198,6 +198,10 @@ def _test_id_for_resource(s, resource: str, identifier: str) -> str | None:
     if resource == "answer-reconstruction-runs":
         value = s.get(StudentAnswerExtractionRun, identifier)
         return value.test_id if value else None
+    if resource == "model-answer-import-drafts":
+        from .db.models import ModelAnswerImportDraft
+        value = s.get(ModelAnswerImportDraft, identifier)
+        return value.test_id if value else None
     if resource == "answer-reconstruction-results":
         value = s.get(StudentAnswerExtractionResult, identifier)
         submission = s.get(StudentSubmission, value.submission_id) if value else None
@@ -237,6 +241,7 @@ def authorize_domain_path(request: Request, s, user: User) -> User:
     elif len(path) >= 2 and path[0] in {
         "question-imports", "question-import-drafts", "question-import-reviews",
         "question-import-confirmations", "question-import-vision-runs",
+        "model-answer-import-drafts",
         "test-question-assets", "answer-reconstruction-runs",
         "answer-reconstruction-results", "answer-reconstructions",
     }:

@@ -48,7 +48,7 @@ class TestUpdate(BaseModel): name: str | None = None; description: str | None = 
 class QuestionCreate(BaseModel): question_number: str; title: str | None = None; question_text: str | None = None; max_points: float; sort_order: int = 0
 class QuestionUpdate(BaseModel): title: str | None = None; question_text: str | None = None; max_points: float | None = None; sort_order: int | None = None
 class MaterialCreate(BaseModel): material_type: str; storage_ref: str; original_filename: str | None = None; mime_type: str | None = None; sha256: str | None = None
-class ModelAnswerCreate(BaseModel): question_id: str | None = None; answer_text: str | None = None; material_id: str | None = None
+class ModelAnswerCreate(BaseModel): question_id: str | None = None; answer_text: str | None = None; material_id: str | None = None; provenance_json: dict[str, Any] | None = None
 class PolicyCreate(BaseModel): policy_text: str
 class SampleAnswerCreate(BaseModel): sample_key: str; material_id: str | None = None; transcription: str | None = None
 class SampleScoreCreate(BaseModel): question_id: str | None = None; score: float = Field(ge=0); max_score: float = Field(gt=0); teacher_comment: str | None = None

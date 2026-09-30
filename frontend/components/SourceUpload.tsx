@@ -4,6 +4,7 @@ import {apiFetch} from "@/lib/api/client";
 import {reviews} from "@/lib/api/reviews";
 import {useRouter} from "next/navigation";
 import {testData} from "@/lib/api/domain";
+import {modelAnswerImports} from "@/lib/api/modelAnswerImports";
 import type {Material,Student,Submission} from "@/types/domain";
 import {SourcePdfPreview} from "@/components/SourcePdfPreview";
 type Role="question_sheet"|"model_answer_source"|"student_answer_source";
@@ -45,6 +46,13 @@ export function SourceUpload({testId,role,materials,students=[],submissions=[],r
      const review=await reviews.create(draft.id);
      router.push(`/question-import-reviews/${review.id}`);
    }catch(e){setNotice(e instanceof Error?e.message:"問題用紙の確認を開始できませんでした");}finally{setBusy(false);}
+ }
+ async function reviewModelAnswerPdf(material:Material){
+   setBusy(true);setNotice("PDFから模範解答を読み取っています…");
+   try {
+     const draft=await modelAnswerImports.create(testId,material.id);
+     router.push(`/model-answer-import-reviews/${draft.id}`);
+   }catch(e){setNotice(e instanceof Error?e.message:"模範解答の確認を開始できませんでした");}finally{setBusy(false);}
  }
  const patch=(id:string,values:Partial<Item>)=>setItems(rows=>rows.map(row=>row.id===id?{...row,...values}:row));
  function choose(files:File[]){
@@ -106,7 +114,8 @@ export function SourceUpload({testId,role,materials,students=[],submissions=[],r
  <p role="status">{progress||notice}</p><p>{captions[role]}: {registered.length}ファイル登録済み{studentMode?` / 学生答案 ${submissions.length}件`:""}</p>
  <div className="actions">{registered.map((m,i)=><button className="button secondary" key={m.id} onClick={()=>setPreview(m)}>{i+1}. {m.original_filename||"登録資料"}を確認</button>)}</div>
  {role==="question_sheet"&&registered.filter(m=>m.mime_type==="application/pdf").map(m=><button className="button secondary" disabled={busy} key={m.id} onClick={()=>void reviewPdf(m)}>{m.original_filename}を解析して設問を確認</button>)}
+ {role==="model_answer_source"&&registered.filter(m=>m.mime_type==="application/pdf").map(m=><button className="button secondary" disabled={busy} key={m.id} onClick={()=>void reviewModelAnswerPdf(m)}>{m.original_filename}を解析して模範解答を確認</button>)}
  {preview&&<><button type="button" onClick={()=>setPreview(undefined)}>資料を閉じる</button>{preview.mime_type==="application/pdf"?<SourcePdfPreview testId={testId} material={preview} label={captions[role]} inline/>:<img className="registered-source-preview" src={testData.materialFileUrl(testId,preview.id)} alt={captions[role]+"原資料"}/>}</>}
- <p>{role==="question_sheet"?"次の作業: 問題の内容とページ順を確認し、下の「問題を追加」から設問を登録してください。PDFの解析・レビューは既存の問題取り込み経路で行います。":role==="model_answer_source"?"次の作業: 下の設問別編集欄で模範解答を確認・登録し、採点基準を設定してください。":"次の作業: 原答案と学生の対応を確認してください。読み取り処理・設問対応の確認は別の明示的な処理です。"}</p>
+ <p>{role==="question_sheet"?"次の作業: 問題の内容とページ順を確認し、下の「問題を追加」から設問を登録してください。PDFの解析・レビューは既存の問題取り込み経路で行います。":role==="model_answer_source"?"登録済みPDFは解析して設問ごとの模範解答を確認できます。手入力での登録も下の編集欄から引き続き行えます。":"次の作業: 原答案と学生の対応を確認してください。読み取り処理・設問対応の確認は別の明示的な処理です。"}</p>
  </section>;
 }

@@ -291,9 +291,25 @@ class ModelAnswer(Base):
     question_id: Mapped[str | None] = mapped_column(ForeignKey("test_questions.id"))
     answer_text: Mapped[str | None] = mapped_column(Text)
     material_id: Mapped[str | None] = mapped_column(ForeignKey("test_materials.id"))
+    provenance_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     version: Mapped[int] = mapped_column(Integer)
     is_current: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class ModelAnswerImportDraft(Base):
+    """Teacher-editable native PDF extraction mapped to existing questions."""
+    __tablename__ = "model_answer_import_drafts"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    test_id: Mapped[str] = mapped_column(ForeignKey("tests.id"), index=True)
+    material_id: Mapped[str] = mapped_column(ForeignKey("test_materials.id"), index=True)
+    source_sha256: Mapped[str] = mapped_column(String(64), index=True)
+    artifact_ref: Mapped[str] = mapped_column(String(512))
+    state: Mapped[str] = mapped_column(String(24), default="editing", index=True)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    snapshot: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
 class GradingPolicy(Base):

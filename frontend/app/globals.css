@@ -93,3 +93,11 @@
 .markdown-math pre { overflow-x: auto; padding: .6rem; border-radius: .35rem; background: var(--surface-muted, #f5f6f8); }
 .markdown-math code { overflow-wrap: break-word; }
 .markdown-math .katex-display { overflow-x: auto; overflow-y: hidden; }
+.model-answer-import-layout { display:grid; grid-template-columns:minmax(0,1.25fr) minmax(300px,.75fr); gap:18px; align-items:start; }
+.model-answer-import-entries { display:grid; gap:14px; min-width:0; }
+.model-answer-import-entry { min-width:0; padding:14px; }
+.model-answer-import-entry-heading { display:flex; justify-content:space-between; align-items:center; gap:12px; }
+.model-answer-import-entry-heading h3 { margin:0; }
+.model-answer-source-info { color:var(--muted); font-size:13px; }
+.model-answer-import-source { position:sticky; top:16px; min-width:0; }
+@media (max-width:900px) { .model-answer-import-layout { grid-template-columns:1fr; } .model-answer-import-source { position:static; } }
