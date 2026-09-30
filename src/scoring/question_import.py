@@ -130,6 +130,10 @@ class QuestionImportPlanner:
                 blockers.append(f"parent_direct_score:{key}")
             mode = n.get("score_semantics") or "unset"
             pts = n.get("score_points")
+            if mode == "sum_children" and not kids:
+                blockers.append(f"sum_children_requires_children:{key}")
+            if kids and mode == "unset":
+                warnings.append(f"score_method_unset:{key}")
             if mode == "ambiguous":
                 blockers.append(f"ambiguous_score:{key}")
             if mode == "each_child" and kids:
@@ -283,11 +287,16 @@ class QuestionImportPlanner:
                     + (root_offset if not n.get("parent_key") else 0),
                 }
             )
-        if any(p["is_gradable"] and p["max_points"] is None for p in plans):
+        unresolved_score_method = any(
+            children.get(n.get("stable_key") or n.get("review_node_id")) and
+            n.get("score_semantics") in {"unset", "ambiguous"}
+            for n in included
+        )
+        if unresolved_score_method or any(p["is_gradable"] and p["max_points"] is None for p in plans):
             warnings.append("total_unresolved")
         total = (
             sum(p["max_points"] for p in plans if p["is_gradable"] and p["max_points"] is not None)
-            if not any(p["is_gradable"] and p["max_points"] is None for p in plans)
+            if not unresolved_score_method and not any(p["is_gradable"] and p["max_points"] is None for p in plans)
             else None
         )
         plan = {

@@ -19,7 +19,7 @@ export interface ReviewNode {
   source_draft_node_id: string | null; parent_key: string | null; node_type: "major_question" | "subquestion";
   depth: number; sort_order: number; label: { raw: string; normalized: string }; body_text: string;
   ordered_content: ContentItem[]; included: boolean;
-  score_semantics: "direct" | "each_child" | "unset" | "ambiguous"; score_points: number | null;
+  score_semantics: "direct" | "sum_children" | "each_child" | "unset" | "ambiguous"; score_points: number | null;
   effective_points_candidate?: number | null; review_flags: string[];
   source_mapping_decision?: "automatic" | "teacher_manual_mapping" | "teacher_unmapped_override";
   formula_decisions: Record<string, Decision>; figure_decisions: Record<string, Decision>;

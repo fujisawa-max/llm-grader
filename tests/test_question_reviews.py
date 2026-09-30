@@ -303,6 +303,57 @@ class ReviewDocumentTests(unittest.TestCase):
             with self.assertRaisesRegex(ReviewError, error):
                 validate_snapshot(snap, base, draft, pin)
 
+    def test_new_structural_review_defaults_to_child_sum_without_rewriting_explicit_modes(self):
+        draft, pin, _ = self.fixture()
+        root = draft["nodes"][0]
+        root["score"].update(semantics="unset", points=None)
+        child = deepcopy(root)
+        child.update(stable_key="q1.1", parent_key="q1", node_type="subquestion", depth=1, sort_order=0)
+        draft["nodes"].append(child)
+        snap = initial_snapshot("sha", draft, pin)
+        self.assertEqual(snap["nodes"][0]["score_semantics"], "sum_children")
+        self.assertIsNone(snap["nodes"][0]["score_points"])
+
+        for semantics, points in (("direct", 20), ("each_child", 20)):
+            explicit = deepcopy(draft)
+            explicit["nodes"][0]["score"].update(semantics=semantics, points=points)
+            preserved = initial_snapshot("sha", explicit, pin)
+            self.assertEqual(preserved["nodes"][0]["score_semantics"], semantics)
+            self.assertEqual(preserved["nodes"][0]["score_points"], points)
+
+    def test_child_sum_score_summary_recurses_and_unset_leaf_keeps_total_unresolved(self):
+        draft, pin, snap = self.fixture()
+        draft["formula_regions"] = []
+        root = snap["nodes"][0]
+        root.update(score_semantics="sum_children", score_points=None)
+
+        def teacher_node(key, parent, order, label, semantics, points):
+            node = deepcopy(root)
+            node.update(review_node_id=key, stable_key=key, source_draft_stable_key=None,
+                        source_draft_node_id=None, parent_key=parent, node_type="subquestion",
+                        depth=1 if parent == "q1" else 2, sort_order=order,
+                        label={"raw": label, "normalized": label}, body_text=label,
+                        ordered_content=[{"type": "text", "order": 0, "text": label}],
+                        score_semantics=semantics, score_points=points, included=True,
+                        formula_decisions={}, figure_decisions={}, warning_states={}, review_flags=[])
+            return node
+
+        nodes = [root,
+                 teacher_node("q1.1", "q1", 0, "(1)", "direct", 10),
+                 teacher_node("q1.2", "q1", 1, "(2)", "sum_children", None),
+                 teacher_node("q1.2.1", "q1.2", 0, "1.", "direct", 10),
+                 teacher_node("q1.2.2", "q1.2", 1, "2.", "direct", 10),
+                 teacher_node("q1.2.3", "q1.2", 2, "3.", "direct", 10)]
+        snap["nodes"] = nodes
+        summary = review_summary(snap, draft, pin)
+        self.assertEqual(summary["total_points_candidate"], 40)
+        self.assertEqual(summary["score_unresolved"], 0)
+
+        nodes[-1].update(score_semantics="unset", score_points=None)
+        summary = review_summary(snap, draft, pin)
+        self.assertIsNone(summary["total_points_candidate"])
+        self.assertGreater(summary["score_unresolved"], 0)
+
     def test_invalid_tree_order_score_and_empty_node_rejected(self):
         draft, pin, base = self.fixture()
         for mutate in (lambda n: n.update(parent_key="q1", node_type="subquestion"),

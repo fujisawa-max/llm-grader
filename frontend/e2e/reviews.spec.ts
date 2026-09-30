@@ -65,7 +65,9 @@ test("review compares evidence, switches pages, saves teacher edits and reports 
   await expect(page.getByRole("button", { name: "確認済みにする" })).toBeVisible();
   await expect(page.getByLabel("設問の階層")).toHaveValue("");
   await expect(page.getByLabel("配点の扱い")).toHaveValue("direct");
-  await expect(page.getByRole("option", { name: "各小問に配点" })).toHaveAttribute("value", "each_child");
+  await expect(page.getByLabel("配点の扱い").locator("option")).toHaveText([
+    "この問題に直接配点", "未設定",
+  ]);
   await expect(page.getByRole("button", { name: "前のページ" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "次のページ" })).toBeEnabled();
   const visibleReviewText = await page.locator(".teacher-review").evaluate(element => (element as HTMLElement).innerText);
@@ -76,7 +78,7 @@ test("review compares evidence, switches pages, saves teacher edits and reports 
   await expect(page.getByRole("heading", { name: "PDFから読み取った内容" })).toBeVisible();
   await page.getByText("画像解析の元データ（技術情報）").click();
   await expect(page.getByText('"<script>untrusted</script>"', { exact: false })).toBeVisible();
-  await page.getByLabel("確認結果").selectOption("teacher_edit");
+  await page.getByLabel("読み取り内容の採用方法").selectOption("teacher_edit");
   const single = String.raw`\sin \frac{5}{12}\pi`;
   await page.getByLabel("教師が確認した数式", { exact: true }).fill(single);
   await page.getByLabel("確認事項 1の状態").selectOption("acknowledged");
@@ -91,10 +93,11 @@ test("review compares evidence, switches pages, saves teacher edits and reports 
   await page.getByRole("button", { name: "変更を保存", exact: true }).click();
   await expect.poll(() => saved.length).toBe(2);
   expect(saved[1].nodes[0].formula_decisions["formula-1"].teacher_transcription).toBe(deliberateDouble);
-  await page.getByLabel("配点の扱い").selectOption("each_child");
+  await page.getByLabel("配点の扱い").selectOption("unset");
   await page.getByRole("button", { name: "変更を保存", exact: true }).click();
   await expect.poll(() => saved.length).toBe(3);
-  expect(saved[2].nodes[0].score_semantics).toBe("each_child");
+  expect(saved[2].nodes[0].score_semantics).toBe("unset");
+  expect(saved[2].nodes[0].score_points).toBeNull();
   await page.getByRole("button", { name: "小問を追加" }).click();
   await expect(page.getByRole("heading", { name: "追加問題" })).toBeVisible();
   await expect(page.getByLabel("設問の階層")).toHaveValue("q1");
@@ -104,6 +107,9 @@ test("review compares evidence, switches pages, saves teacher edits and reports 
   await expect.poll(() => saved.length).toBe(4);
   expect(saved[3].nodes[1].node_type).toBe("subquestion");
   expect(saved[3].nodes[1].stable_key).toMatch(/^teacher-[0-9a-f-]{36}$/);
+  expect(saved[3].nodes[0].score_semantics).toBe("sum_children");
+  expect(saved[3].nodes[0].score_points).toBeNull();
+  expect(saved[3].nodes[1].score_semantics).toBe("unset");
   await page.locator(".review-tree button[data-source-key=q1]").click();
   await page.getByRole("button", { name: "小問を追加" }).click();
   await page.getByLabel("設問番号・見出し").fill("もう一つの小問");

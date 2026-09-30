@@ -9,7 +9,7 @@ export type ScoreGuidance = {
   children: ReviewNode[];
 };
 
-const SCORE_CODE = /^(parent_direct_score|score_conflict|score_unset|ambiguous_score|each_child_structural_child):(.+)$/;
+const SCORE_CODE = /^(parent_direct_score|score_conflict|score_unset|score_method_unset|sum_children_requires_children|ambiguous_score|each_child_structural_child):(.+)$/;
 
 export function isDetailedScoreGuidanceCode(code: string): boolean {
   return SCORE_CODE.test(code);

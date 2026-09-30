@@ -2,6 +2,7 @@ import { test, expect } from "@playwright/test";
 import type { ReviewNode } from "../types/reviews";
 import { buildQuestionPath } from "../lib/reviewValidation";
 import { collectScoreGuidance, scoreDifference, scoreDisplay, uncoveredScoreWarnings } from "../lib/importPlanGuidance";
+import { effectiveQuestionScore } from "../lib/questionScores";
 
 function question(key: string, label: string, parent: string | null, points: number | null,
   semantics: ReviewNode["score_semantics"], order: number): ReviewNode {
@@ -57,4 +58,29 @@ test("child unset warnings are not repeated when a parent blocker already lists 
   const blockers = collectScoreGuidance(["parent_direct_score:q2"], nodes);
   const warnings = collectScoreGuidance(["score_unset:q2.2", "score_unset:q3.1"], nodes);
   expect(uncoveredScoreWarnings(blockers, warnings).map(issue => issue.node.stable_key)).toEqual(["q3.1"]);
+});
+
+test("child-sum scores recurse, show known subtotal, and preserve legacy each-child behavior", () => {
+  const nodes = [
+    question("q2", "問題2", null, null, "sum_children", 0),
+    question("q2.1", "(1)", "q2", 10, "direct", 0),
+    question("q2.2", "(2)", "q2", null, "sum_children", 1),
+    question("q2.2.1", "1.", "q2.2", 10, "direct", 0),
+    question("q2.2.2", "2.", "q2.2", 10, "direct", 1),
+    question("q2.2.3", "3.", "q2.2", 10, "direct", 2),
+  ];
+  expect(effectiveQuestionScore("q2", nodes)).toMatchObject({ points: 40, knownPoints: 40, complete: true });
+
+  nodes[5].score_semantics = "unset";
+  nodes[5].score_points = null;
+  expect(effectiveQuestionScore("q2", nodes)).toMatchObject({
+    points: null, knownPoints: 30, knownCount: 3, complete: false, missingLabels: ["3."],
+  });
+
+  const legacy = [
+    question("q3", "問題3", null, 20, "each_child", 0),
+    question("q3.1", "(1)", "q3", null, "unset", 0),
+    question("q3.2", "(2)", "q3", null, "unset", 1),
+  ];
+  expect(effectiveQuestionScore("q3", legacy)).toMatchObject({ points: 40, complete: true });
 });

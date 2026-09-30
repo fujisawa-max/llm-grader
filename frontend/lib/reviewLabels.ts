@@ -5,8 +5,9 @@ const questionTypes: Record<ReviewNode["node_type"], string> = {
   subquestion: "小問",
 };
 const scoreSemantics: Record<ReviewNode["score_semantics"], string> = {
-  direct: "この設問に直接配点",
-  each_child: "各小問に配点",
+  direct: "この問題に直接配点",
+  sum_children: "小問の個別配点の合計",
+  each_child: "旧設定（同じ配点を各小問に適用）",
   unset: "未設定",
   ambiguous: "要確認",
 };
@@ -38,10 +39,12 @@ export const reviewContentLabel = (value: string) => ({
 
 const reviewIssues: Record<string, string> = {
   ambiguous_score: "配点の扱いを確認してください",
-  score_conflict: "親設問と小問の配点が一致しません",
+  score_conflict: "旧設定の配点と小問の配点を確認してください",
   score_unset: "配点を確認してください",
-  parent_direct_score: "小問を持つ大問の配点方法を確認してください",
-  each_child_structural_child: "小問ごとの配点と設問構成を確認してください",
+  parent_direct_score: "小問を持つ設問の配点方法を確認してください",
+  each_child_structural_child: "旧設定の配点と設問構成を確認してください",
+  score_method_unset: "小問がある設問の配点方法を選択してください",
+  sum_children_requires_children: "小問の配点合計を使うには小問が必要です",
   native_formula_requires_teacher_edit: "数式を原文と照合し、必要なら入力してください",
   formula_unresolved: "数式の読み取り内容を確認してください",
   figure_unresolved: "図の確認結果を選択してください",
@@ -55,7 +58,7 @@ const reviewIssues: Record<string, string> = {
   ambiguous_parent_assignment: "親設問を確認してください",
   duplicate_question_label: "設問番号が重複しています",
   ambiguous_geometric_order: "設問の並び順を確認してください",
-  each_child_without_clear_children: "小問の範囲を確認してください",
+  each_child_without_clear_children: "旧設定の小問範囲を確認してください",
 };
 
 export const reviewIssueLabel = (code: string) => reviewIssues[code.split(":", 1)[0]] ?? "内容を確認してください";

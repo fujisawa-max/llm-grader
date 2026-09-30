@@ -65,7 +65,7 @@ test("sampleQ2 formula, warnings, all node operations, reload and real stale-tab
   await expect(page.getByLabel("読み取りに関する確認事項")).toContainText("reasoning_output_requires_review");
   await page.getByText("画像解析の元データ（技術情報）").click();
   await expect(page.getByTestId("raw-vision-output")).toContainText("reasoning_content");
-  await page.getByLabel("確認結果").selectOption("teacher_edit");
+  await page.getByLabel("読み取り内容の採用方法").selectOption("teacher_edit");
   await page.getByLabel("教師が確認した数式", { exact: true }).fill("2x^3 - 21x^2 + 69x - 70 = 0");
   await page.getByLabel("教師メモ", { exact: true }).fill("H.2-D.1 browser teacher_edit validation");
   await page.getByRole("combobox", { name: /の状態$/ }).first().selectOption("resolved");

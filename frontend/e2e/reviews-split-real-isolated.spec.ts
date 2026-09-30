@@ -37,6 +37,7 @@ test("teacher confirms a three-part split and Markdown source survives a real AP
   expect(nodes.slice(1).map((node: { parent_key: string }) => node.parent_key)).toEqual([nodes[0].stable_key, nodes[0].stable_key, nodes[0].stable_key]);
   expect(nodes[0].ordered_content[0].text).toContain("導入文です。");
   expect(nodes[2].ordered_content.some((item: { type: string }) => item.type === "formula_region")).toBe(true);
+  expect(nodes[0].score_semantics).toBe("sum_children");
   expect(nodes[0].score_points).toBeNull();
   expect(nodes.slice(1).every((node: { score_points: number | null }) => node.score_points === null)).toBe(true);
   expect(saved.source_pdf_sha256).toBe(before.source_pdf_sha256);

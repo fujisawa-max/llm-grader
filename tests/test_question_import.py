@@ -251,6 +251,59 @@ class ConfirmationTests(TestCase):
             self.assertEqual([q.max_points for q in rows if q.is_gradable], [20, 20])
             self.assertTrue(all(q.parent_id == parent.id for q in rows if q.is_gradable))
 
+    def test_sum_children_import_plan_recurses_without_double_counting_and_propagates_unset(self):
+        snap = self.ready()
+        root = snap["nodes"][0]
+        root.update(score_semantics="sum_children", score_points=None)
+
+        def teacher_node(key, parent, depth, order, label, semantics, points):
+            child = deepcopy(root)
+            child.update(
+                review_node_id=key, stable_key=key, source_draft_stable_key=None,
+                source_draft_node_id=None, parent_key=parent, node_type="subquestion",
+                depth=depth, sort_order=order, label={"raw": label, "normalized": label},
+                body_text=label, ordered_content=[{"type": "text", "order": 0, "text": label}],
+                score_semantics=semantics, score_points=points, effective_points_candidate=None,
+                formula_decisions={}, figure_decisions={}, review_flags=[], warning_states={},
+            )
+            child.pop("source_mapping_decision", None)
+            return child
+
+        snap["nodes"].extend([
+            teacher_node("teacher-a", root["stable_key"], 1, 0, "(1)", "direct", 10),
+            teacher_node("teacher-b", root["stable_key"], 1, 1, "(2)", "sum_children", None),
+            teacher_node("teacher-b1", "teacher-b", 2, 0, "1.", "direct", 10),
+            teacher_node("teacher-b2", "teacher-b", 2, 1, "2.", "direct", 10),
+            teacher_node("teacher-b3", "teacher-b", 2, 2, "3.", "direct", 10),
+        ])
+        self.save(snap)
+        response = self.client.post(
+            self.url + "/mark-reviewed", json={"base_revision": self.data["current_revision"]}
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.data = response.json()
+        plan = self.client.post(self.url + "/import-plan").json()
+        self.assertEqual(plan["blockers"], [])
+        self.assertEqual(plan["total_points"], 40)
+        self.assertEqual(next(node for node in plan["nodes"] if node["review_key"] == root["stable_key"])["max_points"], None)
+        self.assertEqual(next(node for node in plan["nodes"] if node["review_key"] == "teacher-b")["max_points"], None)
+        self.assertEqual(sum(node["max_points"] or 0 for node in plan["nodes"] if node["is_gradable"]), 40)
+
+        incomplete = deepcopy(self.data["snapshot"])
+        incomplete.update(state="editing", reviewed=False)
+        next(node for node in incomplete["nodes"] if node["stable_key"] == "teacher-b3").update(
+            score_semantics="unset", score_points=None)
+        self.save(incomplete)
+        response = self.client.post(
+            self.url + "/mark-reviewed", json={"base_revision": self.data["current_revision"]}
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.data = response.json()
+        incomplete_plan = self.client.post(self.url + "/import-plan").json()
+        self.assertIsNone(incomplete_plan["total_points"])
+        self.assertIn("score_unset:teacher-b3", incomplete_plan["warnings"])
+        self.assertIn("total_unresolved", incomplete_plan["warnings"])
+
     def test_editing_and_stale_plan_rejected(self):
         p = self.client.post(self.url + "/import-plan").json()
         self.assertIn("review_not_reviewed", p["blockers"])

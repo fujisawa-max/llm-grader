@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ApiRequestError } from "@/lib/api/client";
 import { reviews, type ImportPlan, type Confirmation } from "@/lib/api/reviews";
 import type { Decision, ReviewDocument, ReviewNode, ReviewSnapshot, RevisionInfo } from "@/types/reviews";
-import { questionTypeLabel, reviewIssueLabel, reviewSaveIssueLabel, reviewStateLabel } from "@/lib/reviewLabels";
+import { questionTypeLabel, reviewIssueLabel, reviewSaveIssueLabel, reviewStateLabel, scoreSemanticsLabel } from "@/lib/reviewLabels";
 import { buildQuestionPath, reviewFieldErrors, reviewFieldId, validateReviewFields, type FieldIssues, type ReviewFieldError } from "@/lib/reviewValidation";
 import { PdfPreview } from "./PdfPreview";
 import { NodeEditor } from "./NodeEditor";
@@ -180,10 +180,36 @@ export function ReviewWorkspace({ id }: { id: string }) {
       parent_key: child ? node.stable_key : null, node_type: child ? "subquestion" : "major_question", depth: child ? node.depth + 1 : 0,
       sort_order: 0, label: { raw: "追加問題", normalized: "追加問題" }, body_text: "", ordered_content: [{ type: "text", order: 0, text: "" }],
       included: true, score_semantics: "unset", score_points: null, review_flags: [], formula_decisions: {}, figure_decisions: {}, warning_states: {} };
-    setSnapshot({ ...current, nodes: renumber([...ordered(current.nodes).map(x => x.node), n]) }); setSelected(key); setRegionId("");
+    let nodes = ordered(current.nodes).map(x => x.node);
+    if (child && !nodes.some(entry => entry.included && entry.parent_key === node.stable_key) &&
+        node.score_semantics === "unset" && node.score_points === null) {
+      nodes = nodes.map(entry => entry.stable_key === node.stable_key
+        ? { ...entry, score_semantics: "sum_children", score_points: null } : entry);
+    }
+    setSnapshot({ ...current, nodes: renumber([...nodes, n]) }); setSelected(key); setRegionId("");
   }
   function reparent(key: string | null) {
-    setSnapshot({ ...current, nodes: renumber(ordered(current.nodes).map(x => x.node).map(n => n.stable_key === node.stable_key ? { ...n, parent_key: key, node_type: key ? "subquestion" : "major_question" } : n)) });
+    let nodes = ordered(current.nodes).map(x => x.node);
+    const oldParentKey = node.parent_key;
+    const newParentHadChildren = key !== null && nodes.some(entry => entry.included && entry.parent_key === key && entry.stable_key !== node.stable_key);
+    const oldParentHasOnlyMovingChild = oldParentKey !== null && nodes.filter(candidate =>
+      candidate.included && candidate.parent_key === oldParentKey).length === 1;
+    nodes = nodes.map(entry => {
+      if (entry.stable_key === node.stable_key) {
+        return { ...entry, parent_key: key, node_type: key ? "subquestion" : "major_question" };
+      }
+      if (key && entry.stable_key === key && !newParentHadChildren &&
+          entry.score_semantics === "unset" && entry.score_points === null) {
+        return { ...entry, score_semantics: "sum_children", score_points: null };
+      }
+      if (oldParentKey && entry.stable_key === oldParentKey &&
+          oldParentHasOnlyMovingChild &&
+          entry.score_semantics === "sum_children") {
+        return { ...entry, score_semantics: "unset", score_points: null };
+      }
+      return entry;
+    });
+    setSnapshot({ ...current, nodes: renumber(nodes) });
   }
   function move(direction: number) {
     const siblings = current.nodes.filter(n => n.parent_key === node.parent_key).sort((a, b) => a.sort_order - b.sort_order);
@@ -276,8 +302,8 @@ export function ReviewWorkspace({ id }: { id: string }) {
     const parentItems = copy(retained);
     const updated: ReviewNode = { ...node, ordered_content: parentItems,
       body_text: parentItems.map(item => item.type === "text" && "text" in item ? String(item.text) : "").filter(Boolean).join("\n"),
-      score_semantics: node.score_semantics === "direct" ? "unset" : node.score_semantics,
-      score_points: node.score_semantics === "direct" ? null : node.score_points,
+      score_semantics: node.score_semantics === "each_child" ? "each_child" : "sum_children",
+      score_points: node.score_semantics === "each_child" ? node.score_points : null,
       formula_decisions: Object.fromEntries(Object.entries(node.formula_decisions).filter(([key]) => !movedFormula.has(key))),
       figure_decisions: Object.fromEntries(Object.entries(node.figure_decisions).filter(([key]) => !movedFigure.has(key))) };
     const parentHasTextMapping = parentItems.some(item => item.type === "text" && (
@@ -418,24 +444,24 @@ export function ReviewWorkspace({ id }: { id: string }) {
           const unsetChildren = children.filter(child => child.score_points === null);
           const difference = scoreDifference(issue.node.score_points, knownChildTotal);
           return <article className="score-guidance" key={issue.id}>
-            <h3>{issue.code === "parent_direct_score" ? "小問を持つ親設問の配点" : issue.code === "score_conflict" ? "親設問と小問の配点" : "配点の確認"}: {buildQuestionPath(issue.node.stable_key, current.nodes)}</h3>
+            <h3>{issue.code === "parent_direct_score" ? "小問を持つ設問の配点" : issue.code === "score_conflict" ? "旧方式の配点" : "配点の確認"}: {buildQuestionPath(issue.node.stable_key, current.nodes)}</h3>
             {issue.code === "parent_direct_score" ? <>
-              <p>親設問: {scoreDisplay(issue.node.score_points)}（この親設問の配点方式: {issue.node.score_semantics === "direct" ? "直接配点" : issue.node.score_semantics === "each_child" ? "各小問に配点" : issue.node.score_semantics === "unset" ? "未設定" : "要確認"}）</p>
+              <p>設問自身の配点: {scoreDisplay(issue.node.score_points)}（配点方式: {scoreSemanticsLabel(issue.node.score_semantics)}）</p>
               <p>小問ごとの配点:</p>
               {children.length ? <ul>{children.map(child => <li key={child.stable_key}>{buildQuestionPath(child.stable_key, current.nodes)}: {scoreDisplay(child.score_points)}</li>)}</ul> : <p>小問が見つかりません。</p>}
-              <p>入力済み小問の配点合計: {knownChildTotal}点 / 親設問: {scoreDisplay(issue.node.score_points)}</p>
+              <p>入力済み小問の配点合計: {knownChildTotal}点 / 設問自身: {scoreDisplay(issue.node.score_points)}</p>
               {difference && <p>{difference}です。{unsetChildren.length > 0 && ` ${unsetChildren.map(child => buildQuestionPath(child.stable_key, current.nodes)).join("、")}の配点が未設定です。`}</p>}
               {!difference && unsetChildren.length > 0 && <p>合計には未設定の小問が含まれていません。{unsetChildren.map(child => buildQuestionPath(child.stable_key, current.nodes)).join("、")}の配点を確認してください。</p>}
-              <p>小問がある親設問には直接配点を設定できません。親の配点方式を「未設定」にして小問へ配点するか、原問題用紙で同じ点数が各小問に適用される場合は「各小問に配点」を選んでください。</p>
+              <p>小問がある設問では、設問自身と小問の点数を重ねて登録できません。「小問の個別配点の合計」に変更すると、小問の点数から合計を計算できます。</p>
             </> : issue.code === "score_conflict" ? <>
-              <p>親設問: {buildQuestionPath(issue.node.stable_key, current.nodes)}（各小問 {scoreDisplay(issue.node.score_points)}）</p>
+              <p>親設問: {buildQuestionPath(issue.node.stable_key, current.nodes)}（旧設定: 小問ごとに {scoreDisplay(issue.node.score_points)}）</p>
               <p>小問ごとの配点:</p>
               {children.length ? <ul>{children.map(child => {
                 const mismatch = child.score_points !== null && issue.node.score_points !== null && child.score_points !== issue.node.score_points;
                 return <li key={child.stable_key}>{buildQuestionPath(child.stable_key, current.nodes)}: {scoreDisplay(child.score_points)}{mismatch ? `（親の${scoreDisplay(issue.node.score_points)}と不一致）` : child.score_points === null ? `（親から${scoreDisplay(issue.node.score_points)}を適用）` : ""}</li>;
               })}</ul> : <p>{buildQuestionPath(issue.node.stable_key, current.nodes)}の配点が親設問の設定と一致しません。</p>}
-              <p>親設問の「各小問に配点」と異なる小問の配点があります。各小問の配点を親に合わせるか、親設問の配点方式を見直してください。</p>
-            </> : issue.code === "each_child_structural_child" ? <p>{buildQuestionPath(issue.node.stable_key, current.nodes)}の親設問で「各小問に配点」が選ばれていますが、間に構造用の設問があります。配点対象となる階層を見直してください。</p>
+              <p>この修正版には小問へ同じ点数を適用する旧設定があります。小問ごとに異なる点数を使う場合は「小問の個別配点の合計」へ変更してください。</p>
+            </> : issue.code === "each_child_structural_child" ? <p>{buildQuestionPath(issue.node.stable_key, current.nodes)}には同じ点数を各小問に適用する旧設定があります。入れ子の設問には適用できないため、新しい配点方法へ変更してください。</p>
               : <p>{buildQuestionPath(issue.node.stable_key, current.nodes)}の配点方式または配点を見直してください。</p>}
             <button type="button" className="button secondary" onClick={() => resumeEditingAtQuestion(issue.node.stable_key)}>確認を解除して編集</button>
           </article>;
@@ -443,9 +469,9 @@ export function ReviewWorkspace({ id }: { id: string }) {
         {generalBlockers.length > 0 && <ul>{generalBlockers.map(code => <li key={code}>{reviewIssueLabel(code)}</li>)}</ul>}
         <details><summary>技術情報</summary>{plan.blockers.join(", ")}</details>
       </div> : <div className="notice">問題を登録できます。登録すると、この試験の問題として確定されます。</div>}
-      {independentWarningScoreGuidance.filter(issue => issue.code === "score_unset").map(issue => <article className="score-guidance warn" key={issue.id}>
-        <h3>配点未設定: {buildQuestionPath(issue.node.stable_key, current.nodes)}</h3>
-        <p>{buildQuestionPath(issue.node.stable_key, current.nodes)}の配点は未設定です。採点対象にする場合は配点を入力してください。</p>
+      {independentWarningScoreGuidance.filter(issue => issue.code === "score_unset" || issue.code === "score_method_unset").map(issue => <article className="score-guidance warn" key={issue.id}>
+        <h3>{issue.code === "score_method_unset" ? "配点方法未設定" : "配点未設定"}: {buildQuestionPath(issue.node.stable_key, current.nodes)}</h3>
+        <p>{issue.code === "score_method_unset" ? `${buildQuestionPath(issue.node.stable_key, current.nodes)}には小問があります。小問の配点合計を確定する場合は「小問の個別配点の合計」を選んでください。未設定のままでは試験全体の合計点は確定しません。` : `${buildQuestionPath(issue.node.stable_key, current.nodes)}の配点は未設定です。採点対象にする場合は配点を入力してください。`}</p>
         <button type="button" className="button secondary" onClick={() => resumeEditingAtQuestion(issue.node.stable_key)}>確認を解除して編集</button>
       </article>)}
       {warningCount > 0 && <div className="warn">確認事項が {warningCount} 件あります。{generalWarnings.length > 0 && <ul>{generalWarnings.map(code => <li key={code}>{reviewIssueLabel(code)}</li>)}</ul>}<details><summary>技術情報</summary>{generalWarnings.join(", ")}</details></div>}

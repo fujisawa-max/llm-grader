@@ -22,14 +22,21 @@ def regions(draft):
 
 def initial_snapshot(draft_hash, draft, pin):
     nodes = []
+    parent_keys = {node.get("parent_key") for node in draft["nodes"] if node.get("parent_key")}
     for n in draft["nodes"]:
+        semantics = n["score"]["semantics"]
+        points = n["score"]["points"]
+        # New review workspaces default structural questions to the explicit
+        # child-sum mode. Existing saved revisions are never rewritten here.
+        if n["stable_key"] in parent_keys and semantics == "unset" and points is None:
+            semantics = "sum_children"
         nodes.append({
             "review_node_id": n["stable_key"], "stable_key": n["stable_key"],
             "source_draft_stable_key": n["stable_key"], "source_draft_node_id": None,
             **{k: deepcopy(n[k]) for k in ("parent_key", "node_type", "depth", "sort_order",
                                           "label", "body_text", "ordered_content", "review_flags")},
-            "included": True, "score_semantics": n["score"]["semantics"],
-            "score_points": n["score"]["points"],
+            "included": True, "score_semantics": semantics,
+            "score_points": points if semantics != "sum_children" else None,
             "effective_points_candidate": n["score"]["effective_points_candidate"],
             "formula_decisions": {}, "figure_decisions": {}, "warning_states": {},
         })
@@ -272,12 +279,12 @@ def validate_snapshot(snapshot, current, draft, pin, *, mark=False):
             raise ReviewError("label_required", 422, node_key=key, field_key="label")
         _text(n.get("body_text", ""))
         semantics, points = n.get("score_semantics"), n.get("score_points")
-        if not isinstance(semantics, str) or semantics not in {"direct", "each_child", "unset", "ambiguous"}:
+        if not isinstance(semantics, str) or semantics not in {"direct", "sum_children", "each_child", "unset", "ambiguous"}:
             raise ReviewError("invalid_score_semantics", 422, node_key=key, field_key="score")
         if points is not None and (type(points) not in (int, float) or
                                    not math.isfinite(points) or points < 0 or points > 1e9):
             raise ReviewError("invalid_score", 422, node_key=key, field_key="score")
-        if (semantics == "unset" and points is not None or
+        if (semantics in {"unset", "sum_children"} and points is not None or
                 semantics in {"direct", "each_child"} and points is None):
             raise ReviewError("score_type_mismatch", 422, node_key=key, field_key="score")
         src = n.get("source_draft_stable_key")
@@ -340,6 +347,8 @@ def validate_snapshot(snapshot, current, draft, pin, *, mark=False):
                 raise ReviewError("node_content_required", 422)
             if n["score_semantics"] == "each_child" and not has_children:
                 raise ReviewError("each_child_requires_children", 422)
+            if n["score_semantics"] == "sum_children" and not has_children:
+                raise ReviewError("sum_children_requires_children", 422, node_key=key, field_key="score")
         mapping_decision = n.get("source_mapping_decision")
         if mapping_decision is not None:
             if (not isinstance(mapping_decision, str) or mapping_decision not in
@@ -484,9 +493,25 @@ def review_summary(snap, draft, pin):
                 unresolved += 1
             continue
         if n["score_semantics"] == "direct":
-            scores.append(n["score_points"])
+            if children:
+                unresolved += 1
+            else:
+                scores.append(n["score_points"])
+        elif n["score_semantics"] == "sum_children":
+            # Child points are already counted at the grading leaves. The
+            # structural parent contributes no additional points.
+            if not children:
+                unresolved += 1
         elif n["score_semantics"] == "each_child" and children:
-            scores.append(n["score_points"] * len(children))
+            # Backward compatibility: the legacy mode assigns this same
+            # stored amount to every direct child and skips those children.
+            if any(any(grandchild["parent_key"] == child["stable_key"] for grandchild in included)
+                   for child in children):
+                unresolved += 1
+            else:
+                scores.append(n["score_points"] * len(children))
+        elif n["score_semantics"] == "unset" and children:
+            unresolved += 1  # Unset does not mean “use the child scores”.
         elif not children or n["score_semantics"] == "ambiguous":
             unresolved += 1
     result = {"included_questions": len(included), "excluded_questions": len(snap["nodes"]) - len(included),

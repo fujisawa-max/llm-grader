@@ -8,6 +8,7 @@ import { mergeContiguousContent } from "@/lib/reviewTextMerge";
 import { formulaHasRenderError, formulaIsConfirmed, setFormulaConfirmation } from "@/lib/formulaConfirmation";
 import { FormulaConfirmation } from "@/components/reviews/FormulaConfirmation";
 import { reviewFieldId } from "@/lib/reviewValidation";
+import { effectiveQuestionScore } from "@/lib/questionScores";
 
 export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange, onParent, onMove, onRegion, activeRegionId, renderEvidence, issues = {} }: {
   node: ReviewNode; nodes: ReviewNode[]; automatic?: AutomaticNode; regions: Region[]; readonly: boolean;
@@ -20,6 +21,10 @@ export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange
   const modified = automatic && (JSON.stringify(automatic.ordered_content) !== JSON.stringify(node.ordered_content) ||
     automatic.label.raw !== node.label.raw || automatic.score.points !== node.score_points || automatic.score.semantics !== node.score_semantics);
   const regionById = new Map(regions.map(region => [region.region_id, region]));
+  const childQuestions = nodes.filter(entry => entry.included && entry.parent_key === node.stable_key)
+    .sort((left, right) => left.sort_order - right.sort_order);
+  const hasChildren = childQuestions.length > 0;
+  const derivedScore = effectiveQuestionScore(node.stable_key, nodes);
   const mergeFocusIndex = useRef<number | null>(null);
   const [mergeSelectionState, setMergeSelectionState] = useState<{
     nodeKey: string; active: boolean; indices: number[];
@@ -155,10 +160,25 @@ export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange
       <div className="review-toolbar"><button type="button" onClick={() => onMove(-1)}>上へ移動</button><button type="button" onClick={() => onMove(1)}>下へ移動</button></div>
       <label>配点の扱い<select value={node.score_semantics} onChange={e => {
         const semantics = e.target.value as ReviewNode["score_semantics"];
-        onChange({ ...node, score_semantics: semantics, score_points: semantics === "unset" ? null : node.score_points });
-      }}>{(["direct", "each_child", "unset", "ambiguous"] as const).map(s => <option key={s} value={s}>{scoreSemanticsLabel(s)}</option>)}</select></label>
-      <label id={reviewFieldId(node.stable_key, "score")} className={fieldIssues("score").length ? "review-field-target has-error" : "review-field-target"}>配点{node.score_semantics === "direct" || node.score_semantics === "each_child" ? <span className="review-required" aria-label="必須">*</span> : null}{needsCheck("score")}<input type="number" min="0" max="1000000000" step="any" disabled={node.score_semantics === "unset"} value={node.score_points ?? ""} aria-invalid={!!fieldIssues("score").length}
-        onChange={e => onChange({ ...node, score_points: e.target.value === "" ? null : Number(e.target.value) })} />{errors("score")}</label>
+        onChange({ ...node, score_semantics: semantics, score_points: semantics === "direct" ? node.score_points : null });
+      }}>
+        {node.score_semantics === "each_child" && <option value="each_child" disabled>旧設定（同じ配点を各小問に適用）</option>}
+        {node.score_semantics === "ambiguous" && <option value="ambiguous" disabled>要確認（自動解析）</option>}
+        {node.score_semantics === "direct" && hasChildren
+          ? <option value="direct" disabled>この問題に直接配点（小問があるため利用不可）</option>
+          : !hasChildren && <option value="direct">この問題に直接配点</option>}
+        {(hasChildren || node.score_semantics === "sum_children") && <option value="sum_children" disabled={!hasChildren}>小問の個別配点の合計</option>}
+        <option value="unset">未設定</option>
+      </select></label>
+      {node.score_semantics === "sum_children" ? <div id={reviewFieldId(node.stable_key, "score")} className={fieldIssues("score").length ? "review-field-target derived-score has-error" : "review-field-target derived-score"} aria-invalid={!!fieldIssues("score").length}>
+        <strong>配点: {derivedScore.complete ? `${derivedScore.points}点` : "未確定"}</strong>
+        <p className="muted">小問の個別配点から自動計算されます。</p>
+        {!derivedScore.complete && <p>{derivedScore.knownCount > 0 ? `小問合計（設定済み分）: ${derivedScore.knownPoints}点。` : "小問の配点がまだ設定されていません。"}{derivedScore.missingLabels.length > 0 && ` 未設定または要確認: ${derivedScore.missingLabels.join("、")}`}</p>}
+        {errors("score")}
+      </div> : node.score_semantics === "unset" ? <div id={reviewFieldId(node.stable_key, "score")} className="review-field-target"><strong>配点: 未設定</strong>{hasChildren && <p className="muted">小問に任せる設定ではありません。配点方法を選んでください。</p>}{errors("score")}</div>
+        : node.score_semantics === "each_child" ? <div id={reviewFieldId(node.stable_key, "score")} className="review-field-target legacy-score"><strong>旧設定の配点: {node.score_points ?? "未設定"}点ずつ</strong><p className="muted">この修正版では、設定済み点数を各小問へ同じ点数として適用します。新しい方式へ変更する場合は上の選択欄から選んでください。</p>{errors("score")}</div>
+          : <label id={reviewFieldId(node.stable_key, "score")} className={fieldIssues("score").length ? "review-field-target has-error" : "review-field-target"}>配点{node.score_semantics === "direct" ? <span className="review-required" aria-label="必須">*</span> : null}{needsCheck("score")}<input type="number" min="0" max="1000000000" step="any" disabled={node.score_semantics === "ambiguous" || hasChildren} value={node.score_points ?? ""} aria-invalid={!!fieldIssues("score").length}
+            onChange={e => onChange({ ...node, score_points: e.target.value === "" ? null : Number(e.target.value) })} />{hasChildren && <p className="muted">小問がある設問は、この画面では直接配点できません。小問の個別配点を合計する方式を選んでください。</p>}{errors("score")}</label>}
       {automatic && <p className="muted">自動解析による配点: {scoreSemanticsLabel(automatic.score.semantics)} {automatic.score.points ?? "—"}</p>}
       <h4>問題文・数式・図（原文の読み順）</h4>
       <div className="review-toolbar">
