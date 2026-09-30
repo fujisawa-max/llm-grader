@@ -5,11 +5,14 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections import defaultdict
+from difflib import SequenceMatcher
 from typing import Any
 from uuid import uuid4
 
 
 IMPORT_SCHEMA = "model-answer-review.v1"
+FUZZY_MIN_LENGTH = 32
+FUZZY_MIN_CONFIDENCE = 0.97
 
 
 def _normalized_label(value: Any) -> str:
@@ -58,6 +61,193 @@ def question_choices(questions: list[Any]) -> list[dict[str, Any]]:
         for q in sorted(questions, key=lambda item: (item.sort_order, item.question_number, item.id))
         if q.is_gradable
     ]
+
+
+def _question_body_variants(question: Any) -> list[str]:
+    """Return text for this question only, including its own ordered math content."""
+    variants: list[str] = []
+    body = str(getattr(question, "question_text", None) or "").strip()
+    if body:
+        variants.append(body)
+
+    content = getattr(question, "content", None)
+    items = content.get("items", []) if isinstance(content, dict) else []
+    if isinstance(items, list):
+        parts = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            kind = item.get("type")
+            if kind == "text":
+                parts.append(str(item.get("text") or ""))
+            elif kind == "formula":
+                formula = str(item.get("transcription") or item.get("latex") or "").strip()
+                if formula:
+                    parts.append(formula)
+        ordered_body = "".join(parts).strip()
+        if ordered_body and ordered_body not in variants:
+            variants.append(ordered_body)
+
+    # Compare complete body/paragraphs first, then standalone sentences. Short
+    # fragments are excluded later so a common phrase cannot erase an answer.
+    for variant in list(variants):
+        paragraphs = [part.strip() for part in re.split(r"\n\s*\n+", variant) if part.strip()]
+        variants.extend(part for part in paragraphs if part not in variants)
+        for paragraph in paragraphs:
+            sentences = [part.strip() for part in re.split(r"(?<=[。！？!?])\s*", paragraph) if part.strip()]
+            variants.extend(part for part in sentences if part not in variants)
+    return list(dict.fromkeys(variants))
+
+
+def _strip_leading_question_markers(text: str) -> tuple[str, int]:
+    """Ignore leading question labels while retaining their source offset."""
+    offset = len(text) - len(text.lstrip())
+    marker = re.compile(
+        r"^(?:(?:問題|問|question|q)\s*[0-9]+(?:[.-][0-9]+)*\s*[:：、.]?"
+        r"|[（(]\s*[0-9a-z]+\s*[）)]\s*|[0-9]+[.)．、]\s*)",
+        re.IGNORECASE,
+    )
+    while offset < len(text):
+        match = marker.match(text[offset:])
+        if not match:
+            break
+        offset += match.end()
+        offset += len(text[offset:]) - len(text[offset:].lstrip())
+    return text[offset:], offset
+
+
+def _normalized_with_offsets(text: str) -> tuple[str, list[int], list[int]]:
+    """Normalize comparison text and map normalized chars to source spans."""
+    source, base_offset = _strip_leading_question_markers(text)
+    normalized: list[str] = []
+    source_starts: list[int] = []
+    source_ends: list[int] = []
+    index = 0
+    while index < len(source):
+        if any(source.startswith(delimiter, index) for delimiter in ("\\(", "\\)", "\\[", "\\]")):
+            index += 2
+            continue
+        cluster_end = index + 1
+        while cluster_end < len(source) and unicodedata.category(source[cluster_end]).startswith("M"):
+            cluster_end += 1
+        cluster = source[index:cluster_end]
+        # Delimiters do not affect whether a question's mathematical wording
+        # was repeated; keep the LaTeX command and operands themselves.
+        folded = unicodedata.normalize("NFKC", cluster).casefold()
+        for output_char in folded:
+            if output_char.isspace() or output_char in {"$", "\u200b", "\ufeff"}:
+                continue
+            normalized.append(output_char)
+            source_starts.append(base_offset + index)
+            source_ends.append(base_offset + cluster_end)
+        index = cluster_end
+    return "".join(normalized), source_starts, source_ends
+
+
+def normalize_question_text(value: str) -> str:
+    """Public normalization helper used by matching tests and diagnostics."""
+    return _normalized_with_offsets(value)[0]
+
+
+def _safe_prefix_boundary(text: str, end: int, question_variant: str, matched_length: int) -> bool:
+    if end >= len(text):
+        return True
+    next_char = text[end]
+    if next_char.isspace():
+        return True
+    if matched_length < 12:
+        return False
+    stripped = question_variant.rstrip()
+    if not stripped:
+        return False
+    terminal = stripped[-1]
+    if terminal in "。！？!?；;：:」』）》】":
+        # Avoid treating an ASCII period inside a number/identifier as a sentence boundary.
+        if terminal == "." and next_char.isascii() and next_char.isalnum():
+            return False
+        return True
+    return False
+
+
+def remove_question_text(question: Any, answer_text: str) -> tuple[str, dict[str, Any]]:
+    """Remove a confidently repeated leading question prompt from an answer.
+
+    Exact normalized prefix matching is preferred. Fuzzy matching is limited to
+    long prompts, a small edit window, and a high similarity threshold. The
+    original answer is returned unchanged whenever matching is uncertain.
+    """
+    original = str(answer_text or "")
+    base_metadata = {
+        "status": "not_removed",
+        "method": None,
+        "confidence": None,
+        "removed_prefix_length": 0,
+        "question_id": getattr(question, "id", None),
+    }
+    candidates: list[tuple[str, str]] = []
+    for variant in _question_body_variants(question):
+        normalized, _, _ = _normalized_with_offsets(variant)
+        if len(normalized) >= 12:
+            candidates.append((variant, normalized))
+    if not candidates or not original:
+        return original, base_metadata
+
+    answer_normalized, _, answer_ends = _normalized_with_offsets(original)
+    if not answer_normalized:
+        return original, base_metadata
+
+    # Choose the longest exact leading match. This removes a full repeated
+    # prompt when both a whole block and one of its sentences match.
+    exact = [(variant, normalized) for variant, normalized in candidates
+             if answer_normalized.startswith(normalized)]
+    if exact:
+        variant, normalized = max(exact, key=lambda item: len(item[1]))
+        source_end = answer_ends[len(normalized) - 1]
+        if _safe_prefix_boundary(original, source_end, variant, len(normalized)):
+            while source_end < len(original) and original[source_end].isspace():
+                source_end += 1
+            metadata = {**base_metadata, "status": "removed", "method": "exact",
+                        "confidence": 1.0, "removed_prefix_length": source_end}
+            return original[source_end:].lstrip(), metadata
+
+    # Only try approximate alignment for sufficiently long prompts. The
+    # candidate window is tightly bounded to prevent large or speculative cuts.
+    best: tuple[float, int, str] | None = None
+    ambiguous_best = False
+    for variant, normalized in candidates:
+        length = len(normalized)
+        if length < FUZZY_MIN_LENGTH or length > 500 or len(answer_normalized) < FUZZY_MIN_LENGTH:
+            continue
+        tolerance = max(1, min(8, int(length * 0.02)))
+        for window_length in range(max(1, length - tolerance), min(len(answer_normalized), length + tolerance) + 1):
+            ratio = SequenceMatcher(None, normalized, answer_normalized[:window_length], autojunk=False).ratio()
+            if ratio < FUZZY_MIN_CONFIDENCE:
+                continue
+            end = answer_ends[window_length - 1]
+            if not _safe_prefix_boundary(original, end, variant, length):
+                continue
+            candidate = (ratio, window_length, variant)
+            if best is None:
+                best = candidate
+            elif ambiguous_best:
+                continue
+            elif abs(candidate[0] - best[0]) < 0.005 and candidate[1] != best[1]:
+                # Equally plausible cuts with different lengths are ambiguous.
+                ambiguous_best = True
+            elif candidate[0] > best[0] + 0.005 or (
+                abs(candidate[0] - best[0]) <= 0.005 and candidate[1] > best[1]
+            ):
+                best = candidate
+    if best and not ambiguous_best and best[0] >= FUZZY_MIN_CONFIDENCE and best[1] > 0:
+        confidence, matched_length, _ = best
+        source_end = answer_ends[matched_length - 1]
+        while source_end < len(original) and original[source_end].isspace():
+            source_end += 1
+        metadata = {**base_metadata, "status": "removed", "method": "fuzzy",
+                    "confidence": round(confidence, 4), "removed_prefix_length": source_end}
+        return original[source_end:].lstrip(), metadata
+
+    return original, base_metadata
 
 
 def _lines_from_ir(ir: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
@@ -287,7 +477,21 @@ def build_model_answer_entries(ir: dict[str, Any], questions: list[Any]) -> list
             combined.append(entry)
             if key:
                 known[key] = entry
-    return combined
+
+    question_by_id = {question.id: question for question in ordered_questions}
+    for entry in combined:
+        question = question_by_id.get(entry.get("question_id"))
+        if question is None:
+            continue
+        cleaned, removal = remove_question_text(question, entry["answer_text"])
+        entry["answer_text"] = cleaned
+        entry["question_text_removal"] = removal
+
+    # Keep a mapped entry whose entire extracted body duplicated its question.
+    # The review UI can explain the empty result and the confirm endpoint already
+    # rejects empty answers. Do not fall back to the unstripped PDF text here.
+    return [entry for entry in combined
+            if entry["answer_text"].strip() or entry.get("question_text_removal", {}).get("status") == "removed"]
 
 
 def draft_view(draft, choices: list[dict[str, Any]]) -> dict[str, Any]:

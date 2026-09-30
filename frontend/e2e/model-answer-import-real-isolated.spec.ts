@@ -3,6 +3,7 @@ import { test, expect } from "@playwright/test";
 const testId = process.env.MODEL_ANSWER_IMPORT_TEST_ID;
 const materialId = process.env.MODEL_ANSWER_IMPORT_MATERIAL_ID;
 const manualMaterialId = process.env.MODEL_ANSWER_IMPORT_MANUAL_MATERIAL_ID;
+const removalMaterialId = process.env.MODEL_ANSWER_IMPORT_REMOVAL_MATERIAL_ID;
 const email = process.env.MODEL_ANSWER_IMPORT_EMAIL;
 const password = process.env.MODEL_ANSWER_IMPORT_PASSWORD;
 const apiBase = process.env.MODEL_ANSWER_IMPORT_API_URL;
@@ -87,4 +88,43 @@ test("ambiguous native answer mapping requires and persists a teacher choice", a
   const answers = await response.json();
   const q1Versions = answers.filter((answer: { question_id: string }) => answer.question_id === questionOneId);
   expect(q1Versions.some((answer: { version: number; is_current: boolean }) => answer.version === 2 && answer.is_current)).toBe(true);
+});
+
+test("repeated question prompt is removed from the native answer draft and provenance records it", async ({ page, baseURL }) => {
+  test.skip(!removalMaterialId, "isolated question-text-removal PDF is not configured");
+  if (!testId || !baseURL) throw new Error("Isolated model answer API is required");
+  const apiUrl = apiBase || baseURL;
+  await login(page);
+  await page.goto(`/tests/${testId}?section=answers`);
+  const analyze = page.getByRole("button", { name: "question-copy.pdfを解析して模範解答を確認", exact: true });
+  const createResponse = page.waitForResponse((response) =>
+    response.url().includes(`/tests/${testId}/model-answer-imports`) && response.request().method() === "POST");
+  await analyze.click();
+  expect((await createResponse).status()).toBe(201);
+  await expect(page).toHaveURL(/\/model-answer-import-reviews\//);
+  const answer = page.getByLabel("模範解答本文 1");
+  const extractedAnswer = /The model fits training data too closely, reducing its\s+performance on unseen data\./;
+  await expect(answer).toHaveValue(extractedAnswer);
+  await expect(page.getByText("重複していた問題文を除去しました。")).toBeVisible();
+
+  const saveResponse = page.waitForResponse((response) =>
+    response.url().includes("/model-answer-import-drafts/") && response.request().method() === "PUT");
+  await page.getByRole("button", { name: "変更を保存" }).click();
+  expect((await saveResponse).status()).toBe(200);
+  await page.reload();
+  await expect(answer).toHaveValue(extractedAnswer);
+
+  const confirmResponse = page.waitForResponse((response) =>
+    response.url().includes("/model-answer-import-drafts/") && response.url().endsWith("/confirm"));
+  await page.getByRole("button", { name: "確認した模範解答を登録" }).click();
+  expect((await confirmResponse).status()).toBe(200);
+  await expect(page).toHaveURL(new RegExp(`/tests/${testId}\\?section=answers`));
+  const answersResponse = await page.request.get(`${apiUrl}/api/v1/tests/${testId}/model-answers`);
+  const answers = await answersResponse.json();
+  const saved = answers.find((item: { answer_text: string; is_current: boolean }) =>
+    item.is_current && item.answer_text.includes("training data too closely"));
+  expect(saved).toBeTruthy();
+  expect(saved.provenance_json.question_text_removal.method).toBe("exact");
+  expect(saved.provenance_json.question_text_removal.status).toBe("removed");
+  expect(saved.provenance_json.segments.length).toBeGreaterThan(0);
 });

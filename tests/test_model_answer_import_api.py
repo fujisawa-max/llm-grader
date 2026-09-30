@@ -13,6 +13,7 @@ from scoring.api.model_answer_imports import ConfirmRequest, DraftEdit, EntryEdi
 from scoring.db import create_session_factory, init_database
 from scoring.db.models import ModelAnswer
 from scoring.domain import DomainService
+from scoring.model_answer_drafts import normalize_question_text
 
 
 def _endpoint(app, path, method=None):
@@ -29,7 +30,7 @@ class ModelAnswerImportApiTests(unittest.TestCase):
         document.save(path)
         document.close()
 
-    def make_fixture(self, root: Path, text: str):
+    def make_fixture(self, root: Path, text: str, q1_question_text: str | None = None):
         engine, factory = create_session_factory(f"sqlite:///{root / 'isolated.sqlite'}")
         init_database(engine)
         with factory() as session:
@@ -39,7 +40,7 @@ class ModelAnswerImportApiTests(unittest.TestCase):
             offering = domain.offering(course.id, academic_year=2026, term="fall")
             test = domain.test(offering.id, name="Isolated test", total_points=20)
             q1 = domain.question(test.id, question_number="1", display_label="問題1", sort_order=1,
-                                 max_points=10, is_gradable=True)
+                                 max_points=10, is_gradable=True, question_text=q1_question_text)
             q2 = domain.question(test.id, question_number="2", display_label="問題2", sort_order=2,
                                  max_points=None, is_gradable=False)
             q21 = domain.question(test.id, question_number="2.1", display_label="(1)", sort_order=1,
@@ -126,6 +127,82 @@ class ModelAnswerImportApiTests(unittest.TestCase):
                 )]), session)
                 self.assertEqual(updated["entries"][0]["mapping_state"], "manual_mapped")
                 self.assertEqual(updated["entries"][0]["question_id"], q1_id)
+
+    def test_manual_mapping_applies_question_text_removal_after_target_is_selected(self):
+        question_text = "Explain overfitting in machine learning and describe its effect on unseen data."
+        answer_text = "The model fits training data too closely, reducing its performance on unseen data."
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            factory, test_id, material_id, q1_id, _q21_id, _q22_id = self.make_fixture(
+                root, f"Question 9\n{question_text}\n{answer_text}", q1_question_text=question_text,
+            )
+            with patch.dict("os.environ", {"LLM_GRADER_ARTIFACT_ROOT": str(root)}):
+                app = create_app(factory, question_import_root=root / "question-imports", allowed_roots=[root])
+            create = _endpoint(app, "/api/v1/tests/{test_id}/model-answer-imports")
+            update = _endpoint(app, "/api/v1/model-answer-import-drafts/{draft_id}", "PUT")
+            with factory() as session:
+                draft = create(test_id, ImportCreate(material_id=material_id), session)
+                self.assertIsNone(draft["entries"][0]["question_id"])
+                self.assertTrue(normalize_question_text(draft["entries"][0]["answer_text"]).startswith(
+                    normalize_question_text(question_text),
+                ))
+                updated = update(draft["id"], DraftEdit(expected_revision=1, entries=[EntryEdit(
+                    id=draft["entries"][0]["id"], question_id=q1_id,
+                    answer_text=draft["entries"][0]["answer_text"],
+                )]), session)
+                self.assertEqual(updated["entries"][0]["mapping_state"], "manual_mapped")
+                self.assertEqual(normalize_question_text(updated["entries"][0]["answer_text"]),
+                                 normalize_question_text(answer_text))
+                self.assertEqual(updated["entries"][0]["question_text_removal"]["method"], "exact")
+                self.assertTrue(updated["entries"][0]["source"]["segments"])
+
+    def test_native_import_removes_question_text_and_persists_removal_provenance(self):
+        question_text = "Explain overfitting in machine learning and describe its effect on unseen data."
+        answer_text = "The model fits training data too closely, reducing its performance on unseen data."
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            factory, test_id, material_id, q1_id, _q21_id, _q22_id = self.make_fixture(
+                root, f"Question 1\n{question_text}\n{answer_text}", q1_question_text=question_text,
+            )
+            with patch.dict("os.environ", {"LLM_GRADER_ARTIFACT_ROOT": str(root)}):
+                app = create_app(factory, question_import_root=root / "question-imports", allowed_roots=[root])
+            create = _endpoint(app, "/api/v1/tests/{test_id}/model-answer-imports")
+            confirm = _endpoint(app, "/api/v1/model-answer-import-drafts/{draft_id}/confirm")
+            with factory() as session:
+                draft = create(test_id, ImportCreate(material_id=material_id), session)
+                self.assertEqual(len(draft["entries"]), 1)
+                entry = draft["entries"][0]
+                self.assertEqual(entry["question_id"], q1_id)
+                self.assertEqual(normalize_question_text(entry["answer_text"]), normalize_question_text(answer_text))
+                self.assertEqual(entry["question_text_removal"]["status"], "removed")
+                self.assertTrue(entry["source"]["segments"])
+                saved = confirm(draft["id"], ConfirmRequest(expected_revision=1), session)
+                self.assertEqual(normalize_question_text(saved["model_answers"][0]["answer_text"]),
+                                 normalize_question_text(answer_text))
+                provenance = saved["model_answers"][0]["provenance_json"]
+                self.assertEqual(provenance["question_text_removal"]["method"], "exact")
+                self.assertTrue(provenance["segments"])
+
+    def test_question_only_extraction_stays_unconfirmable(self):
+        question_text = "Explain overfitting in machine learning and describe its effect on unseen data."
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            factory, test_id, material_id, _q1_id, _q21_id, _q22_id = self.make_fixture(
+                root, f"Question 1\n{question_text}", q1_question_text=question_text,
+            )
+            with patch.dict("os.environ", {"LLM_GRADER_ARTIFACT_ROOT": str(root)}):
+                app = create_app(factory, question_import_root=root / "question-imports", allowed_roots=[root])
+            create = _endpoint(app, "/api/v1/tests/{test_id}/model-answer-imports")
+            confirm = _endpoint(app, "/api/v1/model-answer-import-drafts/{draft_id}/confirm")
+            with factory() as session:
+                draft = create(test_id, ImportCreate(material_id=material_id), session)
+                self.assertEqual(len(draft["entries"]), 1)
+                self.assertEqual(draft["entries"][0]["answer_text"], "")
+                self.assertEqual(draft["entries"][0]["question_text_removal"]["status"], "removed")
+                with self.assertRaises(HTTPException) as caught:
+                    confirm(draft["id"], ConfirmRequest(expected_revision=1), session)
+                self.assertEqual(caught.exception.status_code, 422)
+                self.assertEqual(caught.exception.detail["error"]["code"], "EMPTY_ANSWER_TEXT")
 
 
 if __name__ == "__main__":

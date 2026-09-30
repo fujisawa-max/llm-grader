@@ -149,6 +149,9 @@ export default function ModelAnswerImportReviewPage() {
               disabled={busy || draft.state !== "editing"}
               onChange={(event) => updateEntry(entry.id, { answer_text: event.target.value })} />
           </label>
+          {entry.question_text_removal?.status === "removed" && <p className="muted">重複していた問題文を除去しました。</p>}
+          {entry.question_text_removal?.status === "removed" && !entry.answer_text.trim() &&
+            <p className="warn" role="alert">問題文以外の模範解答を抽出できませんでした。PDFを確認し、本文を入力してください。</p>}
           <small className="math-help">{mathInputHelp}</small>
           <MathPreview source={entry.answer_text} />
           {entry.question_id && <p className="muted">対応先: {questionLabels.get(entry.question_id) || "設問"}</p>}

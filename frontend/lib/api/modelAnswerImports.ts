@@ -13,6 +13,13 @@ export interface ModelAnswerDraftEntry {
   mapping_state: "automatic" | "manual_mapped" | "needs_review" | string;
   mapped_question_label?: string | null;
   answer_text: string;
+  question_text_removal?: {
+    status: "removed" | "not_removed" | string;
+    method?: "exact" | "fuzzy" | null;
+    confidence?: number | null;
+    removed_prefix_length?: number;
+    question_id?: string | null;
+  };
   source: {
     material_id: string;
     source_sha256: string;

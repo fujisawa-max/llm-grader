@@ -1,7 +1,12 @@
 from types import SimpleNamespace
 import unittest
 
-from scoring.model_answer_drafts import build_model_answer_entries, question_choices
+from scoring.model_answer_drafts import (
+    build_model_answer_entries,
+    normalize_question_text,
+    question_choices,
+    remove_question_text,
+)
 
 
 def _ir(lines):
@@ -57,6 +62,85 @@ class ModelAnswerDraftTests(unittest.TestCase):
         choices = question_choices(self.questions)
         self.assertEqual([item["id"] for item in choices], ["q1", "q2a", "q2b"])
         self.assertEqual(choices[1]["label"], "問題2 > (1)")
+
+    def test_repeated_question_prefix_is_removed_and_source_metadata_retained(self):
+        question = self.questions[0]
+        question.question_text = "機械学習における過学習とはどのような状態か説明しなさい。"
+        entries = build_model_answer_entries(_ir([
+            "Question 1",
+            question.question_text,
+            "訓練データに適合しすぎて、未知データへの性能が低下した状態。",
+        ]), self.questions)
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["question_id"], "q1")
+        self.assertEqual(entries[0]["answer_text"], "訓練データに適合しすぎて、未知データへの性能が低下した状態。")
+        self.assertEqual(entries[0]["question_text_removal"]["method"], "exact")
+        self.assertGreaterEqual(len(entries[0]["source"]["segments"]), 2)
+        self.assertEqual(entries[0]["source"]["material_id"], "material-1")
+
+    def test_line_break_and_width_variation_is_removed(self):
+        question = self.questions[0]
+        question.question_text = "TP、FP、FN、TNを用いた計算式を示しなさい。"
+        extracted = "TP、FP、FN、TNを用いた\n計算式を示しなさい。\nAccuracy = (TP + TN) / (TP + FP + FN + TN)"
+        cleaned, metadata = remove_question_text(question, extracted)
+        self.assertEqual(cleaned, "Accuracy = (TP + TN) / (TP + FP + FN + TN)")
+        self.assertEqual(metadata["status"], "removed")
+        self.assertEqual(normalize_question_text(" ＴＰ、ＦＰ\nＦＮ、ＴＮ "), "tp、fpfn、tn")
+        self.assertEqual(normalize_question_text("か\u3099"), normalize_question_text("が"))
+
+    def test_high_confidence_fuzzy_prefix_is_removed(self):
+        question = self.questions[0]
+        question.question_text = "決定木の過学習を防ぐために、訓練データの複雑さを適切に制御する方法を説明しなさい。"
+        extracted = "決定木の過学習を防ぐために、訓練データの複雑さを適切に制御する方法を説明しなさぃ。\n枝刈りを行う。"
+        cleaned, metadata = remove_question_text(question, extracted)
+        self.assertEqual(cleaned, "枝刈りを行う。")
+        self.assertEqual(metadata["method"], "fuzzy")
+        self.assertGreaterEqual(metadata["confidence"], 0.97)
+
+    def test_low_confidence_or_short_match_is_not_removed(self):
+        question = self.questions[0]
+        question.question_text = "説明せよ。"
+        short_answer = "説明せよ。具体例を挙げて説明する。"
+        cleaned, metadata = remove_question_text(question, short_answer)
+        self.assertEqual(cleaned, short_answer)
+        self.assertEqual(metadata["status"], "not_removed")
+
+        question.question_text = "決定木の過学習を防ぐために、訓練データの複雑さを適切に制御する方法を説明しなさい。"
+        low_confidence = "決定木とは何か、過学習した未知データで複雑さを調べる方法を説明しなさい。\n枝刈りを行う。"
+        cleaned, metadata = remove_question_text(question, low_confidence)
+        self.assertEqual(cleaned, low_confidence)
+        self.assertEqual(metadata["status"], "not_removed")
+
+    def test_nested_question_only_uses_its_own_body(self):
+        self.questions[1].question_text = "親設問の導入文は子の本文から除去しない。"
+        self.questions[2].question_text = "Accuracy（正解率）を計算しなさい。"
+        entries = build_model_answer_entries(_ir([
+            "Question 2", "（1）Accuracy（正解率）を計算しなさい。", "式に値を代入して求める。",
+        ]), self.questions)
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["question_id"], "q2a")
+        self.assertEqual(entries[0]["answer_text"], "式に値を代入して求める。")
+
+    def test_formula_in_question_content_participates_in_comparison(self):
+        question = self.questions[0]
+        question.question_text = ""
+        question.content = {"items": [
+            {"type": "text", "text": "次の式 "},
+            {"type": "formula", "transcription": "x^2 + y^2 = 1"},
+            {"type": "text", "text": " を考えなさい。"},
+        ]}
+        extracted = "次の式 x^2 + y^2 = 1 を考えなさい。\n半径1の円である。"
+        cleaned, metadata = remove_question_text(question, extracted)
+        self.assertEqual(cleaned, "半径1の円である。")
+        self.assertEqual(metadata["status"], "removed")
+
+    def test_question_only_result_remains_as_empty_mapped_entry(self):
+        question = self.questions[0]
+        question.question_text = "機械学習における過学習とはどのような状態か説明しなさい。"
+        entries = build_model_answer_entries(_ir(["Question 1", question.question_text]), self.questions)
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["answer_text"], "")
+        self.assertEqual(entries[0]["question_text_removal"]["status"], "removed")
 
 
 if __name__ == "__main__":

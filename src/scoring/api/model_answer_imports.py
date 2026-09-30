@@ -20,7 +20,12 @@ from ..db.models import (
     TestQuestion,
 )
 from ..domain import DomainService
-from ..model_answer_drafts import build_model_answer_entries, draft_view, question_choices
+from ..model_answer_drafts import (
+    build_model_answer_entries,
+    draft_view,
+    question_choices,
+    remove_question_text,
+)
 from ..pdf_native import PyMuPdfNativeExtractor, sha256_file
 
 logger = logging.getLogger(__name__)
@@ -167,6 +172,7 @@ def router(db, artifact_root):
             fail(422, "DRAFT_ENTRIES_CHANGED", "解析した項目の構成は変更できません")
         choices, questions = choices_for(draft.test_id, session)
         valid_question_ids = {question.id for question in questions if question.is_gradable}
+        question_by_id = {question.id: question for question in questions}
         mapped_ids = [entry.question_id for entry in body.entries if entry.question_id]
         if any(question_id not in valid_question_ids for question_id in mapped_ids):
             fail(422, "INVALID_QUESTION_MAPPING", "対応先にはこの試験の採点対象設問を選択してください")
@@ -179,6 +185,11 @@ def router(db, artifact_root):
             previous_question = entry.get("question_id")
             entry["question_id"] = edit.question_id
             entry["answer_text"] = edit.answer_text
+            removal = entry.get("question_text_removal") or {}
+            if edit.question_id and removal.get("question_id") != edit.question_id:
+                entry["answer_text"], entry["question_text_removal"] = remove_question_text(
+                    question_by_id[edit.question_id], entry["answer_text"],
+                )
             if not edit.question_id:
                 entry["mapping_state"] = "needs_review"
             elif edit.question_id == previous_question and entry.get("mapping_state") == "automatic":
@@ -234,6 +245,7 @@ def router(db, artifact_root):
                     "source_sha256": actual_sha,
                     "parser": draft.snapshot.get("parser", {}),
                     "segments": entry.get("source", {}).get("segments", []),
+                    "question_text_removal": entry.get("question_text_removal"),
                     "mapping_method": entry.get("mapping_state"),
                 }
                 answer = service.model_answer(
