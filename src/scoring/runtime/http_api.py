@@ -27,6 +27,8 @@ class RuntimeHTTPHandler(BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True, "runtimes": self.manager.statuses()})
             if parts == ["internal", "profiles"]:
                 return self._send(200, {"profiles": [row["profile"] for row in self.manager.statuses()]})
+            if parts == ["internal", "hardware"]:
+                return self._send(200, self.manager.hardware.public() if self.manager.hardware else {})
             if parts == ["internal", "models"]:
                 return self._send(200, {"models": self.models})
             if len(parts) != 4 or parts[:2] != ["internal", "runtimes"]:

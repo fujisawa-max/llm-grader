@@ -10,9 +10,12 @@ import time
 from functools import wraps
 import urllib.error
 import urllib.request
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
+
 from enum import Enum
 from pathlib import Path
+
+from .hardware import BackendUnavailable, effective_gpu_layers, selection_status
 
 DEFAULT_RUNTIME_GENERATION = {
     "temperature": 0, "seed": 42, "top_k": 40, "top_p": 0.95,
@@ -50,7 +53,8 @@ class RuntimeProfile:
     context_size: int | None = None
     batch_size: int | None = None
     ubatch_size: int | None = None
-    gpu_layers: int | None = None
+    gpu_layers: int | str | None = None
+    backend: str | None = None
     flash_attention: str | None = None
     additional_args: list[str] = field(default_factory=list)
     log_path: str | None = None
@@ -89,14 +93,21 @@ class RuntimeRecord:
     command: list[str] | None = None
     log_handle: object | None = field(default=None, repr=False)
     process: subprocess.Popen | None = field(default=None, repr=False)
+    selected_profile: RuntimeProfile | None = field(default=None, repr=False)
+    hardware: dict = field(default_factory=dict)
+    error_code: str | None = None
+    log_offset: int = 0
+    force_cpu: bool = False
+    fallback_reason: str | None = None
     lock: object = field(default_factory=threading.RLock, repr=False)
 
     def public(self):
-        result = {"profile": asdict(self.profile), "state": self.state.value,
+        result = {"profile": asdict(self.selected_profile or self.profile), "state": self.state.value,
                   "pid": self.pid, "allocated_port": self.allocated_port,
                   "started_at": self.started_at, "stopped_at": self.stopped_at,
                   "last_health_check": self.last_health_check, "error": self.error,
-                  "command": self.command}
+                  "command": self.command, "hardware": self.hardware,
+                  "error_code": self.error_code}
         result["state"] = self.state.value
         return result
 
@@ -143,8 +154,9 @@ class RuntimeManager:
     """Manage runtime processes without any grading responsibilities."""
 
     def __init__(self, profiles=None, *, port_allocator=None, launcher=None,
-                 request=None, clock=time.monotonic):
+                 request=None, clock=time.monotonic, hardware=None):
         self.records = {}
+        self.hardware = hardware
         self.ports = port_allocator or PortAllocator()
         self.launcher = launcher or self._launch
         self.request = request or self._request
@@ -160,7 +172,15 @@ class RuntimeManager:
             raise ValueError("runtime_typeはmanagedまたはexternalです")
         if profile.port is not None and not 1 <= profile.port <= 65535:
             raise ValueError("portが不正です")
-        self.records[profile.runtime_id] = RuntimeRecord(profile)
+        record = RuntimeRecord(profile)
+        self.records[profile.runtime_id] = record
+        if self.hardware and profile.runtime_type == "managed" and profile.backend:
+            try:
+                self._select_profile(record)
+            except BackendUnavailable:
+                record.error_code = "backend_unavailable"
+                record.hardware = {"requested_backend": profile.backend, "backend": None}
+        effective_gpu_layers(profile.gpu_layers, "cpu")
 
     @_synchronized
     def status(self, runtime_id):
@@ -168,9 +188,9 @@ class RuntimeManager:
         self._observe_process(record)
         result = record.public()
         unavailable = self._missing_artifact(record.profile)
-        result["availability"] = unavailable or "available"
-        result["error_code"] = unavailable
-        if unavailable and record.process is None:
+        result["availability"] = unavailable or record.error_code or "available"
+        result["error_code"] = unavailable or record.error_code
+        if (unavailable or record.error_code == "backend_unavailable") and record.process is None:
             result["state"] = "unavailable"
         return result
 
@@ -201,6 +221,7 @@ class RuntimeManager:
             return self.ensure_running(runtime_id)
         try:
             self._validate_model(profile)
+            profile = self._select_profile(record)
             if profile.llama_version is None:
                 profile.llama_version = self._binary_version(profile.server_binary)
             port = self.ports.acquire(profile.port, profile.host)
@@ -212,14 +233,17 @@ class RuntimeManager:
             log_path.parent.mkdir(parents=True, exist_ok=True)
             log_handle = log_path.open("ab")
             record.log_handle = log_handle
+            record.log_offset = log_handle.tell()
             record.state = RuntimeState.STARTING
             record.error = None
+            record.error_code = None
             record.command = command
             process = self.launcher(command, log_handle)
             record.process = process
             record.pid = process.pid
             record.started_at = self.clock()
             profile.endpoint = endpoint
+            record.profile.endpoint = endpoint
             deadline = self.clock() + profile.startup_timeout_seconds
             while self.clock() < deadline:
                 self._observe_process(record)
@@ -238,6 +262,15 @@ class RuntimeManager:
         except Exception as exc:
             self._terminate(record, force=True)
             record.error = str(exc)
+            record.error_code = getattr(exc, "code", None) or self._failure_code(record, exc)
+            if (self.hardware and record.profile.backend == "auto" and not record.force_cpu
+                    and record.hardware.get("backend") in {"cuda", "rocm", "vulkan"}
+                    and record.error_code in {"gpu_out_of_memory", "backend_load_failed"}
+                    and self.hardware.capabilities["cpu"].usable):
+                record.force_cpu = True
+                record.fallback_reason = record.error_code
+                record.state = RuntimeState.ERROR
+                return self.start(runtime_id)
             if record.state != RuntimeState.UNHEALTHY:
                 record.state = RuntimeState.ERROR
             if record.allocated_port:
@@ -265,6 +298,9 @@ class RuntimeManager:
         if self._record(runtime_id).profile.runtime_type == "external":
             return self.ensure_running(runtime_id)
         self.stop(runtime_id)
+        record = self._record(runtime_id)
+        record.force_cpu = False
+        record.fallback_reason = None
         return self.start(runtime_id)
 
     def close(self):
@@ -292,6 +328,36 @@ class RuntimeManager:
             return {"runtime_id": runtime_id, "lines": []}
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         return {"runtime_id": runtime_id, "path": str(path), "lines": lines[-tail:]}
+
+    def _select_profile(self, record):
+        profile = record.profile
+        if not self.hardware or not profile.backend or profile.runtime_type != "managed":
+            return profile
+        capability = self.hardware.select("cpu" if record.force_cpu else profile.backend)
+        layers = effective_gpu_layers(profile.gpu_layers, capability.backend)
+        record.hardware = selection_status(capability, profile.backend, layers,
+                                           fallback_reason=record.fallback_reason)
+        record.selected_profile = replace(profile, server_binary=capability.binary,
+                                           gpu_layers=layers, llama_version=None)
+        return record.selected_profile
+
+    def _failure_code(self, record, exc):
+        if self._missing_artifact(record.profile):
+            return self._missing_artifact(record.profile)
+        text = str(exc).lower()
+        if record.profile.log_path:
+            path = Path(record.profile.log_path)
+            if path.exists():
+                with path.open("rb") as stream:
+                    stream.seek(max(record.log_offset, path.stat().st_size - 8192))
+                    text += stream.read().decode(errors="replace").lower()
+        if "out of memory" in text or "cuda_error_out_of_memory" in text:
+            return "gpu_out_of_memory" if record.hardware.get("backend") != "cpu" else "model_load_failed"
+        if any(marker in text for marker in ("cuda error", "hip error", "vk_error", "failed to load backend", "error while loading shared libraries")):
+            return "backend_load_failed"
+        if isinstance(exc, TimeoutError):
+            return "runtime_start_timeout"
+        return "runtime_start_failed"
 
     @staticmethod
     def build_command(profile, port):
@@ -341,7 +407,7 @@ class RuntimeManager:
             raise ValueError("vision modelにはmmprojが必要です")
 
     def _health_record(self, record):
-        profile = record.profile
+        profile = record.selected_profile or record.profile
         base = profile.endpoint_root()
         if profile.runtime_type == "managed" and record.allocated_port is not None:
             # The manager probes locally; consumers receive the advertised Docker host.

@@ -1,0 +1,7 @@
+# Requires /dev/dri. ROCm additionally needs compose.runtime-rocm.yaml.
+services:
+  runtime-manager:
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - ${GPU_RENDER_GID:?set GPU_RENDER_GID to the render device group}

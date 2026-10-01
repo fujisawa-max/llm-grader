@@ -1,0 +1,10 @@
+# Merge with compose.yaml only on hosts with NVIDIA Container Toolkit.
+services:
+  runtime-manager:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

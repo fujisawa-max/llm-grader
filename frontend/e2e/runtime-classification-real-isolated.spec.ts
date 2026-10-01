@@ -19,6 +19,8 @@ test("normal API bootstrap uses RuntimeManager for semantic classification", asy
     (row: { runtime_id: string }) => row.runtime_id === "ornith_rubric_draft");
   expect(classifierProfile.runtime_type).toBe("managed");
   expect(classifierProfile.availability).toBe("available");
+  expect(classifierProfile.hardware.backend).toBe("cuda");
+  expect(classifierProfile.hardware.gpu_count).toBe(2);
 
   await page.goto(`/tests/${testId}?section=answers`);
   await page.getByRole("button", { name: "semantic-model-answer.pdfを解析して模範解答を確認", exact: true }).click();

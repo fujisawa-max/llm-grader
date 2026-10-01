@@ -3,15 +3,25 @@
 
 import argparse
 import json
+import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--version", action="store_true")
+parser.add_argument("--list-devices", action="store_true")
 parser.add_argument("-m")
 parser.add_argument("--alias", default="synthetic-text-model")
 parser.add_argument("--host", default="127.0.0.1")
 parser.add_argument("--port", type=int, default=8080)
 args, _ = parser.parse_known_args()
+if args.list_devices:
+    backend = os.getenv("LLM_GRADER_STUB_BACKEND", "cpu")
+    print("Available devices:")
+    prefixes = {"cuda": "CUDA", "rocm": "ROCm", "vulkan": "Vulkan"}
+    if backend in prefixes:
+        for number in range(2):
+            print(f"{prefixes[backend]}{number}: Synthetic GPU fixture (4096 MiB, 4000 MiB free)")
+    raise SystemExit(0)
 if args.version:
     print("synthetic llama-server fixture (no model inference)")
     raise SystemExit(0)

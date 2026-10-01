@@ -1,5 +1,28 @@
 # llm-grader
 
+## Runtime hardware prerequisites
+
+- **NVIDIA:** Install the NVIDIA driver and Container Toolkit. Verify GPU visibility
+  with `docker run --rm --gpus all nvidia/cuda:12.8.1-base-ubuntu24.04 nvidia-smi`.
+- **AMD:** Configure the kernel GPU driver and `/dev/dri` render devices; ROCm also
+  requires `/dev/kfd` and a compatible ROCm binary. The standard image uses Vulkan
+  for AMD, including devices unsupported by ROCm.
+- **CPU:** No GPU configuration is required.
+
+After cloning, configure deployment credentials and place model files in model
+storage. `docker compose up -d --build` starts the CPU-safe baseline. For automatic
+host GPU exposure without editing Compose, use
+`python3 scripts/runtime-compose.py` (defaults to `up -d --build`). Docker Compose
+cannot conditionally request missing GPU devices, so plain Compose does not
+promise GPU passthrough on every host.
+
+RuntimeManager selects usable CUDA → ROCm → Vulkan → CPU backends at startup.
+GPU unavailability falls back to CPU in `auto` mode. Missing models do not stop
+the application. Check `/api/v1/system/runtimes` for hardware/backend status;
+`LLM_GRADER_RUNTIME_BACKEND` provides an optional override. Model download and
+Admin runtime controls remain future work. See
+[runtime deployment](docs/operations/runtime-deployment.md) for detailed setup.
+
 ## Overview
 
 llm-grader is a web application for human-in-the-loop, LLM-assisted grading of university assessments. Teachers manage tests, questions, model answers, rubrics, and student submissions in a browser. OCR, formula recognition, and LLM grading provide evidence for teacher review; the system does not replace teacher judgment.

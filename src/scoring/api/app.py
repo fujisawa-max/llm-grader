@@ -636,6 +636,7 @@ def create_app(session_factory=None, *, allowed_roots=None, runtime_client=None,
                 "state": x.get("state"),
                 "availability": x.get("availability"),
                 "error_code": x.get("error_code"),
+                "hardware": x.get("hardware", {}),
             }
             for x in values
         ]

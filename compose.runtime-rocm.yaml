@@ -1,0 +1,6 @@
+services:
+  runtime-manager:
+    devices:
+      - /dev/kfd:/dev/kfd
+    group_add:
+      - ${GPU_KFD_GID:?set GPU_KFD_GID to the kfd device group}

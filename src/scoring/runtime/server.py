@@ -5,9 +5,11 @@ import json
 import os
 import signal
 import threading
+from pathlib import Path
 import urllib.request
 
-from .config import load_runtime_config
+from .config import load_runtime_config, _expand
+from .hardware import HardwareSelection
 from .http_api import serve
 from .manager import RuntimeManager
 
@@ -26,7 +28,12 @@ def main():
             raise SystemExit(1)
         return
     profiles, models = load_runtime_config(args.config)
-    manager = RuntimeManager(profiles)
+    config = _expand(json.loads(Path(args.config).read_text(encoding="utf-8")))
+    binaries = config.get("runtime_backends")
+    hardware = HardwareSelection(binaries) if binaries else None
+    manager = RuntimeManager(profiles, hardware=hardware)
+    if hardware:
+        print(json.dumps({"hardware": hardware.public(), "selection": manager.statuses()}), flush=True)
     server = serve(manager, args.host, args.port, models=models)
     stop = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: stop.set())

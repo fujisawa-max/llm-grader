@@ -74,7 +74,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="llm-grader-runtime-e2e-") as temporary:
         root = Path(temporary)
         engine, factory, db_url, email, password, (test_id, material_id) = seed(root)
-        with runtime_service(root) as (manager, manager_url, _):
+        with runtime_service(root, hardware_backend="cuda") as (manager, manager_url, _):
             api_port, frontend_port = unused_port(), unused_port()
             api_url = f"http://127.0.0.1:{api_port}"
             env = {**os.environ, "PYTHONPATH": str(REPO / "src"),

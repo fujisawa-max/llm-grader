@@ -19,10 +19,114 @@ docker compose build runtime-manager api
 docker compose up -d
 ```
 
-The default CPU binary comes from pinned official llama.cpp image
-`ghcr.io/ggml-org/llama.cpp:server-b9265`. `LLAMA_SERVER_IMAGE` can override the
-build source. GPU deployment requires a compatible image and explicit device
-configuration; the default does not grant GPU or host namespace access.
+## Hardware and GPU passthrough
+
+The standard x86-64 runtime image contains isolated CPU, CUDA, and Vulkan binary
+sets pinned to llama.cpp b9265. CPU/CUDA use official images; Vulkan is built from
+the same tag on Ubuntu 24.04 to avoid mixing newer glibc requirements. This is
+larger and slower to build than the former CPU image, but a single deployed image
+can select a backend at startup without rebuilding for the host. No host GPU is
+inspected during Docker build. CUDA runtime libraries are included; driver
+libraries must be injected by NVIDIA Toolkit. ROCm is optional: install a
+compatible ROCm binary and dependencies in a custom image and set
+`LLM_GRADER_ROCM_BINARY` to its wrapper path. Standard AMD support uses Vulkan.
+
+### NVIDIA
+
+Install the host driver and NVIDIA Container Toolkit following vendor guidance.
+Confirm `docker run --rm --gpus all nvidia/cuda:12.8.1-base-ubuntu24.04 nvidia-smi`
+works. This does not imply GPUs are exposed to every container. Use the host
+helper below or explicitly merge `compose.runtime-nvidia.yaml`. It reserves all
+visible GPUs and does not modify Docker daemon configuration. A6000 and other
+names are not hardcoded; native device enumeration reports names and memory.
+
+### AMD / Ryzen
+
+The host must provide readable/writable DRM render devices under `/dev/dri`.
+The helper passes this GPU directory and its numeric render group to the
+non-root runtime process. `/dev/kfd` and its group are passed if present for
+optional ROCm. No privileged mode, extra capabilities, host namespaces, or Docker
+socket are required. ROCm compatibility is device/driver dependent; Vulkan is
+used when ROCm cannot enumerate usable devices. Vulkan software renderers such
+as llvmpipe are not accepted as GPUs. UMA memory reported by a driver is not a
+guarantee of dedicated VRAM or safe model residency.
+
+### CPU and automatic host exposure
+
+Plain `docker compose up -d --build` intentionally remains CPU-host-safe. Compose
+has no optional GPU reservation or optional missing device mapping. An
+unconditional NVIDIA reservation fails without Toolkit; an unconditional AMD
+device mapping fails without the device. Environment hints inside a container
+cannot grant devices that Docker has not exposed.
+
+```bash
+# Preview only; no containers are started and no files/configuration are changed:
+python3 scripts/runtime-compose.py --dry-run
+# Select host GPU exposure, then run normal Compose:
+python3 scripts/runtime-compose.py
+# Same selected configuration for later operations:
+python3 scripts/runtime-compose.py -- logs runtime-manager
+```
+
+The helper is a host deployment tool and requires Python 3 and Docker Compose.
+It uses existing device nodes and Docker's registered NVIDIA runtime to choose
+explicit override files. With no suitable GPU configuration it runs the base
+Compose. It does not reset databases or change daemon settings. Use the helper
+consistently for later recreate/up operations; plain Compose may remove GPU
+exposure on a recreate. No override is written to `.env` automatically.
+
+For explicit NVIDIA deployment:
+`docker compose -f compose.yaml -f compose.runtime-nvidia.yaml up -d --build`.
+For AMD, merge `compose.runtime-amd.yaml` and set `GPU_RENDER_GID` to the render
+device group; merge `compose.runtime-rocm.yaml` and set `GPU_KFD_GID` if using
+ROCm. On unusual CDI-only or mixed DRM-group hosts, configure an explicit
+deployment override rather than guessing. Existing deployment credentials are
+still required; “clone and start” does not provision credentials or models.
+
+### Detection, override, and diagnostics
+
+At Manager startup each configured binary runs `--list-devices` in an isolated,
+time-limited subprocess. GPU selection requires successful enumeration of actual
+GPU devices, not merely `/dev/nvidia*`, `/dev/kfd`, environment variables, or
+`nvidia-smi`. CPU binary load is checked separately. Backend library failures and
+permission failures are recorded in `/internal/hardware` diagnostics and manager
+logs. CPU-only hosts may log expected unavailable GPU probes.
+
+`LLM_GRADER_RUNTIME_BACKEND=auto` selects CUDA → ROCm → Vulkan → CPU. Explicit
+`cuda`, `rocm`, `vulkan`, or `cpu` is respected. An unavailable explicit backend
+reports `backend_unavailable` without killing Manager/API. Per-profile `backend`
+can override the default. Model assignment remains independent of hardware.
+
+`gpu_layers: "auto"` maps to `-ngl auto` on the pinned GPU binaries (native VRAM
+fitting), and `-ngl 0` on CPU. Explicit integer layer counts remain unchanged.
+Multi-GPU scheduling uses llama.cpp defaults; use profile `additional_args` for
+`--split-mode`, `--tensor-split`, or `--main-gpu`. Model size alone does not cause
+rejection. Actual GPU OOM/backend failures during startup in auto mode retry the
+CPU binary once and retain the fallback reason; explicit GPU selections do not
+silently switch. CPU startup can still fail due to insufficient RAM or a bad
+model, and is reported rather than endlessly retried.
+
+`GET /api/v1/system/runtimes` now includes `hardware`: selected/requested backend,
+GPU count/names, reported total/free memory per device, layers, selected binary,
+and fallback reason. Internal hardware diagnostics include all backend probes
+and their reasons. Existing readiness and model identity checks still apply.
+
+### Troubleshooting
+
+- GPU invisible: verify host test, exposure override, and container device groups.
+- CUDA load failure: check driver compatibility with the pinned CUDA 12.8 runtime;
+  inspect backend diagnostics and runtime logs. Device nodes alone are insufficient.
+- AMD Vulkan unavailable: check render-node permissions and host driver support;
+  no GPU is selected if native enumeration fails.
+- ROCm unavailable: standard image has no ROCm distribution. Supply a compatible
+  custom binary/dependencies, or use standard Vulkan.
+- OOM: reduce context/batch/layers or choose a smaller model; auto may fit fewer
+  layers or retry CPU, which itself needs sufficient host RAM.
+- Model missing: place weights at the configured path; other services remain up.
+
+The current development environment has no Docker/GPU access. Image build and
+real NVIDIA/AMD device loading require validation on the target host; mocked
+backend tests are not proof of GPU offload.
 
 ## Models and profiles
 
@@ -74,7 +178,7 @@ the Compose service name. Set API's manager URL to
 ## Isolated validation
 
 ```bash
-pytest -q tests/test_runtime_deployment.py tests/test_runtime.py
+pytest -q tests/test_runtime_hardware.py tests/test_runtime_deployment.py tests/test_runtime.py
 PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers python -m tests.run_runtime_browser_e2e
 ```
 

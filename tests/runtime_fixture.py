@@ -46,9 +46,16 @@ def stop_process(process):
 
 
 @contextmanager
-def runtime_service(root, *, model_present=True):
+def runtime_service(root, *, model_present=True, hardware_backend=None):
     root = Path(root)
     config = json.loads((REPO / "config/runtime.deployment.json").read_text())
+    if hardware_backend:
+        config["runtime_backends"] = {name: str(REPO / "tests/fixtures/runtime/llama_server_stub.py")
+                                      for name in ("cpu", "cuda", "rocm", "vulkan")}
+        config["runtime_defaults"]["backend"] = "auto"
+    else:
+        config.pop("runtime_backends", None)
+        config["runtime_defaults"].pop("backend", None)
     model_path = root / "synthetic.gguf"
     if model_present:
         model_path.write_text("Test artifact only: not real model weights.")
@@ -64,6 +71,8 @@ def runtime_service(root, *, model_present=True):
     port = unused_port()
     url = f"http://127.0.0.1:{port}/internal"
     env = {**os.environ, "PYTHONPATH": str(REPO / "src")}
+    if hardware_backend:
+        env["LLM_GRADER_STUB_BACKEND"] = hardware_backend
     with (root / "runtime-manager.log").open("w") as log:
         process = subprocess.Popen([sys.executable, "-m", "scoring.runtime.server", "--config",
                                     str(path), "--host", "127.0.0.1", "--port", str(port)],
