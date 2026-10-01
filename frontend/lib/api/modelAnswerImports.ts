@@ -7,6 +7,43 @@ export interface ModelAnswerSourceSegment {
   element_ids: string[];
 }
 
+export type ModelAnswerContentCategory =
+  | "question" | "model_answer" | "alternative_answer" | "rubric" | "note" | "uncertain";
+
+export interface ModelAnswerClassifiedSegment {
+  id: string;
+  start: number;
+  end: number;
+  text: string;
+  source_text: string;
+  category: ModelAnswerContentCategory;
+  confidence: number;
+}
+
+export interface ModelAnswerClassificationGroup {
+  text: string;
+  segment_ids: string[];
+  label?: string;
+}
+
+export interface ModelAnswerSemanticClassification {
+  method: string;
+  status: "classified" | "needs_teacher_review" | "teacher_reviewed" | "fallback" | string;
+  reason?: string;
+  confidence: number | null;
+  threshold: number;
+  candidate_text: string;
+  segments: ModelAnswerClassifiedSegment[];
+  question_segments: ModelAnswerClassificationGroup[];
+  model_answers: ModelAnswerClassificationGroup[];
+  alternative_answers: ModelAnswerClassificationGroup[];
+  rubric_candidates: ModelAnswerClassificationGroup[];
+  notes: ModelAnswerClassificationGroup[];
+  uncertain_segments: ModelAnswerClassificationGroup[];
+  manual_alternative_answers?: Array<{ id: string; text: string }>;
+  primary_answer_text: string;
+}
+
 export interface ModelAnswerDraftEntry {
   id: string;
   question_id: string | null;
@@ -14,6 +51,7 @@ export interface ModelAnswerDraftEntry {
   mapped_question_label?: string | null;
   extraction_method?: "visual_difference_guided_native_text" | "native_text_fallback" | string;
   answer_text: string;
+  semantic_classification?: ModelAnswerSemanticClassification;
   question_text_removal?: {
     status: "removed" | "not_removed" | string;
     method?: "exact" | "fuzzy" | null;
@@ -26,6 +64,15 @@ export interface ModelAnswerDraftEntry {
     source_sha256: string;
     segments: ModelAnswerSourceSegment[];
   };
+}
+
+export interface ModelAnswerDraftEntryUpdate {
+  id: string;
+  question_id: string | null;
+  answer_text: string;
+  classification_segments?: Array<Pick<ModelAnswerClassifiedSegment, "id" | "category" | "text">>;
+  classification_reviewed?: boolean;
+  manual_alternative_answers?: Array<{ id: string; text: string }>;
 }
 
 export interface ModelAnswerQuestionChoice {
@@ -77,7 +124,11 @@ export const modelAnswerImports = {
   get: (draftId: string) => apiFetch<ModelAnswerImportDraft>(
     `/model-answer-import-drafts/${encodeURIComponent(draftId)}`,
   ),
-  update: (draftId: string, body: { expected_revision: number; entries: Array<Pick<ModelAnswerDraftEntry, "id" | "question_id" | "answer_text">> }) => apiFetch<ModelAnswerImportDraft>(
+  classify: (draftId: string, expectedRevision: number) => apiFetch<ModelAnswerImportDraft>(
+    `/model-answer-import-drafts/${encodeURIComponent(draftId)}/classify`,
+    json({ expected_revision: expectedRevision }),
+  ),
+  update: (draftId: string, body: { expected_revision: number; entries: ModelAnswerDraftEntryUpdate[] }) => apiFetch<ModelAnswerImportDraft>(
     `/model-answer-import-drafts/${encodeURIComponent(draftId)}`,
     { method: "PUT", body: JSON.stringify(body) },
   ),

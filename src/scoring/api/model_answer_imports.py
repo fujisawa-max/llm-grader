@@ -34,6 +34,12 @@ from ..model_answer_visual import (
     compare_model_answer_pages,
     select_question_text_material,
 )
+from ..model_answer_classification import (
+    ClassificationOutputError,
+    apply_teacher_segment_edits,
+    fallback_classification,
+    validate_classifier_result,
+)
 from ..pdf_native import PyMuPdfNativeExtractor, sha256_file
 
 logger = logging.getLogger(__name__)
@@ -44,11 +50,27 @@ class ImportCreate(BaseModel):
     material_id: str
 
 
+class ClassificationSegmentEdit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    category: str
+    text: str = Field(max_length=100000)
+
+
+class AlternativeAnswerEdit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(min_length=1, max_length=100)
+    text: str = Field(max_length=100000)
+
+
 class EntryEdit(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str
     question_id: str | None = None
     answer_text: str = Field(max_length=100000)
+    classification_segments: list[ClassificationSegmentEdit] | None = None
+    classification_reviewed: bool = False
+    manual_alternative_answers: list[AlternativeAnswerEdit] | None = None
 
 
 class DraftEdit(BaseModel):
@@ -62,7 +84,12 @@ class ConfirmRequest(BaseModel):
     expected_revision: int = Field(ge=1)
 
 
-def router(db, artifact_root):
+class ClassificationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: int = Field(ge=1)
+
+
+def router(db, artifact_root, classifier=None):
     routes = APIRouter(prefix="/api/v1")
     root = Path(artifact_root).resolve()
     draft_root = root / "model-answer-imports"
@@ -95,6 +122,20 @@ def router(db, artifact_root):
     def view(draft, session):
         choices, _ = choices_for(draft.test_id, session)
         return draft_view(draft, choices)
+
+    def question_context(question, label):
+        parts = []
+        content = question.content if isinstance(question.content, dict) else {}
+        items = content.get("items", []) if isinstance(content.get("items"), list) else []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "text":
+                parts.append(str(item.get("text") or ""))
+            elif item.get("type") == "formula":
+                parts.append(str(item.get("transcription") or item.get("latex") or ""))
+        body = "".join(parts).strip() or str(question.question_text or "")
+        return {"label": label, "body": body}
 
     def resolve_material_file(material: TestMaterial):
         path = Path(material.storage_ref)
@@ -233,6 +274,55 @@ def router(db, artifact_root):
     def get_draft(draft_id: str, session=Depends(db)):
         return view(owned_draft(draft_id, session), session)
 
+    @routes.post("/model-answer-import-drafts/{draft_id}/classify")
+    def classify_draft(draft_id: str, body: ClassificationRequest, session=Depends(db)):
+        draft = owned_draft(draft_id, session)
+        revision_check(draft, body.expected_revision)
+        choices, questions = choices_for(draft.test_id, session)
+        question_by_id = {question.id: question for question in questions}
+        label_by_id = {choice["id"]: choice["label"] for choice in choices}
+        entries = []
+        for original in draft.snapshot.get("entries", []):
+            entry = dict(original)
+            question_id = entry.get("question_id")
+            question = question_by_id.get(question_id)
+            candidate_text = str(
+                (entry.get("semantic_classification") or {}).get("candidate_text")
+                or entry.get("answer_text") or ""
+            )
+            if not question or not question.is_gradable:
+                entry["semantic_classification"] = fallback_classification(
+                    candidate_text, reason="question_mapping_required",
+                )
+                entries.append(entry)
+                continue
+            if classifier is None:
+                entry["semantic_classification"] = fallback_classification(
+                    candidate_text, reason="classifier_unavailable",
+                )
+                entries.append(entry)
+                continue
+            try:
+                result = classifier.classify(
+                    question_context=question_context(question, label_by_id.get(question_id, "設問")),
+                    candidate_text=candidate_text,
+                )
+                classification = validate_classifier_result(candidate_text, result)
+                entry["semantic_classification"] = classification
+                if classification["status"] == "classified":
+                    entry["answer_text"] = classification["primary_answer_text"]
+            except Exception as exc:
+                logger.info("Model-answer semantic classification fell back: %s", type(exc).__name__)
+                entry["semantic_classification"] = fallback_classification(
+                    candidate_text, reason="classification_failed",
+                )
+            entries.append(entry)
+        draft.snapshot = {**draft.snapshot, "entries": entries}
+        draft.revision += 1
+        session.commit()
+        session.refresh(draft)
+        return view(draft, session)
+
     @routes.put("/model-answer-import-drafts/{draft_id}")
     def update_draft(draft_id: str, body: DraftEdit, session=Depends(db)):
         draft = owned_draft(draft_id, session)
@@ -256,6 +346,39 @@ def router(db, artifact_root):
             previous_question = entry.get("question_id")
             entry["question_id"] = edit.question_id
             entry["answer_text"] = edit.answer_text
+            classification = entry.get("semantic_classification")
+            if classification and previous_question != edit.question_id:
+                entry["answer_text"] = str(classification.get("candidate_text") or entry["answer_text"])
+                classification = None
+                entry.pop("semantic_classification", None)
+            if classification and edit.classification_segments is not None:
+                try:
+                    classification = apply_teacher_segment_edits(
+                        classification,
+                        [segment.model_dump() for segment in edit.classification_segments],
+                    )
+                except ClassificationOutputError:
+                    fail(422, "INVALID_CLASSIFICATION_EDIT", "分類内容を確認してください")
+                entry["semantic_classification"] = classification
+            if classification and edit.classification_reviewed:
+                if any(item.get("category") == "uncertain" for item in classification.get("segments", [])):
+                    fail(422, "UNCERTAIN_CLASSIFICATION_SEGMENTS", "未分類の文章を確認してください")
+                entry["semantic_classification"] = {**classification, "status": "teacher_reviewed"}
+            if classification and edit.manual_alternative_answers is not None:
+                alternatives = [item.model_dump() for item in edit.manual_alternative_answers]
+                alternative_ids = [item["id"] for item in alternatives]
+                existing_ids = {item.get("id") for item in classification.get("manual_alternative_answers", [])}
+                allowed_new_ids = {item_id for item_id in alternative_ids
+                                   if item_id.startswith("teacher-alt-")}
+                if (len(alternative_ids) != len(set(alternative_ids))
+                        or any(item_id not in existing_ids and item_id not in allowed_new_ids
+                               for item_id in alternative_ids)
+                        or len(alternatives) > 50):
+                    fail(422, "INVALID_ALTERNATIVE_ANSWER_EDIT", "別解候補の編集内容を確認してください")
+                entry["semantic_classification"] = {
+                    **entry["semantic_classification"],
+                    "manual_alternative_answers": alternatives,
+                }
             removal = entry.get("question_text_removal") or {}
             if edit.question_id and removal.get("question_id") != edit.question_id:
                 entry["answer_text"], entry["question_text_removal"] = remove_question_text(
@@ -304,6 +427,13 @@ def router(db, artifact_root):
         if any(not str(entry.get("answer_text") or "").strip() for entry in entries):
             count = sum(1 for entry in entries if not str(entry.get("answer_text") or "").strip())
             fail(422, "EMPTY_ANSWER_TEXT", f"模範解答本文が空の項目が{count}件あります")
+        pending_classification = sum(
+            1 for entry in entries
+            if (entry.get("semantic_classification") or {}).get("status") == "needs_teacher_review"
+        )
+        if pending_classification:
+            fail(422, "CLASSIFICATION_REVIEW_REQUIRED",
+                 f"分類結果を確認していない模範解答が{pending_classification}件あります")
 
         service = DomainService(session)
         created = []
@@ -317,6 +447,7 @@ def router(db, artifact_root):
                     "parser": draft.snapshot.get("parser", {}),
                     "segments": entry.get("source", {}).get("segments", []),
                     "question_text_removal": entry.get("question_text_removal"),
+                    "semantic_classification": entry.get("semantic_classification"),
                     "extraction_method": entry.get("extraction_method", "native_text_fallback"),
                     "extraction": draft.snapshot.get("extraction"),
                     "mapping_method": entry.get("mapping_state"),

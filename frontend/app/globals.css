@@ -98,6 +98,12 @@
 .model-answer-import-entry { min-width:0; padding:14px; }
 .model-answer-import-entry-heading { display:flex; justify-content:space-between; align-items:center; gap:12px; }
 .model-answer-import-entry-heading h3 { margin:0; }
+.model-answer-classification { display:grid; gap:12px; border:1px solid var(--border,#d8dee8); border-radius:8px; padding:14px; background:var(--surface-soft,#f8fafc); }
+.model-answer-classification h4 { margin:0; }
+.model-answer-classification-groups { display:grid; gap:12px; }
+.model-answer-classification-groups > div,.model-answer-classification-groups details { border:1px solid var(--border,#d8dee8); border-radius:6px; padding:10px; background:var(--surface,#fff); }
+.model-answer-classification-segment { border-top:1px solid var(--border,#d8dee8); padding:12px 0; }
+.model-answer-classification-editor { display:grid; gap:10px; }
 .model-answer-source-info { color:var(--muted); font-size:13px; }
 .model-answer-import-source { position:sticky; top:16px; min-width:0; }
 @media (max-width:900px) { .model-answer-import-layout { grid-template-columns:1fr; } .model-answer-import-source { position:static; } }

@@ -9,10 +9,17 @@ from fastapi import HTTPException
 from sqlalchemy import select
 
 from scoring.api import create_app
-from scoring.api.model_answer_imports import ConfirmRequest, DraftEdit, EntryEdit, ImportCreate
+from scoring.api.model_answer_imports import (
+    ClassificationRequest,
+    ConfirmRequest,
+    DraftEdit,
+    EntryEdit,
+    ImportCreate,
+)
 from scoring.db import create_session_factory, init_database
-from scoring.db.models import ModelAnswer
+from scoring.db.models import ModelAnswer, RubricVersion
 from scoring.domain import DomainService
+from scoring.model_answer_classification import split_source_segments
 from scoring.model_answer_drafts import normalize_question_text
 
 
@@ -247,6 +254,140 @@ class ModelAnswerImportApiTests(unittest.TestCase):
                 self.assertEqual(caught.exception.status_code, 422)
                 self.assertEqual(caught.exception.detail["error"]["code"], "EMPTY_ANSWER_TEXT")
 
+    def test_source_grounded_classification_separates_rubric_and_alternative_without_llm_text(self):
+        class FakeClassifier:
+            def classify(self, *, question_context, candidate_text):
+                self.context = question_context
+                segments = split_source_segments(candidate_text)
+                assignments = []
+                for segment in segments:
+                    text = segment["text"]
+                    category = "rubric" if "points" in text else (
+                        "alternative_answer" if "Alternative" in text else (
+                            "question" if "Explain the issue" in text else "model_answer"
+                        )
+                    )
+                    assignments.append({"id": segment["id"], "category": category, "confidence": 0.98})
+                return {"status": "classified", "confidence": 0.98, "threshold": 0.82,
+                        "segments": assignments}
+
+        source_text = (
+            "Question 1\nExplain the issue and its effects.\n"
+            "The model overfits the training data and performs poorly on new data.\n"
+            "5 points: describe overfitting.\nAlternative: use a high-variance explanation."
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            factory, test_id, material_id, q1_id, _q21_id, _q22_id = self.make_fixture(root, source_text)
+            classifier = FakeClassifier()
+            with patch.dict("os.environ", {"LLM_GRADER_ARTIFACT_ROOT": str(root)}):
+                app = create_app(factory, question_import_root=root / "question-imports", allowed_roots=[root],
+                                 model_answer_classifier=classifier)
+            create = _endpoint(app, "/api/v1/tests/{test_id}/model-answer-imports")
+            classify = _endpoint(app, "/api/v1/model-answer-import-drafts/{draft_id}/classify")
+            update = _endpoint(app, "/api/v1/model-answer-import-drafts/{draft_id}", "PUT")
+            confirm = _endpoint(app, "/api/v1/model-answer-import-drafts/{draft_id}/confirm")
+            with factory() as session:
+                draft = create(test_id, ImportCreate(material_id=material_id), session)
+                classified = classify(draft["id"], ClassificationRequest(expected_revision=1), session)
+                entry = classified["entries"][0]
+                self.assertEqual(classified["revision"], 2)
+                self.assertEqual(entry["question_id"], q1_id)
+                self.assertEqual(entry["semantic_classification"]["status"], "classified")
+                self.assertEqual(entry["answer_text"], "The model overfits the training data and performs poorly\non new data.\n")
+                self.assertEqual(entry["semantic_classification"]["question_segments"][0]["text"],
+                                 "Explain the issue and its effects.\n")
+                self.assertIn("5 points", entry["semantic_classification"]["rubric_candidates"][0]["text"])
+                self.assertIn("Alternative", entry["semantic_classification"]["alternative_answers"][0]["text"])
+                self.assertNotIn("answer_text", entry["semantic_classification"])
+
+                edited = update(classified["id"], DraftEdit(expected_revision=2, entries=[EntryEdit(
+                    id=entry["id"], question_id=entry["question_id"], answer_text=entry["answer_text"],
+                    classification_segments=[
+                        {"id": item["id"], "category": item["category"], "text": item["text"]}
+                        for item in entry["semantic_classification"]["segments"]
+                    ],
+                    manual_alternative_answers=[{
+                        "id": "teacher-alt-test", "text": "A teacher-authored second answer.",
+                    }],
+                )]), session)
+                self.assertEqual(edited["revision"], 3)
+                self.assertEqual(edited["entries"][0]["semantic_classification"]["status"], "teacher_reviewed")
+                result = confirm(edited["id"], ConfirmRequest(expected_revision=3), session)
+                saved = result["model_answers"][0]
+                self.assertEqual(saved["answer_text"], entry["answer_text"])
+                provenance = saved["provenance_json"]["semantic_classification"]
+                self.assertEqual(provenance["rubric_candidates"], entry["semantic_classification"]["rubric_candidates"])
+                self.assertEqual(provenance["alternative_answers"], entry["semantic_classification"]["alternative_answers"])
+                self.assertEqual(provenance["manual_alternative_answers"], [{
+                    "id": "teacher-alt-test", "text": "A teacher-authored second answer.",
+                }])
+                self.assertEqual(session.scalars(select(RubricVersion)).all(), [])
+
+    def test_low_confidence_blocks_confirmation_until_teacher_resolves_segments(self):
+        class UncertainClassifier:
+            def classify(self, *, question_context, candidate_text):
+                segments = split_source_segments(candidate_text)
+                return {"status": "needs_teacher_review", "confidence": 0.4, "threshold": 0.82,
+                        "segments": [{"id": item["id"], "category": "uncertain", "confidence": 0.4}
+                                     for item in segments]}
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            factory, test_id, material_id, _q1_id, _q21_id, _q22_id = self.make_fixture(
+                root, "Question 1\nA source-grounded answer that needs teacher review."
+            )
+            with patch.dict("os.environ", {"LLM_GRADER_ARTIFACT_ROOT": str(root)}):
+                app = create_app(factory, question_import_root=root / "question-imports", allowed_roots=[root],
+                                 model_answer_classifier=UncertainClassifier())
+            create = _endpoint(app, "/api/v1/tests/{test_id}/model-answer-imports")
+            classify = _endpoint(app, "/api/v1/model-answer-import-drafts/{draft_id}/classify")
+            update = _endpoint(app, "/api/v1/model-answer-import-drafts/{draft_id}", "PUT")
+            confirm = _endpoint(app, "/api/v1/model-answer-import-drafts/{draft_id}/confirm")
+            with factory() as session:
+                draft = create(test_id, ImportCreate(material_id=material_id), session)
+                original = draft["entries"][0]["answer_text"]
+                classified = classify(draft["id"], ClassificationRequest(expected_revision=1), session)
+                entry = classified["entries"][0]
+                self.assertEqual(entry["semantic_classification"]["status"], "needs_teacher_review")
+                self.assertEqual(entry["answer_text"], original)
+                with self.assertRaises(HTTPException) as caught:
+                    confirm(classified["id"], ConfirmRequest(expected_revision=2), session)
+                self.assertEqual(caught.exception.detail["error"]["code"], "CLASSIFICATION_REVIEW_REQUIRED")
+                session.rollback()
+                edits = [
+                    {"id": item["id"], "category": "model_answer", "text": item["text"]}
+                    for item in entry["semantic_classification"]["segments"]
+                ]
+                reviewed = update(classified["id"], DraftEdit(expected_revision=2, entries=[EntryEdit(
+                    id=entry["id"], question_id=entry["question_id"], answer_text=original,
+                    classification_segments=edits,
+                )]), session)
+                self.assertEqual(reviewed["entries"][0]["semantic_classification"]["status"], "teacher_reviewed")
+                confirmed = confirm(reviewed["id"], ConfirmRequest(expected_revision=3), session)
+                self.assertEqual(confirmed["draft"]["state"], "confirmed")
+
+    def test_unavailable_classifier_keeps_native_text_and_preserves_existing_confirm_flow(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            factory, test_id, material_id, _q1_id, _q21_id, _q22_id = self.make_fixture(
+                root, "Question 1\nA complete native answer remains available for teacher editing."
+            )
+            with patch.dict("os.environ", {"LLM_GRADER_ARTIFACT_ROOT": str(root)}):
+                app = create_app(factory, question_import_root=root / "question-imports", allowed_roots=[root])
+            create = _endpoint(app, "/api/v1/tests/{test_id}/model-answer-imports")
+            classify = _endpoint(app, "/api/v1/model-answer-import-drafts/{draft_id}/classify")
+            confirm = _endpoint(app, "/api/v1/model-answer-import-drafts/{draft_id}/confirm")
+            with factory() as session:
+                draft = create(test_id, ImportCreate(material_id=material_id), session)
+                original_text = draft["entries"][0]["answer_text"]
+                classified = classify(draft["id"], ClassificationRequest(expected_revision=1), session)
+                entry = classified["entries"][0]
+                self.assertEqual(entry["semantic_classification"]["status"], "fallback")
+                self.assertEqual(entry["answer_text"], original_text)
+                self.assertEqual(entry["semantic_classification"]["candidate_text"], original_text)
+                saved = confirm(classified["id"], ConfirmRequest(expected_revision=2), session)
+                self.assertEqual(saved["model_answers"][0]["answer_text"], original_text)
 
 if __name__ == "__main__":
     unittest.main()

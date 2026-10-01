@@ -54,11 +54,19 @@ def _safe(path, roots):
 def create_app(session_factory=None, *, allowed_roots=None, runtime_client=None,
                question_import_root=None, question_import_limits=None,
                vision_config=None, vision_inference=None, grading_visual_config=None,
-               student_portal_enabled: bool | None = None):
+               student_portal_enabled: bool | None = None,
+               model_answer_classifier=None):
     app = FastAPI(title="llm-grader API", version="1.0", openapi_url="/api/v1/openapi.json")
     # The browser UI is served separately during development.  Keep origins
     # explicit and configurable; this does not expose internal runtime APIs.
     import os
+    if model_answer_classifier is None and runtime_client is not None:
+        from ..model_answer_classification import ModelAnswerSemanticClassifier
+        model_answer_classifier = ModelAnswerSemanticClassifier(
+            runtime_client,
+            profile_id=os.getenv("LLM_GRADER_MODEL_ANSWER_CLASSIFIER_PROFILE", "ornith_rubric_draft"),
+            threshold=float(os.getenv("LLM_GRADER_MODEL_ANSWER_CLASSIFIER_CONFIDENCE", "0.82")),
+        )
     portal_enabled = resolve_student_portal_enabled(student_portal_enabled)
     cors_origins = [x.strip() for x in os.getenv(
         "LLM_GRADER_CORS_ORIGINS",
@@ -788,7 +796,7 @@ def create_app(session_factory=None, *, allowed_roots=None, runtime_client=None,
                        dependencies=[Depends(staff_dependency)])
     app.include_router(question_review_router(db, import_root),
                        dependencies=[Depends(staff_dependency)])
-    app.include_router(model_answer_import_router(db, action_root),
+    app.include_router(model_answer_import_router(db, action_root, classifier=model_answer_classifier),
                        dependencies=[Depends(staff_dependency)])
     app.include_router(student_answer_router(db, action_root),
                        dependencies=[Depends(domain_authorized)])
