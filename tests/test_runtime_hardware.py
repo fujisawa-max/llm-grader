@@ -256,6 +256,9 @@ def test_vulkan_build_installs_shader_dependencies():
     for package in ('spirv-headers', 'glslang-tools', 'libvulkan-dev', 'glslc'):
         assert package in install.split()
     assert '-DGGML_VULKAN=ON' in vulkan_stage
+    assert '-DLLAMA_BUILD_UI=OFF' in vulkan_stage
+    assert 'cmake --build /build --target llama-server' in vulkan_stage
+    assert 'npm' not in install.split()
 
 
 @pytest.mark.parametrize('backend', ['cpu', 'cuda', 'rocm', 'vulkan'])
