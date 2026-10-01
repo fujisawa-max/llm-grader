@@ -11,11 +11,15 @@ class RuntimeHTTPHandler(BaseHTTPRequestHandler):
 
     def _send(self, status, value):
         body = json.dumps(value, ensure_ascii=False).encode()
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            # Client disconnected: no response can be delivered, including a 500.
+            return
 
     def do_GET(self):  # noqa: N802
         parsed = urlparse(self.path)

@@ -61,6 +61,8 @@ class RuntimeProfile:
     model_sha256: str | None = None
     mmproj_sha256: str | None = None
     llama_version: str | None = None
+    request_timeout_seconds: float = 300
+    chat_template_kwargs: dict = field(default_factory=dict)
     generation: dict = field(default_factory=dict)
 
     def __post_init__(self):

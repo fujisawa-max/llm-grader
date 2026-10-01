@@ -125,3 +125,34 @@ class ModelAnswerClassificationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_managed_classifier_never_stops_after_success_or_failure():
+    from unittest.mock import Mock
+    import pytest
+    manager = Mock()
+    manager.ensure_running.return_value = {"profile": {
+        "runtime_type": "managed", "endpoint": "http://127.0.0.1:18081/v1",
+        "model_id": "fixture", "request_timeout_seconds": 321,
+        "generation": {"max_output_tokens": 512},
+    }}
+    response = {"choices": [{"finish_reason": "stop", "message": {"content": json.dumps({
+        "overall_confidence": 0.99,
+        "segments": [{"id": "s0001", "category": "model_answer", "confidence": 0.99}],
+    })}}]}
+    requests = []
+    def answer(client, url, payload):
+        assert client.timeout == 321
+        requests.append(payload)
+        return response
+    classifier = ModelAnswerSemanticClassifier(manager)
+    with patch("scoring.model_answer_classification.LocalClient.request", answer):
+        for _ in range(2):
+            assert classifier.classify(question_context={}, candidate_text="Source answer.")["status"] == "classified"
+    assert manager.ensure_running.call_count == 2
+    assert requests[0]["max_tokens"] == 512
+    assert requests[0]["chat_template_kwargs"]["enable_thinking"] is False
+    with patch("scoring.model_answer_classification.LocalClient.request", side_effect=TimeoutError):
+        with pytest.raises(TimeoutError):
+            classifier.classify(question_context={}, candidate_text="Source answer.")
+    manager.stop.assert_not_called()

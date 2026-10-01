@@ -9,6 +9,7 @@ import pytest
 
 from scoring.core import LocalClient
 from scoring.model_answer_classification import ModelAnswerSemanticClassifier
+from scoring.runtime.client import RuntimeManagerClient
 from scoring.runtime.config import load_runtime_config
 from scoring.runtime.network import validate_endpoint
 from tests.runtime_fixture import runtime_service
@@ -28,6 +29,13 @@ def test_real_manager_managed_process_classifier_and_restart(tmp_path, monkeypat
         assert result["status"] == "classified"
         assert result["primary_answer_text"] == "It memorizes the training data.\n"
         assert result["rubric_candidates"] and result["alternative_answers"]
+        classifier_pid = client.status("ornith_rubric_draft")["pid"]
+        assert classifier_pid is not None
+        repeated = classifier.classify(question_context={"body": "Explain overfitting."},
+                                       candidate_text="It memorizes the training data.")
+        assert repeated["status"] == "classified"
+        assert client.status("ornith_rubric_draft")["pid"] == classifier_pid
+        client.stop("ornith_rubric_draft")
         assert client.status("ornith_rubric_draft")["pid"] is None
         assert any("POST /v1/chat/completions" in line for line in client.logs("ornith_rubric_draft")["lines"])
         ready = client.start("grader")
@@ -105,3 +113,56 @@ def test_runtime_redirect_is_rejected():
         server.shutdown()
         server.server_close()
         thread.join()
+
+
+@pytest.mark.parametrize('disconnect', [BrokenPipeError, ConnectionResetError])
+def test_disconnected_health_client_does_not_resend_500(disconnect):
+    from unittest.mock import Mock
+    from scoring.runtime.http_api import RuntimeHTTPHandler
+    handler = object.__new__(RuntimeHTTPHandler)
+    handler.path = '/internal/health'
+    handler.manager = Mock()
+    handler.manager.statuses.return_value = []
+    handler.send_response = Mock()
+    handler.send_header = Mock()
+    handler.end_headers = Mock()
+    handler.wfile = Mock()
+    handler.wfile.write.side_effect = disconnect
+    handler.do_GET()
+    handler.send_response.assert_called_once_with(200)
+    handler.wfile.write.assert_called_once()
+
+
+def test_real_manager_error_still_returns_500():
+    from io import BytesIO
+    from unittest.mock import Mock
+    from scoring.runtime.http_api import RuntimeHTTPHandler
+    handler = object.__new__(RuntimeHTTPHandler)
+    handler.path = '/internal/health'
+    handler.manager = Mock()
+    handler.manager.statuses.side_effect = RuntimeError('real runtime error')
+    handler.send_response = Mock()
+    handler.send_header = Mock()
+    handler.end_headers = Mock()
+    handler.wfile = BytesIO()
+    handler.do_GET()
+    handler.send_response.assert_called_once_with(500)
+    assert json.loads(handler.wfile.getvalue())['error'] == 'real runtime error'
+
+
+def test_startup_timeout_is_separate_from_status_timeout():
+    from unittest.mock import Mock
+    client = RuntimeManagerClient(timeout=120, startup_timeout=330)
+    client._call = Mock(return_value={})
+    client.ensure_running('grader')
+    client._call.assert_called_with('POST', '/runtimes/grader/ensure', timeout=330)
+    client.status('grader')
+    client._call.assert_called_with('GET', '/runtimes/grader/status')
+
+
+def test_standard_classifier_generation_does_not_change_grader():
+    profiles, _ = load_runtime_config(Path(__file__).resolve().parents[1] / 'config/runtime.deployment.json')
+    assert profiles['ornith_rubric_draft'].generation['max_output_tokens'] == 512
+    assert profiles['ornith_rubric_draft'].chat_template_kwargs == {'enable_thinking': False}
+    assert profiles['grader'].generation['max_output_tokens'] == 4096
+    assert profiles['grader'].chat_template_kwargs == {}

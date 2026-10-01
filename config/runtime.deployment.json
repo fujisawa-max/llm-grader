@@ -30,7 +30,14 @@
     "ornith_rubric_draft": {
       "model_ref": "default_text",
       "purpose": "model_answer_classifier",
-      "log_path": "/runtime-state/model-answer-classifier.log"
+      "log_path": "/runtime-state/model-answer-classifier.log",
+      "request_timeout_seconds": 300,
+      "generation": {
+        "max_output_tokens": 512
+      },
+      "chat_template_kwargs": {
+        "enable_thinking": false
+      }
     }
   },
   "runtime_backends": {

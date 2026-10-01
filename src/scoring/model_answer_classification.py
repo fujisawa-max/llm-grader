@@ -271,47 +271,43 @@ class ModelAnswerSemanticClassifier:
             raise ClassificationOutputError("candidate has no classifiable text")
         if len(text) > MAX_CANDIDATE_CHARS or len(source_segments) > MAX_CANDIDATE_SEGMENTS:
             raise ClassificationOutputError("candidate exceeds configured classification limits")
-        status = self.manager.status(self.profile_id)
-        profile = status.get("profile", {})
-        owned = profile.get("runtime_type") == "managed" and status.get("pid") is None
-        try:
-            ready = self.manager.ensure_running(self.profile_id)
-            endpoint = ready.get("endpoint") or ready.get("profile", {}).get("endpoint")
-            runtime_profile = ready.get("profile", {})
-            model_id = runtime_profile.get("model_id")
-            if not endpoint or not model_id:
-                raise RuntimeError("CLASSIFIER_RUNTIME_CONFIGURATION_MISSING")
-            config = {"models": {"classifier": {"base_url": endpoint, "model_id": model_id}},
-                      "generation": runtime_profile.get("generation", {})}
-            client = LocalClient(config, "classifier")
-            payload = {
-                "question": {
-                    "label": str(question_context.get("label") or "")[:500],
-                    "body": str(question_context.get("body") or "")[:12000],
-                },
-                "source_segments": [{"id": item["id"], "text": item["text"]}
-                                    for item in source_segments],
-            }
-            request = {
-                "model": model_id,
-                "messages": [
-                    {"role": "system", "content": CLASSIFICATION_PROMPT},
-                    {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-                ],
-                **generation_payload(client.generation),
-                "stream": False,
-                "response_format": {"type": "json_schema", "json_schema": {
-                    "name": "model_answer_content_classification", "strict": True,
-                    "schema": CLASSIFICATION_SCHEMA,
-                }},
-                "chat_template_kwargs": {"enable_thinking": False},
-            }
-            raw = client.request(endpoint.rstrip("/") + "/chat/completions", request)
-            structured = parse_response(raw)
-            return build_classification(text, structured, threshold=self.threshold)
-        finally:
-            if owned:
-                self.manager.stop(self.profile_id)
+        # RuntimeManager owns the process. Requests never stop a shared runtime.
+        ready = self.manager.ensure_running(self.profile_id)
+        endpoint = ready.get("endpoint") or ready.get("profile", {}).get("endpoint")
+        runtime_profile = ready.get("profile", {})
+        model_id = runtime_profile.get("model_id")
+        if not endpoint or not model_id:
+            raise RuntimeError("CLASSIFIER_RUNTIME_CONFIGURATION_MISSING")
+        config = {"models": {"classifier": {"base_url": endpoint, "model_id": model_id,
+                  "request_timeout_seconds": runtime_profile.get("request_timeout_seconds", 300)}},
+                  "generation": runtime_profile.get("generation", {})}
+        client = LocalClient(config, "classifier")
+        payload = {
+            "question": {
+                "label": str(question_context.get("label") or "")[:500],
+                "body": str(question_context.get("body") or "")[:12000],
+            },
+            "source_segments": [{"id": item["id"], "text": item["text"]}
+                                for item in source_segments],
+        }
+        request = {
+            "model": model_id,
+            "messages": [
+                {"role": "system", "content": CLASSIFICATION_PROMPT},
+                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+            ],
+            **generation_payload(client.generation),
+            "stream": False,
+            "response_format": {"type": "json_schema", "json_schema": {
+                "name": "model_answer_content_classification", "strict": True,
+                "schema": CLASSIFICATION_SCHEMA,
+            }},
+            "chat_template_kwargs": {"enable_thinking": False,
+                                     **runtime_profile.get("chat_template_kwargs", {})},
+        }
+        raw = client.request(endpoint.rstrip("/") + "/chat/completions", request)
+        structured = parse_response(raw)
+        return build_classification(text, structured, threshold=self.threshold)
 
 
 def apply_teacher_segment_edits(classification: dict[str, Any], edits: list[dict[str, Any]]):

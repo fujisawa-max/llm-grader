@@ -113,6 +113,8 @@ def main():
                                    cwd=REPO / "frontend", env=env, check=True)
                     assert any("POST /v1/chat/completions" in line
                                for line in manager.logs("ornith_rubric_draft")["lines"])
+                    assert manager.status("ornith_rubric_draft")["pid"] is not None
+                    manager.stop("ornith_rubric_draft")
                     assert manager.status("ornith_rubric_draft")["pid"] is None
                     # Keep API/Frontend alive with no model, and check graceful fallback via real API.
                     (root / "synthetic.gguf").unlink()

@@ -188,3 +188,53 @@ The browser runner creates temporary SQLite/artifact data, starts the real
 manager and API, builds the production frontend, and launches a separate managed
 OpenAI-compatible stub process. It verifies classification and missing-model
 fallback without model inference, OCR, grading, or production data access.
+
+## Persistent semantic-classification runtime
+
+The classifier calls `ensure_running`, performs inference, and returns its result.
+It never stops the model in a per-request `finally`. RuntimeManager retains the
+managed process for subsequent requests. Explicit internal stop/restart and
+Manager shutdown remain available. This release keeps the model resident until
+an explicit stop: idle eviction is deferred until request leases/in-flight usage
+can be tracked safely. Do not rely on automatic idle VRAM reclamation.
+
+Timeout budgets for the synchronous classification route are now explicit:
+
+| Path | Previous | Current default / configuration |
+| --- | --- | --- |
+| Browser fetch | No application timeout | Unchanged; intermediary timeouts still apply |
+| Next.js rewrite → API | 30 seconds | 900 seconds; build-time `API_PROXY_TIMEOUT_MS` |
+| API → Manager status/stop | 120 seconds | 120 seconds; `LLM_GRADER_RUNTIME_MANAGER_TIMEOUT_SECONDS` |
+| API → Manager ensure/start/restart | 120 seconds | 330 seconds; `LLM_GRADER_RUNTIME_START_TIMEOUT_SECONDS` |
+| Manager model startup | 300 seconds | Profile `startup_timeout_seconds` |
+| API → model inference | 300 seconds | Profile `request_timeout_seconds` |
+
+The frontend proxy budget covers cold loading plus inference; it is not an idle
+shutdown policy. Rebuild frontend after changing the build-time proxy setting.
+If increasing profile startup limits (including possible GPU→CPU retries), also
+adjust Manager-client startup timeout. The route processes draft entries
+sequentially, so a large draft can exceed the total proxy budget even though each
+inference fits its own budget. Long-running background classification jobs are
+future work; no infinite timeout is introduced here.
+
+Only `ornith_rubric_draft` has a standard output budget of 512 tokens. Larger
+segment lists may require a profile override; truncated/invalid output continues
+to fall back without losing candidate text. Grader generation defaults are
+unchanged. `chat_template_kwargs.enable_thinking=false` remains the request-level
+non-thinking setting and is now also explicit in the classification profile.
+Its effect depends on the template embedded in the deployed GGUF; verify on the
+real model rather than assuming every quantization honors it.
+
+### NVIDIA follow-up validation
+
+1. Run semantic classification with synthetic data, not formal Q5.
+2. Confirm the `/classify` POST returns 200 and the UI shows classification.
+3. Through the private Manager API, check `/internal/health`: profile state should
+   be `ready` (the existing enum for a running, healthy process). Record its PID.
+4. Classify again: PID stays the same and runtime logs show no model reload.
+5. Check `nvidia-smi`: model VRAM remains allocated after requests complete.
+6. Explicitly stop the profile via the internal Manager API when testing is done;
+   verify state becomes `stopped`. Manager shutdown also stops owned processes.
+
+A disconnected health client no longer triggers a second 500 write after a
+BrokenPipe/connection reset. Actual Manager errors still produce error responses.
