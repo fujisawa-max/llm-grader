@@ -12,7 +12,22 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def compose_command(arguments, *, device_root=Path('/dev'), runner=subprocess.run):
+def amd_render_devices(device_root, sys_root):
+    """A DRM render node is vendor-neutral; select only PCI vendor 0x1002 (AMD)."""
+    devices = []
+    for device in sorted((device_root / 'dri').glob('renderD*')):
+        vendor_file = sys_root / 'class/drm' / device.name / 'device/vendor'
+        try:
+            vendor = int(vendor_file.read_text().strip(), 16)
+        except (OSError, ValueError):
+            continue
+        if vendor == 0x1002:
+            devices.append(device)
+    return devices
+
+
+def compose_command(arguments, *, device_root=Path('/dev'), sys_root=Path('/sys'),
+                    runner=subprocess.run):
     env = dict(os.environ)
     files = ['compose.yaml']
     messages = []
@@ -28,7 +43,8 @@ def compose_command(arguments, *, device_root=Path('/dev'), runner=subprocess.ru
             messages.append('NVIDIA Toolkit runtime detected: exposing all GPUs.')
         else:
             messages.append('NVIDIA device found but Toolkit runtime not confirmed; no GPU reservation requested.')
-    render = sorted((device_root / 'dri').glob('renderD*'))
+    # NVIDIA wins even if it exposes DRM nodes or another GPU is also installed.
+    render = [] if 'compose.runtime-nvidia.yaml' in files else amd_render_devices(device_root, sys_root)
     if render:
         groups = {path.stat().st_gid for path in render}
         if len(groups) != 1:
@@ -39,7 +55,7 @@ def compose_command(arguments, *, device_root=Path('/dev'), runner=subprocess.ru
         if kfd.exists():
             env['GPU_KFD_GID'] = str(kfd.stat().st_gid)
             files.append('compose.runtime-rocm.yaml')
-        messages.append('DRM render devices detected: exposing GPU devices with their host groups.')
+        messages.append('AMD DRM render devices detected: exposing GPU devices with their host groups.')
     if len(files) == 1:
         messages.append('No GPU exposure selected; RuntimeManager remains CPU-capable.')
     command = ['docker', 'compose', '--project-directory', str(ROOT)]

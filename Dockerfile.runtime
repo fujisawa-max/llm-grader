@@ -8,6 +8,7 @@ FROM ubuntu:24.04 AS vulkan-build
 ARG LLAMA_CPP_REF=b9265
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates git cmake build-essential libssl-dev libvulkan-dev glslc \
+    spirv-headers glslang-tools \
     && rm -rf /var/lib/apt/lists/*
 RUN git clone --depth 1 --branch "${LLAMA_CPP_REF}" https://github.com/ggml-org/llama.cpp.git /src
 RUN cmake -S /src -B /build -DCMAKE_BUILD_TYPE=Release \

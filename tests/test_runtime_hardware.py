@@ -190,22 +190,72 @@ def load_helper():
     return module
 
 
-def test_compose_exposure_cpu_nvidia_amd(tmp_path):
+def render_fixture(tmp_path, vendor):
+    device_root = tmp_path / 'dev'
+    sys_root = tmp_path / 'sys'
+    (device_root / 'dri').mkdir(parents=True)
+    (device_root / 'dri/renderD128').touch()
+    vendor_file = sys_root / 'class/drm/renderD128/device/vendor'
+    vendor_file.parent.mkdir(parents=True)
+    vendor_file.write_text(vendor)
+    return device_root, sys_root
+
+
+def override_files(command):
+    return [Path(arg).name for arg in command if arg.endswith('.yaml')]
+
+
+@pytest.mark.parametrize('vendor', ['0x10de', '0x1002'])
+def test_nvidia_with_drm_selects_nvidia_only(tmp_path, vendor, monkeypatch):
+    monkeypatch.delenv('GPU_RENDER_GID', raising=False)
+    monkeypatch.delenv('GPU_KFD_GID', raising=False)
     helper = load_helper()
-    cmd, _, _ = helper.compose_command(['config'], device_root=tmp_path)
-    assert not any('nvidia.yaml' in arg or 'amd.yaml' in arg for arg in cmd)
-    (tmp_path / 'nvidia0').touch()
+    device_root, sys_root = render_fixture(tmp_path, vendor)
+    (device_root / 'nvidia0').touch()
+    (device_root / 'kfd').touch()
     def info(*_, **__):
         return subprocess.CompletedProcess([], 0, '{"nvidia": {}}')
-    cmd, _, _ = helper.compose_command(['config'], device_root=tmp_path, runner=info)
-    assert any('nvidia.yaml' in arg for arg in cmd)
-    (tmp_path / 'dri').mkdir()
-    (tmp_path / 'dri/renderD128').touch()
-    (tmp_path / 'kfd').touch()
-    cmd, env, _ = helper.compose_command(['config'], device_root=tmp_path, runner=info)
-    assert any('amd.yaml' in arg for arg in cmd)
-    assert any('rocm.yaml' in arg for arg in cmd)
-    assert env['GPU_RENDER_GID'] == str((tmp_path / 'dri/renderD128').stat().st_gid)
+    cmd, env, _ = helper.compose_command(['config'], device_root=device_root,
+                                        sys_root=sys_root, runner=info)
+    assert override_files(cmd) == ['compose.yaml', 'compose.runtime-nvidia.yaml']
+    assert 'GPU_RENDER_GID' not in env
+    assert 'GPU_KFD_GID' not in env
+
+
+@pytest.mark.parametrize('kfd', [False, True])
+def test_amd_vendor_selects_drm_and_optional_rocm(tmp_path, kfd):
+    helper = load_helper()
+    device_root, sys_root = render_fixture(tmp_path, '0x1002')
+    if kfd:
+        (device_root / 'kfd').touch()
+    cmd, env, _ = helper.compose_command(['config'], device_root=device_root, sys_root=sys_root)
+    expected = ['compose.yaml', 'compose.runtime-amd.yaml']
+    if kfd:
+        expected.append('compose.runtime-rocm.yaml')
+        assert env['GPU_KFD_GID'] == str((device_root / 'kfd').stat().st_gid)
+    assert override_files(cmd) == expected
+    assert env['GPU_RENDER_GID'] == str((device_root / 'dri/renderD128').stat().st_gid)
+
+
+@pytest.mark.parametrize('vendor', ['0x10de', '0x8086', 'unknown', ''])
+def test_other_or_unknown_drm_does_not_select_amd(tmp_path, vendor):
+    device_root, sys_root = render_fixture(tmp_path, vendor)
+    cmd, _, _ = load_helper().compose_command(['config'], device_root=device_root, sys_root=sys_root)
+    assert override_files(cmd) == ['compose.yaml']
+
+
+def test_no_gpu_uses_base_only(tmp_path):
+    cmd, _, _ = load_helper().compose_command(['config'], device_root=tmp_path, sys_root=tmp_path)
+    assert override_files(cmd) == ['compose.yaml']
+
+
+def test_vulkan_build_installs_shader_dependencies():
+    dockerfile = (Path(__file__).resolve().parents[1] / 'Dockerfile.runtime').read_text()
+    vulkan_stage = dockerfile.split('FROM ubuntu:24.04 AS vulkan-build', 1)[1].split('FROM ${LLAMA_SERVER_IMAGE}', 1)[0]
+    install = vulkan_stage.split('apt-get install', 1)[1].split('&& rm', 1)[0]
+    for package in ('spirv-headers', 'glslang-tools', 'libvulkan-dev', 'glslc'):
+        assert package in install.split()
+    assert '-DGGML_VULKAN=ON' in vulkan_stage
 
 
 @pytest.mark.parametrize('backend', ['cpu', 'cuda', 'rocm', 'vulkan'])

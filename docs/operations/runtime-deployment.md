@@ -69,7 +69,9 @@ python3 scripts/runtime-compose.py -- logs runtime-manager
 ```
 
 The helper is a host deployment tool and requires Python 3 and Docker Compose.
-It uses existing device nodes and Docker's registered NVIDIA runtime to choose
+It gives NVIDIA priority when its device nodes and Toolkit runtime are detected.
+Otherwise it checks DRM sysfs PCI vendor IDs for AMD (0x1002), rather than
+assuming every render node is AMD. It uses these facts to choose
 explicit override files. With no suitable GPU configuration it runs the base
 Compose. It does not reset databases or change daemon settings. Use the helper
 consistently for later recreate/up operations; plain Compose may remove GPU
