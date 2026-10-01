@@ -156,3 +156,54 @@ def test_managed_classifier_never_stops_after_success_or_failure():
         with pytest.raises(TimeoutError):
             classifier.classify(question_context={}, candidate_text="Source answer.")
     manager.stop.assert_not_called()
+
+
+def test_native_geometry_batches_are_grounded_and_reuse_runtime():
+    from unittest.mock import Mock
+    manager = Mock()
+    manager.ensure_running.return_value = {"profile": {
+        "runtime_type": "managed", "endpoint": "http://127.0.0.1:18081/v1", "model_id": "fixture",
+        "generation": {"max_output_tokens": 512},
+    }}
+    text, spans = '', []
+    for i in range(13):
+        value = f'Original line {i}.\n'
+        spans.append({'id': f'pdf-{i}', 'text': value, 'start': len(text), 'end': len(text) + len(value),
+                      'bbox': [30, i * 20, 150, i * 20 + 12], 'page_index': 0,
+                      'geometry': {'question_id': 'q1', 'confidence': .95}})
+        text += value
+    seen = []
+    def answer(client, url, request):
+        payload = json.loads(request['messages'][-1]['content'])
+        assert len(payload['source_segments']) <= 6
+        assert payload['source_segments'][0]['geometry']['question_id'] == 'q1'
+        assert request['max_tokens'] == 512
+        seen.extend(item['id'] for item in payload['source_segments'])
+        assignments = [{'id': item['id'], 'category': 'model_answer', 'confidence': .99}
+                       for item in payload['source_segments']]
+        return {'choices': [{'finish_reason': 'stop', 'message': {'content': json.dumps({
+            'overall_confidence': .99, 'segments': assignments,
+        })}}]}
+    with patch('scoring.model_answer_classification.LocalClient.request', answer):
+        result = ModelAnswerSemanticClassifier(manager).classify(
+            question_context={'question_id': 'q1'}, candidate_text=text, source_segments=spans)
+    assert result['primary_answer_text'] == text
+    assert seen == [item['id'] for item in spans]
+    manager.ensure_running.assert_called_once()
+    manager.stop.assert_not_called()
+
+
+def test_expired_automatic_budget_falls_back_without_inference_or_runtime_stop():
+    from unittest.mock import Mock
+    import pytest
+    manager = Mock()
+    manager.ensure_running.return_value = {'profile': {
+        'runtime_type': 'managed', 'endpoint': 'http://127.0.0.1:18081/v1', 'model_id': 'fixture',
+        'generation': {'max_output_tokens': 512},
+    }}
+    with patch('scoring.model_answer_classification.LocalClient.request') as request:
+        with pytest.raises(TimeoutError):
+            ModelAnswerSemanticClassifier(manager).classify(
+                question_context={'deadline_monotonic': 0}, candidate_text='Original source.')
+    request.assert_not_called()
+    manager.stop.assert_not_called()

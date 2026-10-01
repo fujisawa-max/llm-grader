@@ -57,7 +57,7 @@ class Handler(BaseHTTPRequestHandler):
             text = segment["text"]
             category = "rubric" if "points" in text else (
                 "alternative_answer" if "Alternative" in text else (
-                    "question" if "Explain" in text else "model_answer"
+                    "question" if "Explain" in text or "Question " in text else "model_answer"
                 )
             )
             assignments.append({"id": segment["id"], "category": category, "confidence": 0.99})

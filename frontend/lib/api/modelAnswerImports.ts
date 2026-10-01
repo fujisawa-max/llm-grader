@@ -5,6 +5,19 @@ export interface ModelAnswerSourceSegment {
   text_start: number;
   text_end: number;
   element_ids: string[];
+  id?: string;
+  original_text?: string;
+  text_sha256?: string;
+  bbox?: number[] | null;
+  geometry?: SpatialAssignment;
+}
+
+export interface SpatialAssignment {
+  question_id: string | null;
+  assignment_status: string;
+  confidence: number;
+  evidence: string;
+  region?: { heading: string; origin: string; page_index: number; top: number; bottom: number } | null;
 }
 
 export type ModelAnswerContentCategory =
@@ -27,6 +40,9 @@ export interface ModelAnswerClassificationGroup {
 }
 
 export interface ModelAnswerSemanticClassification {
+  profile_id?: string;
+  model_id?: string;
+  runtime_type?: string;
   method: string;
   status: "classified" | "needs_teacher_review" | "teacher_reviewed" | "fallback" | string;
   reason?: string;
@@ -51,6 +67,7 @@ export interface ModelAnswerDraftEntry {
   mapped_question_label?: string | null;
   extraction_method?: "visual_difference_guided_native_text" | "native_text_fallback" | string;
   answer_text: string;
+  geometry?: SpatialAssignment;
   semantic_classification?: ModelAnswerSemanticClassification;
   question_text_removal?: {
     status: "removed" | "not_removed" | string;
@@ -102,6 +119,9 @@ export interface ModelAnswerImportDraft {
     threshold?: number;
     regions?: Array<{ page_index: number; cell_bbox: number[]; pdf_bbox: number[] }>;
   } | null;
+  pipeline?: { version: string; geometry_first: boolean; status: string;
+    profile_id?: string | null; semantic_classification_fallback: boolean;
+    semantic_classification_used: boolean; fallback_reasons: string[] };
   created_at: string;
 }
 

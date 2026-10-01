@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from scoring.api import create_app
+from scoring.auth import hash_password
 from scoring.adapters.pdf_region import PyMuPdfRegionRenderer
 from scoring.adapters.question_vision import RuntimeVisionAdapter, normalize_output
 from scoring.db import create_session_factory, init_database
@@ -227,13 +228,18 @@ class VisionApiTests(unittest.TestCase):
         )
         with self.sf() as s:
             domain = DomainService(s)
-            u = domain.user(display_name="Vision test")
+            u = domain.user(display_name="Vision test", email="vision-fixture@example.invalid",
+                            password_hash=hash_password("isolated-fixture-password"), is_active=True)
             c = domain.course(u.id, name="Vision test")
             o = domain.offering(c.id, academic_year=2026, term="fall")
             t = domain.test(o.id, name="Vision test", total_points=10)
             s.commit()
             tid = t.id
             self.test_id = tid
+        login = self.client.post("/api/v1/auth/login", json={
+            "email": "vision-fixture@example.invalid", "password": "isolated-fixture-password",
+        })
+        self.assertEqual(login.status_code, 200, login.text)
         pdf = pymupdf.open()
         p = pdf.new_page(width=300, height=400)
         p.insert_text((20, 30), "問題1 body", fontname="japan", fontsize=12)

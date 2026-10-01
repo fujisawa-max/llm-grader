@@ -55,9 +55,38 @@ def seed(root):
         material = domain.material(test.id, material_type="model_answer_source", storage_ref=str(source),
                                    original_filename="semantic-model-answer.pdf", mime_type="application/pdf",
                                    sha256=digest)
+        geometry_test = domain.test(offering.id, name="Geometry Q1 Q2 Q3 fixture", total_points=30)
+        question_ids = []
+        for number in range(1, 4):
+            q = domain.question(geometry_test.id, question_number=str(number), display_label=f"問題{number}",
+                                sort_order=number, max_points=10, is_gradable=True,
+                                question_text=f"Explain concept {number}.")
+            question_ids.append(q.id)
+        for kind in ("question_sheet", "model_answer_source"):
+            pdf = pymupdf.open()
+            page = pdf.new_page(width=600, height=800)
+            for number, y in enumerate((100, 350, 600), 1):
+                page.insert_text((30, y), f"Question {number}", fontsize=12)
+                page.insert_text((30, y + 25), f"Explain concept {number}.", fontsize=12)
+                if kind == "model_answer_source":
+                    page.insert_text((30, y + 60), f"Source answer {number}.", fontsize=12)
+            content = pdf.tobytes()
+            pdf.close()
+            digest = hashlib.sha256(content).hexdigest()
+            source = root / "sources" / geometry_test.id / f"{digest}.pdf"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_bytes(content)
+            geometric_material = domain.material(geometry_test.id, material_type=kind, storage_ref=str(source),
+                                                original_filename=f"geometry-{kind}.pdf", mime_type="application/pdf",
+                                                sha256=digest)
+            if kind == "model_answer_source":
+                geometry_material_id = geometric_material.id
+        session.commit()
+        geometry_env = {"GEOMETRY_TEST_ID": geometry_test.id, "GEOMETRY_MATERIAL_ID": geometry_material_id,
+                        "GEOMETRY_QUESTION_IDS": json.dumps(question_ids)}
         session.commit()
         ids = test.id, material.id
-    return engine, factory, db_url, email, password, ids
+    return engine, factory, db_url, email, password, ids, geometry_env
 
 
 def json_request(opener, url, payload=None):
@@ -73,11 +102,11 @@ def main():
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="llm-grader-runtime-e2e-") as temporary:
         root = Path(temporary)
-        engine, factory, db_url, email, password, (test_id, material_id) = seed(root)
+        engine, factory, db_url, email, password, (test_id, material_id), geometry_env = seed(root)
         with runtime_service(root, hardware_backend="cuda") as (manager, manager_url, _):
             api_port, frontend_port = unused_port(), unused_port()
             api_url = f"http://127.0.0.1:{api_port}"
-            env = {**os.environ, "PYTHONPATH": str(REPO / "src"),
+            env = {**os.environ, **geometry_env, "PYTHONPATH": str(REPO / "src"),
                    "LLM_GRADER_DATABASE_URL": db_url,
                    "LLM_GRADER_ARTIFACT_ROOT": str(root),
                    "LLM_GRADER_QUESTION_IMPORT_ROOT": str(root / "question-imports"),
@@ -109,7 +138,8 @@ def main():
                     wait_http(env["E2E_FRONTEND_URL"] + "/login", frontend, timeout=60)
                     subprocess.run(["npm", "run", "e2e", "--",
                                     "e2e/runtime-classification-real-isolated.spec.ts",
-                                    "e2e/model-answer-classification-real-isolated.spec.ts", "--workers=1"],
+                                    "e2e/model-answer-classification-real-isolated.spec.ts",
+                                    "e2e/model-answer-geometry-real-isolated.spec.ts", "--workers=1"],
                                    cwd=REPO / "frontend", env=env, check=True)
                     assert any("POST /v1/chat/completions" in line
                                for line in manager.logs("ornith_rubric_draft")["lines"])

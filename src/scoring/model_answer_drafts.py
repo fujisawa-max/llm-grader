@@ -253,6 +253,7 @@ def remove_question_text(question: Any, answer_text: str) -> tuple[str, dict[str
 def _lines_from_ir(
     ir: dict[str, Any],
     allowed_element_ids_by_page: dict[int, set[str] | None] | None = None,
+    *, preserve_whitespace: bool = False,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Build page text with Unicode offsets and links back to native IR spans."""
     all_text: list[str] = []
@@ -292,12 +293,13 @@ def _lines_from_ir(
                 element_ranges.append({"element_id": element.get("element_id"), "start": start,
                                        "end": offset, "separator_before": separator})
                 previous = element
-            line_text = "".join(text_parts).strip()
+            raw_line = "".join(text_parts)
+            line_text = raw_line if preserve_whitespace else raw_line.strip()
             if line_text:
                 # Match the trimmed content to its offset within the original span concatenation.
                 raw_line = "".join(text_parts)
-                trim_left = len(raw_line) - len(raw_line.lstrip())
-                trim_right = len(raw_line.rstrip())
+                trim_left = 0 if preserve_whitespace else len(raw_line) - len(raw_line.lstrip())
+                trim_right = len(raw_line) if preserve_whitespace else len(raw_line.rstrip())
                 trimmed_ranges = []
                 for item in element_ranges:
                     start = max(item["start"], trim_left)
@@ -588,4 +590,5 @@ def draft_view(draft, choices: list[dict[str, Any]]) -> dict[str, Any]:
             "page_count": draft.snapshot.get("page_count", 0),
             "parser": draft.snapshot.get("parser", {}),
             "extraction": draft.snapshot.get("extraction"),
+            "pipeline": draft.snapshot.get("pipeline"),
             "created_at": draft.created_at.isoformat()}

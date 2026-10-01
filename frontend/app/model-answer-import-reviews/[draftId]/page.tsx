@@ -170,6 +170,7 @@ export default function ModelAnswerImportReviewPage() {
 
   async function classify() {
     if (!draft) return;
+    if (!window.confirm("元PDFの文章を再分類します。保存済みの教師編集は保持し、分類候補を更新しますか？")) return;
     setClassifying(true);
     setError("");
     setNotice("");
@@ -239,6 +240,7 @@ export default function ModelAnswerImportReviewPage() {
 
   const unresolved = draft.entries.filter((entry) => !entry.question_id).length;
   const classificationReviewCount = draft.entries.filter((entry) => entry.semantic_classification?.status === "needs_teacher_review").length;
+  const runtime = draft.entries.find((entry) => entry.semantic_classification?.runtime_type)?.semantic_classification?.runtime_type;
   const pages = (entry: ModelAnswerDraftEntry) => [...new Set(entry.source.segments.map((segment) => segment.page_index + 1))];
 
   return <main className="container section model-answer-import-review">
@@ -251,6 +253,15 @@ export default function ModelAnswerImportReviewPage() {
     <p className="muted">登録済みPDFから読み取った内容を既存の設問へ対応付け、本文を確認して登録します。新しい設問は作成されません。</p>
     <p className="muted">PDF {material?.original_filename || "登録済み資料"}　/　{draft.page_count}ページ　/　読取方法: {draft.parser.library || "PDF文字抽出"}</p>
     {draft.extraction?.status === "used" && <p className="muted">本文抽出: 問題PDFとの差分から追加領域を特定</p>}
+    {draft.pipeline && <section aria-label="解析の状態">
+      <p>意味分類: {draft.pipeline.status === "complete" ? "完了" : draft.pipeline.status === "partial" ? "一部要確認" : "機械抽出へ切替"}
+        {draft.pipeline.profile_id && `　/　使用profile: ${draft.pipeline.profile_id}`} {runtime && ` / runtime: ${runtime}`}　/　位置優先の設問対応</p>
+      {draft.pipeline.semantic_classification_fallback && <p className="warn">意味分類を利用できなかった項目は、位置情報と機械抽出結果を使用しています。元の文章は分類欄に保持されています。</p>}
+    </section>}
+    {draft.state === "editing" && <button type="button" className="button secondary"
+      disabled={busy || classifying || draft.entries.length === 0} onClick={() => void classify()}>
+      {classifying ? "意味分類中…" : "意味分類を再実行"}
+    </button>}
     {unresolved > 0 && <p className="warn" role="status">対応先が未設定の模範解答が{unresolved}件あります。すべての対応先を選ぶまで登録できません。</p>}
     {classificationReviewCount > 0 && <p className="warn" role="status">意味分類の確認が必要な項目が{classificationReviewCount}件あります。要確認の文章を分類し、分類結果を確認済みにしてください。</p>}
     {draft.entries.length === 0 && <p className="warn" role="status">PDFから読み取れる本文がありません。PDFの文字データを確認するか、設問別編集欄で手入力してください。</p>}
@@ -281,6 +292,14 @@ export default function ModelAnswerImportReviewPage() {
             </select>
           </label>
           <p className="model-answer-source-info">出典ページ: {pages(entry).length ? pages(entry).map((page) => `p.${page}`).join("、") : "ページ情報なし"}</p>
+          {entry.geometry && <details>
+            <summary>位置判定: {entry.geometry.assignment_status === "automatic" ? "高信頼" : "未確定"}（{Math.round(entry.geometry.confidence * 100)}%）</summary>
+            <p>位置根拠: {entry.geometry.evidence}</p>
+            {entry.geometry.region && <p>見出し: {entry.geometry.region.heading} / p.{entry.geometry.region.page_index + 1} / 縦位置: {Math.round(entry.geometry.region.top)}〜{Math.round(entry.geometry.region.bottom)}</p>}
+            {entry.source.segments.map((segment, segmentIndex) => <p key={segment.id || segmentIndex}>
+              p.{segment.page_index + 1} {segment.bbox && `座標: ${segment.bbox.map(Math.round).join(", ")}`} — {segment.original_text}
+            </p>)}
+          </details>}
           {entry.extraction_method === "visual_difference_guided_native_text" &&
             <p className="muted">抽出方法: 問題PDFとの差分</p>}
           <label className="field">模範解答本文
@@ -380,9 +399,6 @@ export default function ModelAnswerImportReviewPage() {
         </article>)}
         {draft.state === "confirmed" && <p className="review-confirmed">登録済み</p>}
         {draft.state === "editing" && <div className="actions">
-          <button type="button" className="button secondary" disabled={busy || classifying || draft.entries.length === 0} onClick={() => void classify()}>
-            {classifying ? "意味分類中…" : "意味分類を実行"}
-          </button>
           <button type="button" className="button secondary" disabled={busy} onClick={() => void save()}>変更を保存</button>
           <button type="button" className="button" disabled={busy || classifying || draft.entries.length === 0 || unresolved > 0 || classificationReviewCount > 0 || draft.entries.some((entry) => !entry.answer_text.trim())}
             onClick={() => void confirm()}>確認した模範解答を登録</button>

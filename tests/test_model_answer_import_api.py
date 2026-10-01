@@ -256,15 +256,15 @@ class ModelAnswerImportApiTests(unittest.TestCase):
 
     def test_source_grounded_classification_separates_rubric_and_alternative_without_llm_text(self):
         class FakeClassifier:
-            def classify(self, *, question_context, candidate_text):
+            def classify(self, *, question_context, candidate_text, source_segments=None):
                 self.context = question_context
-                segments = split_source_segments(candidate_text)
+                segments = source_segments if source_segments is not None else split_source_segments(candidate_text)
                 assignments = []
                 for segment in segments:
                     text = segment["text"]
                     category = "rubric" if "points" in text else (
                         "alternative_answer" if "Alternative" in text else (
-                            "question" if "Explain the issue" in text else "model_answer"
+                            "question" if "Explain the issue" in text or "Question 1" in text else "model_answer"
                         )
                     )
                     assignments.append({"id": segment["id"], "category": category, "confidence": 0.98})
@@ -289,6 +289,8 @@ class ModelAnswerImportApiTests(unittest.TestCase):
             confirm = _endpoint(app, "/api/v1/model-answer-import-drafts/{draft_id}/confirm")
             with factory() as session:
                 draft = create(test_id, ImportCreate(material_id=material_id), session)
+                self.assertEqual(draft["entries"][0]["semantic_classification"]["status"], "classified")
+                self.assertTrue(draft["pipeline"]["geometry_first"])
                 classified = classify(draft["id"], ClassificationRequest(expected_revision=1), session)
                 entry = classified["entries"][0]
                 self.assertEqual(classified["revision"], 2)
@@ -296,7 +298,7 @@ class ModelAnswerImportApiTests(unittest.TestCase):
                 self.assertEqual(entry["semantic_classification"]["status"], "classified")
                 self.assertEqual(entry["answer_text"], "The model overfits the training data and performs poorly\non new data.\n")
                 self.assertEqual(entry["semantic_classification"]["question_segments"][0]["text"],
-                                 "Explain the issue and its effects.\n")
+                                 "Question 1\nExplain the issue and its effects.\n")
                 self.assertIn("5 points", entry["semantic_classification"]["rubric_candidates"][0]["text"])
                 self.assertIn("Alternative", entry["semantic_classification"]["alternative_answers"][0]["text"])
                 self.assertNotIn("answer_text", entry["semantic_classification"])
@@ -326,8 +328,8 @@ class ModelAnswerImportApiTests(unittest.TestCase):
 
     def test_low_confidence_blocks_confirmation_until_teacher_resolves_segments(self):
         class UncertainClassifier:
-            def classify(self, *, question_context, candidate_text):
-                segments = split_source_segments(candidate_text)
+            def classify(self, *, question_context, candidate_text, source_segments=None):
+                segments = source_segments if source_segments is not None else split_source_segments(candidate_text)
                 return {"status": "needs_teacher_review", "confidence": 0.4, "threshold": 0.82,
                         "segments": [{"id": item["id"], "category": "uncertain", "confidence": 0.4}
                                      for item in segments]}
@@ -385,9 +387,74 @@ class ModelAnswerImportApiTests(unittest.TestCase):
                 entry = classified["entries"][0]
                 self.assertEqual(entry["semantic_classification"]["status"], "fallback")
                 self.assertEqual(entry["answer_text"], original_text)
-                self.assertEqual(entry["semantic_classification"]["candidate_text"], original_text)
+                self.assertEqual(entry["semantic_classification"]["candidate_text"], entry["candidate_text"])
                 saved = confirm(classified["id"], ConfirmRequest(expected_revision=2), session)
                 self.assertEqual(saved["model_answers"][0]["answer_text"], original_text)
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_automatic_invalid_classification_preserves_pdf_sources_and_mechanical_answer(tmp_path, monkeypatch):
+    class InvalidClassifier:
+        def classify(self, **kwargs):
+            return {'status': 'classified', 'confidence': .99, 'segments': [
+                {'id': 'invented', 'category': 'model_answer', 'confidence': .99},
+            ], 'primary_answer_text': 'Hallucinated answer'}
+    helper = ModelAnswerImportApiTests()
+    factory, tid, mid, qid, *_ = helper.make_fixture(tmp_path, 'Question 1\nOriginal answer.')
+    monkeypatch.setenv('LLM_GRADER_ARTIFACT_ROOT', str(tmp_path))
+    app = create_app(factory, question_import_root=tmp_path / 'question-imports', allowed_roots=[tmp_path],
+                     model_answer_classifier=InvalidClassifier())
+    create = _endpoint(app, '/api/v1/tests/{test_id}/model-answer-imports')
+    with factory() as session:
+        draft = create(tid, ImportCreate(material_id=mid), session)
+        entry = draft['entries'][0]
+        assert entry['question_id'] == qid
+        assert entry['answer_text'] == 'Original answer.'
+        assert draft['pipeline']['status'] == 'fallback'
+        assert entry['semantic_classification']['reason'] == 'classification_failed'
+        assert entry['semantic_classification']['segments'][0]['id'] == entry['source']['segments'][0]['id']
+        assert 'Hallucinated' not in str(entry)
+
+
+def test_automatic_fallback_can_be_edited_saved_and_confirmed_without_llm(tmp_path, monkeypatch):
+    helper = ModelAnswerImportApiTests()
+    factory, tid, mid, qid, *_ = helper.make_fixture(tmp_path, 'Question 1\nNative answer.')
+    monkeypatch.setenv('LLM_GRADER_ARTIFACT_ROOT', str(tmp_path))
+    app = create_app(factory, question_import_root=tmp_path / 'question-imports', allowed_roots=[tmp_path])
+    create = _endpoint(app, '/api/v1/tests/{test_id}/model-answer-imports')
+    update = _endpoint(app, '/api/v1/model-answer-import-drafts/{draft_id}', 'PUT')
+    confirm = _endpoint(app, '/api/v1/model-answer-import-drafts/{draft_id}/confirm')
+    with factory() as session:
+        draft = create(tid, ImportCreate(material_id=mid), session)
+        entry = draft['entries'][0]
+        assert entry['semantic_classification']['status'] == 'fallback'
+        saved = update(draft['id'], DraftEdit(expected_revision=1, entries=[EntryEdit(
+            id=entry['id'], question_id=qid, answer_text='Teacher reviewed native answer.',
+            classification_segments=[{'id': item['id'], 'category': item['category'], 'text': item['text']}
+                                     for item in entry['semantic_classification']['segments']],
+        )]), session)
+        assert saved['entries'][0]['semantic_classification']['status'] == 'fallback'
+        result = confirm(draft['id'], ConfirmRequest(expected_revision=2), session)
+        assert result['model_answers'][0]['answer_text'] == 'Teacher reviewed native answer.'
+
+
+def test_invalid_question_pdf_falls_back_without_losing_answer_draft(tmp_path, monkeypatch):
+    helper = ModelAnswerImportApiTests()
+    factory, tid, mid, qid, *_ = helper.make_fixture(tmp_path, 'Question 1\nOriginal answer.')
+    with factory() as session:
+        invalid = tmp_path / 'invalid-question.pdf'
+        invalid.write_bytes(b'not a PDF')
+        DomainService(session).material(tid, material_type='question_sheet', storage_ref=str(invalid),
+                                        mime_type='application/pdf', original_filename='invalid.pdf',
+                                        sha256=hashlib.sha256(invalid.read_bytes()).hexdigest())
+        session.commit()
+    monkeypatch.setenv('LLM_GRADER_ARTIFACT_ROOT', str(tmp_path))
+    app = create_app(factory, question_import_root=tmp_path / 'question-imports', allowed_roots=[tmp_path])
+    with factory() as session:
+        draft = _endpoint(app, '/api/v1/tests/{test_id}/model-answer-imports')(
+            tid, ImportCreate(material_id=mid), session)
+        assert draft['entries'][0]['question_id'] == qid
+        assert draft['entries'][0]['answer_text'] == 'Original answer.'
+        assert draft['extraction']['status'] == 'fallback'

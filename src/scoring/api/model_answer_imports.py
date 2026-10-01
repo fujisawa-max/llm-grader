@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import time
 import logging
 from pathlib import Path
 from uuid import uuid4
@@ -21,11 +22,11 @@ from ..db.models import (
 )
 from ..domain import DomainService
 from ..model_answer_drafts import (
-    build_model_answer_entries,
     draft_view,
     question_choices,
     remove_question_text,
 )
+from ..model_answer_geometry import PIPELINE_VERSION, build_geometry_entries
 from ..model_answer_visual import (
     BINARIZE_THRESHOLD,
     COMPARISON_SIZE,
@@ -36,6 +37,7 @@ from ..model_answer_visual import (
 )
 from ..model_answer_classification import (
     ClassificationOutputError,
+    CONFIDENCE_THRESHOLD,
     apply_teacher_segment_edits,
     fallback_classification,
     validate_classifier_result,
@@ -43,6 +45,7 @@ from ..model_answer_classification import (
 from ..pdf_native import PyMuPdfNativeExtractor, sha256_file
 
 logger = logging.getLogger(__name__)
+AUTOMATIC_CLASSIFICATION_BUDGET_SECONDS = 600
 
 
 class ImportCreate(BaseModel):
@@ -137,6 +140,87 @@ def router(db, artifact_root, classifier=None):
         body = "".join(parts).strip() or str(question.question_text or "")
         return {"label": label, "body": body}
 
+    def classify_entries(entries, questions, choices):
+        deadline = time.monotonic() + AUTOMATIC_CLASSIFICATION_BUDGET_SECONDS
+        by_id = {question.id: question for question in questions}
+        labels = {choice["id"]: choice["label"] for choice in choices}
+        updated = []
+        for original in entries:
+            entry = dict(original)
+            question = by_id.get(entry.get("question_id"))
+            candidate = str(entry.get("candidate_text") or
+                            (entry.get("semantic_classification") or {}).get("candidate_text") or
+                            entry.get("answer_text") or "")
+            native = entry.get("source", {}).get("segments", [])
+            source_segments = None
+            if native and all(item.get("id") and "original_text" in item for item in native):
+                source_segments = []
+                offset = 0
+                for index, item in enumerate(native):
+                    text = item["original_text"] + ("\n" if index < len(native) - 1 else "")
+                    source_segments.append({**item, "text": text, "start": offset, "end": offset + len(text)})
+                    offset += len(text)
+            reason = None
+            if not question or not question.is_gradable:
+                reason = "question_mapping_required"
+            elif classifier is None:
+                reason = "classifier_unavailable"
+            elif time.monotonic() >= deadline:
+                reason = "classification_budget_exhausted"
+            else:
+                try:
+                    context = question_context(question, labels.get(question.id, "設問"))
+                    parent = by_id.get(question.parent_id)
+                    context.update({"deadline_monotonic": deadline, "question_id": question.id,
+                                    "parent": question_context(parent, parent.display_label) if parent else None})
+                    kwargs = {"question_context": context, "candidate_text": candidate}
+                    if source_segments is not None:
+                        kwargs["source_segments"] = source_segments
+                    result = classifier.classify(**kwargs)
+                    classification = validate_classifier_result(
+                        candidate, result, source_segments=source_segments,
+                        threshold=getattr(classifier, "threshold", CONFIDENCE_THRESHOLD))
+                    classification.update({key: result[key] for key in ("profile_id", "model_id", "runtime_type")
+                                           if key in result})
+                    previous = entry.get("semantic_classification") or {}
+                    entry["semantic_classification"] = classification
+                    # Low confidence stays editable and blocks confirm; source is in metadata.
+                    if previous.get("status") == "teacher_reviewed":
+                        classification = apply_teacher_segment_edits(classification, [
+                            {"id": item["id"], "category": item["category"], "text": item["text"]}
+                            for item in previous.get("segments", [])
+                        ])
+                        classification["status"] = "teacher_reviewed"
+                        classification["manual_alternative_answers"] = previous.get("manual_alternative_answers", [])
+                        entry["semantic_classification"] = classification
+                    if classification["status"] == "classified" and not entry.get("teacher_correction"):
+                        entry["answer_text"] = classification["primary_answer_text"]
+                except Exception as exc:
+                    logger.info("Model-answer semantic classification fell back: %s", type(exc).__name__)
+                    reason = "classification_failed"
+            if reason:
+                previous = original.get("semantic_classification") or {}
+                if previous.get("status") == "teacher_reviewed":
+                    entry["semantic_classification"] = {**previous, "retry_error": reason}
+                else:
+                    entry["semantic_classification"] = fallback_classification(
+                        candidate, reason=reason, source_segments=source_segments)
+            updated.append(entry)
+        return updated
+
+    def pipeline_status(entries):
+        classifications = [entry.get("semantic_classification") or {} for entry in entries]
+        used = any(item.get("status") in {"classified", "needs_teacher_review", "teacher_reviewed"}
+                   for item in classifications)
+        fallback = [item.get("reason") for item in classifications if item.get("status") == "fallback"]
+        fallback.extend(item["retry_error"] for item in classifications if item.get("retry_error"))
+        return {"version": PIPELINE_VERSION, "geometry_first": True,
+                "semantic_classification_attempted": classifier is not None,
+                "semantic_classification_used": used,
+                "semantic_classification_fallback": bool(fallback), "fallback_reasons": sorted(set(fallback)),
+                "profile_id": getattr(classifier, "profile_id", None),
+                "status": "partial" if used and fallback else "complete" if used else "fallback"}
+
     def resolve_material_file(material: TestMaterial):
         path = Path(material.storage_ref)
         path = (path if path.is_absolute() else root / path).resolve()
@@ -180,6 +264,7 @@ def router(db, artifact_root, classifier=None):
                 TestMaterial.material_type == "question_sheet",
             )))
             question_material = select_question_text_material(question_materials)
+            question_ir = None
             visual_result = {
                 "status": "fallback",
                 "reason": "question_sheet_not_unique" if question_materials else "question_sheet_missing",
@@ -198,6 +283,10 @@ def router(db, artifact_root, classifier=None):
                 try:
                     question_path = resolve_material_file(question_material)
                     question_material_sha = sha256_file(question_path)
+                    question_ir = PyMuPdfNativeExtractor().extract(
+                        question_path, source_sha256=question_material_sha, material_id=question_material.id,
+                        output_dir=output_dir / "question-native", options={"max_pages": 100},
+                    ).as_dict()
                     visual_result = compare_model_answer_pages(question_path, source_path, ir)
                     allowed_ids = visual_result.pop("allowed_element_ids_by_page", {})
                     if visual_result.get("status") == "used":
@@ -207,7 +296,9 @@ def router(db, artifact_root, classifier=None):
                         }
                     visual_result["question_material_id"] = question_material.id
                     visual_result["question_source_sha256"] = question_material_sha
-                except HTTPException:
+                except Exception as exc:
+                    question_ir = None
+                    logger.info("Question geometry unavailable: %s", type(exc).__name__)
                     # An unavailable or invalid comparison source must not
                     # block the existing teacher-review native-text workflow.
                     logger.info("Question-sheet visual comparison unavailable for model-answer draft")
@@ -222,8 +313,9 @@ def router(db, artifact_root, classifier=None):
                     }
                     allowed_element_ids_by_page = None
 
-            entries = build_model_answer_entries(
-                ir, questions, allowed_element_ids_by_page=allowed_element_ids_by_page,
+            entries, geometry_regions = build_geometry_entries(
+                ir, questions, question_ir=question_ir,
+                allowed_element_ids_by_page=allowed_element_ids_by_page,
             )
             if visual_result.get("status") == "used":
                 visual_pages = {item["page_index"] for item in visual_result.get("page_diagnostics", [])
@@ -238,11 +330,13 @@ def router(db, artifact_root, classifier=None):
             else:
                 for entry in entries:
                     entry["extraction_method"] = "native_text_fallback"
+            entries = classify_entries(entries, questions, question_choices(questions))
             snapshot = {
                 "schema": "model-answer-review.v1",
                 "page_count": ir.get("source", {}).get("page_count", len(ir.get("pages", []))),
                 "parser": {**ir.get("parser", {}), "model_answer_extraction": visual_result},
                 "extraction": visual_result,
+                "pipeline": pipeline_status(entries), "question_regions": geometry_regions,
                 "entries": entries,
             }
             relative_ir = (output_dir / "document-ir.json").relative_to(root).as_posix()
@@ -279,45 +373,8 @@ def router(db, artifact_root, classifier=None):
         draft = owned_draft(draft_id, session)
         revision_check(draft, body.expected_revision)
         choices, questions = choices_for(draft.test_id, session)
-        question_by_id = {question.id: question for question in questions}
-        label_by_id = {choice["id"]: choice["label"] for choice in choices}
-        entries = []
-        for original in draft.snapshot.get("entries", []):
-            entry = dict(original)
-            question_id = entry.get("question_id")
-            question = question_by_id.get(question_id)
-            candidate_text = str(
-                (entry.get("semantic_classification") or {}).get("candidate_text")
-                or entry.get("answer_text") or ""
-            )
-            if not question or not question.is_gradable:
-                entry["semantic_classification"] = fallback_classification(
-                    candidate_text, reason="question_mapping_required",
-                )
-                entries.append(entry)
-                continue
-            if classifier is None:
-                entry["semantic_classification"] = fallback_classification(
-                    candidate_text, reason="classifier_unavailable",
-                )
-                entries.append(entry)
-                continue
-            try:
-                result = classifier.classify(
-                    question_context=question_context(question, label_by_id.get(question_id, "設問")),
-                    candidate_text=candidate_text,
-                )
-                classification = validate_classifier_result(candidate_text, result)
-                entry["semantic_classification"] = classification
-                if classification["status"] == "classified":
-                    entry["answer_text"] = classification["primary_answer_text"]
-            except Exception as exc:
-                logger.info("Model-answer semantic classification fell back: %s", type(exc).__name__)
-                entry["semantic_classification"] = fallback_classification(
-                    candidate_text, reason="classification_failed",
-                )
-            entries.append(entry)
-        draft.snapshot = {**draft.snapshot, "entries": entries}
+        entries = classify_entries(draft.snapshot.get("entries", []), questions, choices)
+        draft.snapshot = {**draft.snapshot, "entries": entries, "pipeline": pipeline_status(entries)}
         draft.revision += 1
         session.commit()
         session.refresh(draft)
@@ -346,6 +403,8 @@ def router(db, artifact_root, classifier=None):
             previous_question = entry.get("question_id")
             entry["question_id"] = edit.question_id
             entry["answer_text"] = edit.answer_text
+            entry["teacher_correction"] = {"question_id": edit.question_id, "answer_text": edit.answer_text,
+                                            "revision": draft.revision + 1}
             classification = entry.get("semantic_classification")
             if classification and previous_question != edit.question_id:
                 entry["answer_text"] = str(classification.get("candidate_text") or entry["answer_text"])
@@ -451,6 +510,9 @@ def router(db, artifact_root, classifier=None):
                     "extraction_method": entry.get("extraction_method", "native_text_fallback"),
                     "extraction": draft.snapshot.get("extraction"),
                     "mapping_method": entry.get("mapping_state"),
+                    "pipeline": draft.snapshot.get("pipeline"),
+                    "geometry": entry.get("geometry"),
+                    "teacher_correction": entry.get("teacher_correction"),
                 }
                 answer = service.model_answer(
                     draft.test_id,

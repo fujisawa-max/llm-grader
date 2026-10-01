@@ -24,10 +24,8 @@ test("source-grounded semantic categories stay editable and persist with the imp
   const answer = page.getByLabel("模範解答本文 1");
   await expect(answer).toHaveValue(/The model memorizes the training examples/);
 
-  const classifyResponse = page.waitForResponse((response) =>
-    response.url().includes("/model-answer-import-drafts/") && response.url().endsWith("/classify"));
-  await page.getByRole("button", { name: "意味分類を実行" }).click();
-  expect((await classifyResponse).status()).toBe(200);
+  await expect(page.getByText(/意味分類: 完了/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "意味分類を実行", exact: true })).toHaveCount(0);
   await expect(answer).toHaveValue(/The model memorizes the training examples and generalizes poorly\.\n?/);
   await expect(page.getByText("分類済み", { exact: true })).toBeVisible();
   await expect(page.getByText("別解・複数正答候補", { exact: true })).toBeVisible();
@@ -40,7 +38,7 @@ test("source-grounded semantic categories stay editable and persist with the imp
   await expect(questionDetails.getByText("Explain overfitting and state its effect.", { exact: false })).toBeVisible();
 
   await page.getByText("分類内容を確認・修正", { exact: true }).click();
-  const category = page.getByLabel("模範解答 1 抽出箇所 1 の分類");
+  const category = page.getByLabel("模範解答 1 抽出箇所 2 の分類");
   await category.selectOption("model_answer");
   await page.getByRole("button", { name: "標準解答を本文へ反映" }).click();
   await expect(answer).toHaveValue(/Explain overfitting and state its effect\.[\s\S]*The model memorizes the training examples/);
