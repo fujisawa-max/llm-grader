@@ -3,6 +3,15 @@
 ARG LLAMA_SERVER_IMAGE=ghcr.io/ggml-org/llama.cpp:server-b9265
 ARG LLAMA_CUDA_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda-b9265
 FROM ${LLAMA_CUDA_IMAGE} AS cuda
+USER root
+# Resolve the SONAME from the official image's linker cache, then dereference
+# its symlink so the final image does not depend on the source filesystem layout.
+RUN set -eu; \
+    nccl_path=$(ldconfig -p | awk '$1 == "libnccl.so.2" {print $NF; exit}'); \
+    test -n "$nccl_path" || { echo "Official CUDA image is missing libnccl.so.2" >&2; exit 1; }; \
+    mkdir -p /runtime-libs; \
+    cp -L "$nccl_path" /runtime-libs/libnccl.so.2; \
+    test -s /runtime-libs/libnccl.so.2
 
 FROM ubuntu:24.04 AS vulkan-build
 ARG LLAMA_CPP_REF=b9265
@@ -21,6 +30,7 @@ RUN cmake -S /src -B /build -DCMAKE_BUILD_TYPE=Release \
 FROM ${LLAMA_SERVER_IMAGE}
 USER root
 COPY --from=cuda /app/ /opt/llama/cuda/
+COPY --from=cuda /runtime-libs/libnccl.so.2 /opt/llama/cuda/libnccl.so.2
 # CUDA runtime libraries, not the host driver (injected by NVIDIA Toolkit).
 COPY --from=cuda /usr/local/cuda-12.8/ /usr/local/cuda-12.8/
 COPY --from=vulkan-build /out/ /opt/llama/vulkan/

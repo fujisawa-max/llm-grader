@@ -297,3 +297,22 @@ def test_permission_stderr_and_empty_enumeration_are_unusable(tmp_path):
     assert h.capabilities['vulkan'].error_code == 'gpu_not_accessible'
     assert h.select().backend == 'cpu'
     assert selection_status(h.select(), 'auto', 0)['fallback_reason'] == 'no_usable_gpu'
+
+
+
+def test_backend_wrapper_library_paths_and_no_directory_backend_load():
+    wrapper = (Path(__file__).resolve().parents[1] / 'scripts/llama-backend-entrypoint.sh').read_text()
+    assert 'GGML_BACKEND_PATH' not in wrapper
+    assert 'export LD_LIBRARY_PATH="$backend_dir:' in wrapper
+    assert '/usr/local/cuda-12.8/targets/x86_64-linux/lib' in wrapper
+    assert 'exec "$backend_dir/llama-server.bin" "$@"' in wrapper
+
+
+def test_cuda_nccl_runtime_copied_from_official_image():
+    dockerfile = (Path(__file__).resolve().parents[1] / 'Dockerfile.runtime').read_text()
+    cuda_stage = dockerfile.split('FROM ${LLAMA_CUDA_IMAGE} AS cuda', 1)[1].split('FROM ubuntu:24.04', 1)[0]
+    assert 'ldconfig -p' in cuda_stage
+    assert 'libnccl.so.2' in cuda_stage
+    assert 'cp -L "$nccl_path" /runtime-libs/libnccl.so.2' in cuda_stage
+    assert 'test -s /runtime-libs/libnccl.so.2' in cuda_stage
+    assert 'COPY --from=cuda /runtime-libs/libnccl.so.2 /opt/llama/cuda/libnccl.so.2' in dockerfile
