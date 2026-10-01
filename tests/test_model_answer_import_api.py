@@ -183,6 +183,49 @@ class ModelAnswerImportApiTests(unittest.TestCase):
                 self.assertEqual(provenance["question_text_removal"]["method"], "exact")
                 self.assertTrue(provenance["segments"])
 
+    def test_visual_difference_guides_native_text_draft_and_provenance(self):
+        question_text = "Describe the purpose of regularization."
+        answer_text = "It controls model complexity to reduce overfitting."
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            factory, test_id, material_id, q1_id, _q21_id, _q22_id = self.make_fixture(
+                root, f"Question 1\n{question_text}\n{answer_text}", q1_question_text=question_text,
+            )
+            question_pdf = root / "question.pdf"
+            self.make_pdf(question_pdf, f"Question 1\n{question_text}")
+            question_digest = hashlib.sha256(question_pdf.read_bytes()).hexdigest()
+            question_source = root / "sources" / test_id / f"{question_digest}.pdf"
+            question_source.parent.mkdir(parents=True, exist_ok=True)
+            question_source.write_bytes(question_pdf.read_bytes())
+            with factory() as session:
+                DomainService(session).material(
+                    test_id, material_type="question_sheet", storage_ref=str(question_source),
+                    original_filename="question.pdf", mime_type="application/pdf", sha256=question_digest,
+                )
+                session.commit()
+
+            with patch.dict("os.environ", {"LLM_GRADER_ARTIFACT_ROOT": str(root)}):
+                app = create_app(factory, question_import_root=root / "question-imports", allowed_roots=[root])
+            create = _endpoint(app, "/api/v1/tests/{test_id}/model-answer-imports")
+            confirm = _endpoint(app, "/api/v1/model-answer-import-drafts/{draft_id}/confirm")
+            with factory() as session:
+                draft = create(test_id, ImportCreate(material_id=material_id), session)
+                self.assertEqual(draft["extraction"]["status"], "used", draft["extraction"])
+                self.assertEqual(draft["extraction"]["method"], "visual_difference_guided_native_text")
+                self.assertEqual(len(draft["extraction"]["regions"]), 1)
+                self.assertEqual(len(draft["entries"]), 1)
+                entry = draft["entries"][0]
+                self.assertEqual(entry["question_id"], q1_id)
+                self.assertEqual(entry["answer_text"], answer_text)
+                self.assertEqual(entry["extraction_method"], "visual_difference_guided_native_text")
+                self.assertTrue(entry["source"]["segments"])
+                saved = confirm(draft["id"], ConfirmRequest(expected_revision=1), session)
+                provenance = saved["model_answers"][0]["provenance_json"]
+                self.assertEqual(provenance["extraction_method"], "visual_difference_guided_native_text")
+                self.assertEqual(provenance["extraction"]["question_material_id"],
+                                 draft["extraction"]["question_material_id"])
+                self.assertEqual(provenance["extraction"]["regions"][0]["page_index"], 0)
+
     def test_question_only_extraction_stays_unconfirmable(self):
         question_text = "Explain overfitting in machine learning and describe its effect on unseen data."
         with tempfile.TemporaryDirectory() as temporary:

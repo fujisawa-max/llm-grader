@@ -12,6 +12,7 @@ export interface ModelAnswerDraftEntry {
   question_id: string | null;
   mapping_state: "automatic" | "manual_mapped" | "needs_review" | string;
   mapped_question_label?: string | null;
+  extraction_method?: "visual_difference_guided_native_text" | "native_text_fallback" | string;
   answer_text: string;
   question_text_removal?: {
     status: "removed" | "not_removed" | string;
@@ -46,6 +47,14 @@ export interface ModelAnswerImportDraft {
   questions: ModelAnswerQuestionChoice[];
   page_count: number;
   parser: { backend?: string; library?: string; version?: string };
+  extraction?: {
+    status: "used" | "fallback" | string;
+    method?: string;
+    reason?: string | null;
+    comparison_size?: number;
+    threshold?: number;
+    regions?: Array<{ page_index: number; cell_bbox: number[]; pdf_bbox: number[] }>;
+  } | null;
   created_at: string;
 }
 

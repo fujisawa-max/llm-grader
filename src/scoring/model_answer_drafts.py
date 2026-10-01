@@ -250,7 +250,10 @@ def remove_question_text(question: Any, answer_text: str) -> tuple[str, dict[str
     return original, base_metadata
 
 
-def _lines_from_ir(ir: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+def _lines_from_ir(
+    ir: dict[str, Any],
+    allowed_element_ids_by_page: dict[int, set[str] | None] | None = None,
+) -> tuple[str, list[dict[str, Any]]]:
     """Build page text with Unicode offsets and links back to native IR spans."""
     all_text: list[str] = []
     lines: list[dict[str, Any]] = []
@@ -286,7 +289,8 @@ def _lines_from_ir(ir: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
                 start = offset
                 text_parts.append(value)
                 offset += len(value)
-                element_ranges.append({"element_id": element.get("element_id"), "start": start, "end": offset})
+                element_ranges.append({"element_id": element.get("element_id"), "start": start,
+                                       "end": offset, "separator_before": separator})
                 previous = element
             line_text = "".join(text_parts).strip()
             if line_text:
@@ -294,8 +298,14 @@ def _lines_from_ir(ir: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
                 raw_line = "".join(text_parts)
                 trim_left = len(raw_line) - len(raw_line.lstrip())
                 trim_right = len(raw_line.rstrip())
-                page_lines.append({"text": line_text, "trim_left": trim_left, "trim_right": trim_right,
-                                   "element_ranges": element_ranges,
+                trimmed_ranges = []
+                for item in element_ranges:
+                    start = max(item["start"], trim_left)
+                    end = min(item["end"], trim_right)
+                    if start < end:
+                        trimmed_ranges.append({**item, "start": start - trim_left,
+                                               "end": end - trim_left})
+                page_lines.append({"text": line_text, "element_ranges": trimmed_ranges,
                                    "reading_order": min(int(item.get("reading_order") or 0) for item in group)})
         # Group insertion follows the extractor's native order; sorting by the
         # first span makes that invariant explicit and avoids reconstructing it
@@ -311,9 +321,45 @@ def _lines_from_ir(ir: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
             page_text_parts.append(line["text"])
             line_end = line_start + len(line["text"])
             element_ids = [item["element_id"] for item in line["element_ranges"]]
+            page_index = int(page.get("page_index", 0))
+            allowed_ids = (allowed_element_ids_by_page or {}).get(page_index)
+            selected_ranges = [item for item in line["element_ranges"]
+                               if allowed_ids is None or item["element_id"] in allowed_ids]
+            selected_parts = []
+            selected_segments = []
+            previous_range_index = None
+            range_indexes = {id(item): range_index for range_index, item in enumerate(line["element_ranges"])}
+            for item in selected_ranges:
+                start, end = item["start"], item["end"]
+                current_index = range_indexes[id(item)]
+                piece = line["text"][start:end]
+                if not piece:
+                    continue
+                separator = ""
+                if selected_parts and previous_range_index is not None:
+                    if current_index == previous_range_index + 1:
+                        separator = item.get("separator_before") or ""
+                    else:
+                        # If omitted spans sat between selected spans, preserve
+                        # only a separator that existed in the native line.
+                        gap = line["text"][selected_segments[-1]["end"]:start]
+                        if gap and gap.isspace():
+                            separator = gap
+                        elif selected_segments[-1]["text"][-1:].isascii() and selected_segments[-1]["text"][-1:].isalnum() \
+                                and piece[:1].isascii() and piece[:1].isalnum():
+                            separator = " "
+                selected_parts.append(separator)
+                selected_parts.append(piece)
+                selected_segments.append({"start": start, "end": end, "text": piece,
+                                          "element_id": item["element_id"],
+                                          "separator_before": separator})
+                previous_range_index = current_index
+            visual_text = "".join(selected_parts).strip()
             # Span ids intentionally stay attached even when a heading is trimmed from the answer text.
-            lines.append({"text": line["text"], "page_index": int(page.get("page_index", 0)),
-                          "start": line_start, "end": line_end, "element_ids": element_ids})
+            lines.append({"text": line["text"], "visual_text": visual_text,
+                          "visual_segments": selected_segments,
+                          "page_index": page_index, "start": line_start, "end": line_end,
+                          "element_ids": element_ids})
             page_offset = line_end
         page_text = "".join(page_text_parts)
         all_text.append(page_text)
@@ -355,13 +401,18 @@ def _marker(line: str):
     return None
 
 
-def build_model_answer_entries(ir: dict[str, Any], questions: list[Any]) -> list[dict[str, Any]]:
+def build_model_answer_entries(
+    ir: dict[str, Any],
+    questions: list[Any],
+    *,
+    allowed_element_ids_by_page: dict[int, set[str] | None] | None = None,
+) -> list[dict[str, Any]]:
     """Segment only when a visible question marker uniquely matches the current tree.
 
     Ambiguous or unmatched marker text remains an unmapped draft for explicit teacher mapping.
     This parser is deterministic, uses no OCR fallback or model calls, and does not create Questions.
     """
-    full_text, lines = _lines_from_ir(ir)
+    full_text, lines = _lines_from_ir(ir, allowed_element_ids_by_page)
     ordered_questions = sorted(questions, key=lambda q: (q.sort_order, q.question_number, q.id))
     children: dict[str | None, list[Any]] = defaultdict(list)
     for question in ordered_questions:
@@ -404,20 +455,44 @@ def build_model_answer_entries(ir: dict[str, Any], questions: list[Any]) -> list
         append(body, line, consumed)
 
     def append(body, line, consumed=0):
-        text = body.strip()
+        if allowed_element_ids_by_page is not None:
+            pieces = []
+            segments = []
+            for segment in line.get("visual_segments", []):
+                start, end = segment["start"], segment["end"]
+                if end <= consumed:
+                    continue
+                start = max(start, consumed)
+                piece = line["text"][start:end]
+                if not piece:
+                    continue
+                if pieces:
+                    pieces.append(segment.get("separator_before") or "")
+                pieces.append(piece)
+                segments.append({"page_index": line["page_index"],
+                                 "text_start": line["start"] + start,
+                                 "text_end": line["start"] + end,
+                                 "element_ids": [segment["element_id"]]})
+            text = "".join(pieces).strip()
+        else:
+            text = body.strip()
+            segments = []
         if not text:
             return
         if current_target is None:
             return
         current_target["answer_text"] += ("\n" if current_target["answer_text"] else "") + text
-        start = min(line["end"], line["start"] + consumed)
-        while start < line["end"] and line["text"][start - line["start"]].isspace():
-            start += 1
-        if start < line["end"]:
-            current_target["source"]["segments"].append({
-                "page_index": line["page_index"], "text_start": start, "text_end": line["end"],
-                "element_ids": line["element_ids"],
-            })
+        if allowed_element_ids_by_page is not None:
+            current_target["source"]["segments"].extend(segments)
+        else:
+            start = min(line["end"], line["start"] + consumed)
+            while start < line["end"] and line["text"][start - line["start"]].isspace():
+                start += 1
+            if start < line["end"]:
+                current_target["source"]["segments"].append({
+                    "page_index": line["page_index"], "text_start": start, "text_end": line["end"],
+                    "element_ids": line["element_ids"],
+                })
 
     for line in lines:
         marker = _marker(line["text"])
@@ -454,16 +529,28 @@ def build_model_answer_entries(ir: dict[str, Any], questions: list[Any]) -> list
     # If the PDF has no recognizable question markers, keep the entire native text editable.
     entries = [part for part in parts if part["answer_text"].strip()]
     if not entries:
-        text = full_text.strip()
+        if allowed_element_ids_by_page is None:
+            text = full_text.strip()
+            source_lines = lines
+        else:
+            text = "\n".join(line["visual_text"] for line in lines if line["visual_text"]).strip()
+            source_lines = [line for line in lines if line["visual_text"]]
         if text:
             entries = [{"id": str(uuid4()), "question_id": None, "mapping_state": "needs_review",
                         "answer_text": text,
                         "source": {"material_id": ir.get("source", {}).get("material_id"),
                                    "source_sha256": ir.get("source", {}).get("sha256"),
-                                   "segments": [{"page_index": line["page_index"],
-                                                 "text_start": line["start"], "text_end": line["end"],
-                                                 "element_ids": line["element_ids"]}
-                                                for line in lines]}}]
+                                   "segments": ([{"page_index": line["page_index"],
+                                                  "text_start": line["start"] + segment["start"],
+                                                  "text_end": line["start"] + segment["end"],
+                                                  "element_ids": [segment["element_id"]]}
+                                                 for line in source_lines
+                                                 for segment in line.get("visual_segments", [])]
+                                                if allowed_element_ids_by_page is not None else
+                                                [{"page_index": line["page_index"],
+                                                  "text_start": line["start"], "text_end": line["end"],
+                                                  "element_ids": line["element_ids"]}
+                                                 for line in lines])}}]
 
     # Combine repeated labelled fragments for the same question without losing their citations.
     combined: list[dict[str, Any]] = []
@@ -499,4 +586,6 @@ def draft_view(draft, choices: list[dict[str, Any]]) -> dict[str, Any]:
             "source_sha256": draft.source_sha256, "state": draft.state, "revision": draft.revision,
             "entries": draft.snapshot.get("entries", []), "questions": choices,
             "page_count": draft.snapshot.get("page_count", 0),
-            "parser": draft.snapshot.get("parser", {}), "created_at": draft.created_at.isoformat()}
+            "parser": draft.snapshot.get("parser", {}),
+            "extraction": draft.snapshot.get("extraction"),
+            "created_at": draft.created_at.isoformat()}

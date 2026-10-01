@@ -119,6 +119,7 @@ export default function ModelAnswerImportReviewPage() {
     <PageHeader title="模範解答の確認" />
     <p className="muted">登録済みPDFから読み取った内容を既存の設問へ対応付け、本文を確認して登録します。新しい設問は作成されません。</p>
     <p className="muted">PDF {material?.original_filename || "登録済み資料"}　/　{draft.page_count}ページ　/　読取方法: {draft.parser.library || "PDF文字抽出"}</p>
+    {draft.extraction?.status === "used" && <p className="muted">本文抽出: 問題PDFとの差分から追加領域を特定</p>}
     {unresolved > 0 && <p className="warn" role="status">対応先が未設定の模範解答が{unresolved}件あります。すべての対応先を選ぶまで登録できません。</p>}
     {draft.entries.length === 0 && <p className="warn" role="status">PDFから読み取れる本文がありません。PDFの文字データを確認するか、設問別編集欄で手入力してください。</p>}
     {error && <p className="error" role="alert">{error}</p>}
@@ -144,6 +145,8 @@ export default function ModelAnswerImportReviewPage() {
             </select>
           </label>
           <p className="model-answer-source-info">出典ページ: {pages(entry).length ? pages(entry).map((page) => `p.${page}`).join("、") : "ページ情報なし"}</p>
+          {entry.extraction_method === "visual_difference_guided_native_text" &&
+            <p className="muted">抽出方法: 問題PDFとの差分</p>}
           <label className="field">模範解答本文
             <textarea aria-label={`模範解答本文 ${index + 1}`} value={entry.answer_text} maxLength={100000} rows={6}
               disabled={busy || draft.state !== "editing"}

@@ -26,6 +26,14 @@ from ..model_answer_drafts import (
     question_choices,
     remove_question_text,
 )
+from ..model_answer_visual import (
+    BINARIZE_THRESHOLD,
+    COMPARISON_SIZE,
+    PADDING_CELLS,
+    SHIFT_TOLERANCE_CELLS,
+    compare_model_answer_pages,
+    select_question_text_material,
+)
 from ..pdf_native import PyMuPdfNativeExtractor, sha256_file
 
 logger = logging.getLogger(__name__)
@@ -126,11 +134,74 @@ def router(db, artifact_root):
                 output_dir=output_dir,
             ).as_dict()
             questions = list(session.scalars(select(TestQuestion).where(TestQuestion.test_id == test_id)))
-            entries = build_model_answer_entries(ir, questions)
+            question_materials = list(session.scalars(select(TestMaterial).where(
+                TestMaterial.test_id == test_id,
+                TestMaterial.material_type == "question_sheet",
+            )))
+            question_material = select_question_text_material(question_materials)
+            visual_result = {
+                "status": "fallback",
+                "reason": "question_sheet_not_unique" if question_materials else "question_sheet_missing",
+                "method": "native_text",
+                "comparison_size": COMPARISON_SIZE,
+                "threshold": BINARIZE_THRESHOLD,
+                "shift_tolerance_cells": SHIFT_TOLERANCE_CELLS,
+                "padding_cells": PADDING_CELLS,
+                "regions": [],
+                "selected_span_count": 0,
+                "page_diagnostics": [],
+            }
+            allowed_element_ids_by_page = None
+            question_material_sha = None
+            if question_material is not None:
+                try:
+                    question_path = resolve_material_file(question_material)
+                    question_material_sha = sha256_file(question_path)
+                    visual_result = compare_model_answer_pages(question_path, source_path, ir)
+                    allowed_ids = visual_result.pop("allowed_element_ids_by_page", {})
+                    if visual_result.get("status") == "used":
+                        allowed_element_ids_by_page = {
+                            int(page_index): set(element_ids) if element_ids is not None else None
+                            for page_index, element_ids in allowed_ids.items()
+                        }
+                    visual_result["question_material_id"] = question_material.id
+                    visual_result["question_source_sha256"] = question_material_sha
+                except HTTPException:
+                    # An unavailable or invalid comparison source must not
+                    # block the existing teacher-review native-text workflow.
+                    logger.info("Question-sheet visual comparison unavailable for model-answer draft")
+                    visual_result = {
+                        "status": "fallback", "reason": "question_sheet_unavailable",
+                        "method": "native_text", "comparison_size": COMPARISON_SIZE,
+                        "threshold": BINARIZE_THRESHOLD,
+                        "shift_tolerance_cells": SHIFT_TOLERANCE_CELLS,
+                        "padding_cells": PADDING_CELLS,
+                        "regions": [], "selected_span_count": 0, "page_diagnostics": [],
+                        "question_material_id": question_material.id,
+                    }
+                    allowed_element_ids_by_page = None
+
+            entries = build_model_answer_entries(
+                ir, questions, allowed_element_ids_by_page=allowed_element_ids_by_page,
+            )
+            if visual_result.get("status") == "used":
+                visual_pages = {item["page_index"] for item in visual_result.get("page_diagnostics", [])
+                                if item.get("status") == "visual_difference"}
+                for entry in entries:
+                    entry["extraction_method"] = (
+                        "visual_difference_guided_native_text"
+                        if any(segment.get("page_index") in visual_pages
+                               for segment in entry.get("source", {}).get("segments", []))
+                        else "native_text_fallback"
+                    )
+            else:
+                for entry in entries:
+                    entry["extraction_method"] = "native_text_fallback"
             snapshot = {
                 "schema": "model-answer-review.v1",
                 "page_count": ir.get("source", {}).get("page_count", len(ir.get("pages", []))),
-                "parser": ir.get("parser", {}),
+                "parser": {**ir.get("parser", {}), "model_answer_extraction": visual_result},
+                "extraction": visual_result,
                 "entries": entries,
             }
             relative_ir = (output_dir / "document-ir.json").relative_to(root).as_posix()
@@ -246,6 +317,8 @@ def router(db, artifact_root):
                     "parser": draft.snapshot.get("parser", {}),
                     "segments": entry.get("source", {}).get("segments", []),
                     "question_text_removal": entry.get("question_text_removal"),
+                    "extraction_method": entry.get("extraction_method", "native_text_fallback"),
+                    "extraction": draft.snapshot.get("extraction"),
                     "mapping_method": entry.get("mapping_state"),
                 }
                 answer = service.model_answer(
