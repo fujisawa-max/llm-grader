@@ -634,6 +634,8 @@ def create_app(session_factory=None, *, allowed_roots=None, runtime_client=None,
                 "model_id": x.get("profile", {}).get("model_id"),
                 "runtime_type": x.get("profile", {}).get("runtime_type"),
                 "state": x.get("state"),
+                "availability": x.get("availability"),
+                "error_code": x.get("error_code"),
             }
             for x in values
         ]

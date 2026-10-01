@@ -15,7 +15,7 @@ llm-grader is a web application for human-in-the-loop, LLM-assisted grading of u
 - Grading, review queue, regrade, finalization, results, CSV, and PDF views
 - Persistent artifact storage, Alembic migrations, and Docker Compose deployment
 
-Model/runtime catalog and download management are not part of the current web administration surface. Ricoh, Uni-MuMER, and Ornith runtimes require separate runtime setup when grading is enabled.
+Model/runtime catalog and download management are not part of the current web administration surface. Normal Compose includes a lazy-starting RuntimeManager and managed llama-server. Model files must be provisioned separately; Ricoh and Uni-MuMER still require their own runtime configuration. See [runtime deployment](docs/operations/runtime-deployment.md).
 
 ## Screenshots
 

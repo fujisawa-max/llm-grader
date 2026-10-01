@@ -7,6 +7,7 @@ import socket
 import subprocess
 import threading
 import time
+from functools import wraps
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass, field
@@ -40,6 +41,9 @@ class RuntimeProfile:
     expected_ftype: str | None = None
     server_binary: str = "llama-server"
     host: str = "127.0.0.1"
+    advertise_host: str | None = None
+    model_ref: str | None = None
+    purpose: str | None = None
     port: int | None = None
     startup_timeout_seconds: float = 30.0
     stop_timeout_seconds: float = 5.0
@@ -85,6 +89,7 @@ class RuntimeRecord:
     command: list[str] | None = None
     log_handle: object | None = field(default=None, repr=False)
     process: subprocess.Popen | None = field(default=None, repr=False)
+    lock: object = field(default_factory=threading.RLock, repr=False)
 
     def public(self):
         result = {"profile": asdict(self.profile), "state": self.state.value,
@@ -126,6 +131,14 @@ class PortAllocator:
             self._allocated.discard(port)
 
 
+def _synchronized(method):
+    @wraps(method)
+    def locked(self, runtime_id, *args, **kwargs):
+        with self._record(runtime_id).lock:
+            return method(self, runtime_id, *args, **kwargs)
+    return locked
+
+
 class RuntimeManager:
     """Manage runtime processes without any grading responsibilities."""
 
@@ -149,23 +162,35 @@ class RuntimeManager:
             raise ValueError("portが不正です")
         self.records[profile.runtime_id] = RuntimeRecord(profile)
 
+    @_synchronized
     def status(self, runtime_id):
         record = self._record(runtime_id)
         self._observe_process(record)
-        return record.public()
+        result = record.public()
+        unavailable = self._missing_artifact(record.profile)
+        result["availability"] = unavailable or "available"
+        result["error_code"] = unavailable
+        if unavailable and record.process is None:
+            result["state"] = "unavailable"
+        return result
 
     def statuses(self):
         return [self.status(runtime_id) for runtime_id in sorted(self.records)]
 
+    @_synchronized
     def ensure_running(self, runtime_id):
         record = self._record(runtime_id)
         self._observe_process(record)
         if record.profile.runtime_type == "external":
-            return self.health(runtime_id)
+            result = self.health(runtime_id)
+            if not result["ok"]:
+                raise RuntimeError(result.get("error") or "external runtime is unhealthy")
+            return result
         if record.state == RuntimeState.READY:
             return record.public()
         return self.start(runtime_id)
 
+    @_synchronized
     def start(self, runtime_id):
         record = self._record(runtime_id)
         profile = record.profile
@@ -180,13 +205,15 @@ class RuntimeManager:
                 profile.llama_version = self._binary_version(profile.server_binary)
             port = self.ports.acquire(profile.port, profile.host)
             record.allocated_port = port
-            endpoint = f"http://{profile.host}:{port}/v1"
+            endpoint_host = profile.advertise_host or profile.host
+            endpoint = f"http://{endpoint_host}:{port}/v1"
             command = self.build_command(profile, port)
             log_path = Path(profile.log_path or f"runtime-{runtime_id}.log")
             log_path.parent.mkdir(parents=True, exist_ok=True)
             log_handle = log_path.open("ab")
             record.log_handle = log_handle
             record.state = RuntimeState.STARTING
+            record.error = None
             record.command = command
             process = self.launcher(command, log_handle)
             record.process = process
@@ -209,6 +236,7 @@ class RuntimeManager:
             self._terminate(record, force=True)
             raise TimeoutError(f"runtime起動timeout: {runtime_id}")
         except Exception as exc:
+            self._terminate(record, force=True)
             record.error = str(exc)
             if record.state != RuntimeState.UNHEALTHY:
                 record.state = RuntimeState.ERROR
@@ -217,11 +245,13 @@ class RuntimeManager:
                 record.allocated_port = None
             raise
 
+    @_synchronized
     def stop(self, runtime_id):
         record = self._record(runtime_id)
         if record.profile.runtime_type == "external":
             return {**record.public(), "stop_ignored": True}
         if record.process is None:
+            self._terminate(record, force=False)
             record.state = RuntimeState.STOPPED
             return record.public()
         record.state = RuntimeState.STOPPING
@@ -230,6 +260,18 @@ class RuntimeManager:
         record.stopped_at = self.clock()
         return record.public()
 
+    @_synchronized
+    def restart(self, runtime_id):
+        if self._record(runtime_id).profile.runtime_type == "external":
+            return self.ensure_running(runtime_id)
+        self.stop(runtime_id)
+        return self.start(runtime_id)
+
+    def close(self):
+        for runtime_id in list(self.records):
+            self.stop(runtime_id)
+
+    @_synchronized
     def health(self, runtime_id):
         record = self._record(runtime_id)
         try:
@@ -282,6 +324,16 @@ class RuntimeManager:
         except (OSError, subprocess.SubprocessError):
             return "unknown"
 
+    @staticmethod
+    def _missing_artifact(profile):
+        if profile.runtime_type != "managed":
+            return None
+        if not profile.model_path or not Path(profile.model_path).is_file():
+            return "model_missing"
+        if profile.vision and (not profile.mmproj_path or not Path(profile.mmproj_path).is_file()):
+            return "mmproj_missing"
+        return None
+
     def _validate_model(self, profile):
         if not profile.model_path or not Path(profile.model_path).is_file():
             raise ValueError("model pathが存在しません")
@@ -291,6 +343,10 @@ class RuntimeManager:
     def _health_record(self, record):
         profile = record.profile
         base = profile.endpoint_root()
+        if profile.runtime_type == "managed" and record.allocated_port is not None:
+            # The manager probes locally; consumers receive the advertised Docker host.
+            host = "127.0.0.1" if profile.host == "0.0.0.0" else profile.host
+            base = f"http://{host}:{record.allocated_port}/v1"
         health = self.request(base.removesuffix("/v1") + "/health")
         if isinstance(health, dict) and health.get("status") not in {None, "ok", "ready"}:
             raise RuntimeError(f"health status={health.get('status')}")
@@ -322,17 +378,16 @@ class RuntimeManager:
 
     def _terminate(self, record, force):
         process = record.process
-        if process is None:
-            return
-        if force:
-            process.kill()
-        else:
-            process.terminate()
-        try:
-            process.wait(timeout=record.profile.stop_timeout_seconds)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=2)
+        if process is not None:
+            if force:
+                process.kill()
+            else:
+                process.terminate()
+            try:
+                process.wait(timeout=record.profile.stop_timeout_seconds)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=2)
         record.process = None
         record.pid = None
         if record.log_handle is not None:

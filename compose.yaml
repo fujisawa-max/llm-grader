@@ -28,6 +28,33 @@ services:
     command: ["sh", "-c", "alembic -x sqlalchemy.url=$${LLM_GRADER_DATABASE_URL} upgrade head"]
     restart: "no"
 
+  runtime-manager:
+    build:
+      context: .
+      dockerfile: Dockerfile.runtime
+      args:
+        LLAMA_SERVER_IMAGE: ${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b9265}
+    environment:
+      LLM_GRADER_RUNTIME_CONFIG: /etc/llm-grader/runtime.json
+      LLM_GRADER_LLM_MODEL_ID: ${LLM_GRADER_LLM_MODEL_ID:-local-text-model}
+      LLM_GRADER_LLM_MODEL_PATH: ${LLM_GRADER_LLM_MODEL_PATH:-/models/model.gguf}
+      LLM_GRADER_RUNTIME_ADVERTISE_HOST: runtime-manager
+    volumes:
+      - ${LLM_MODELS_DIR:-llm_models}:/models
+      - runtime_manager_state:/runtime-state
+      - ${LLM_GRADER_RUNTIME_CONFIG_FILE:-./config/runtime.deployment.json}:/etc/llm-grader/runtime.json:ro
+    networks:
+      - runtime-internal
+    healthcheck:
+      test: ["CMD", "python", "-m", "scoring.runtime.server", "--healthcheck", "http://127.0.0.1:18000/internal/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    stop_grace_period: 30s
+    restart: unless-stopped
+
   api:
     build:
       context: .
@@ -41,13 +68,21 @@ services:
       LLM_GRADER_COOKIE_SECURE: ${LLM_GRADER_COOKIE_SECURE:-false}
       LLM_GRADER_CORS_ORIGINS: http://localhost:${FRONTEND_PORT:-3000}
       STUDENT_PORTAL_ENABLED: ${STUDENT_PORTAL_ENABLED:-false}
+      LLM_GRADER_RUNTIME_MANAGER_URL: http://runtime-manager:18000/internal
+      LLM_GRADER_TRUSTED_RUNTIME_HOSTS: runtime-manager
+      LLM_GRADER_MODEL_ANSWER_CLASSIFIER_PROFILE: ${LLM_GRADER_MODEL_ANSWER_CLASSIFIER_PROFILE:-ornith_rubric_draft}
     ports:
       - "${API_PORT:-8000}:8000"
     volumes:
       - artifacts_data:/data/artifacts
+    networks:
+      - default
+      - runtime-internal
     depends_on:
       migrate:
         condition: service_completed_successfully
+      runtime-manager:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8000/api/v1/health >/dev/null"]
       interval: 5s
@@ -76,3 +111,9 @@ services:
 volumes:
   postgres_data:
   artifacts_data:
+  llm_models:
+  runtime_manager_state:
+
+networks:
+  runtime-internal:
+    internal: true

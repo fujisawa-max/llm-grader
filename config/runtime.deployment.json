@@ -1,0 +1,32 @@
+{
+  "schema_version": 2,
+  "model_definitions": {
+    "default_text": {
+      "model_id": "${LLM_GRADER_LLM_MODEL_ID:-local-text-model}",
+      "model_path": "${LLM_GRADER_LLM_MODEL_PATH:-/models/model.gguf}",
+      "vision": false,
+      "capabilities": ["text", "structured_output"]
+    }
+  },
+  "runtime_defaults": {
+    "runtime_type": "managed",
+    "server_binary": "${LLM_GRADER_LLAMA_SERVER_BINARY:-/app/llama-server}",
+    "host": "0.0.0.0",
+    "advertise_host": "${LLM_GRADER_RUNTIME_ADVERTISE_HOST:-runtime-manager}",
+    "startup_timeout_seconds": 300,
+    "context_size": 8192,
+    "gpu_layers": 0
+  },
+  "profiles": {
+    "grader": {
+      "model_ref": "default_text",
+      "purpose": "grading",
+      "log_path": "/runtime-state/grader.log"
+    },
+    "ornith_rubric_draft": {
+      "model_ref": "default_text",
+      "purpose": "model_answer_classifier",
+      "log_path": "/runtime-state/model-answer-classifier.log"
+    }
+  }
+}

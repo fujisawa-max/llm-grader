@@ -164,7 +164,7 @@ class RuntimeTests(unittest.TestCase):
                     return Response({"lines": ["two"]})
                 return Response({"stop_ignored": True})
             client = RuntimeManagerClient("http://runtime-manager/internal")
-            with patch("scoring.runtime.client.urllib.request.urlopen", fake_urlopen):
+            with patch.object(client.opener, "open", fake_urlopen):
                 self.assertEqual(client.status("r1")["state"], "stopped")
                 self.assertTrue(client.health("r1")["ok"])
                 self.assertEqual(client.logs("r1", tail=1)["lines"], ["two"])

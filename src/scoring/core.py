@@ -11,6 +11,7 @@ import urllib.request
 from pathlib import Path
 
 from .schemas import response_schema
+from .runtime.network import runtime_opener, validate_endpoint
 
 DEFAULT_GENERATION = {
     "temperature": 0,
@@ -189,18 +190,19 @@ class LocalClient:
     def __init__(self, config, role, endpoint_override=None):
         self.settings = config["models"][role]
         self.base = (endpoint_override or self.settings["base_url"]).rstrip("/")
-        parsed = urllib.parse.urlparse(self.base)
-        if (parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
-                or parsed.username or parsed.password or parsed.query or parsed.fragment
-                or parsed.path != "/v1"):
-            raise ValueError("接続先はローカルHTTP /v1 のみ対応")
+        self.origin = validate_endpoint(self.base, config.get("trusted_runtime_hosts", ()))
         self.role = role
         self.timeout = self.settings.get("request_timeout_seconds", config.get("request_timeout_seconds", 300))
         self.generation = {**DEFAULT_GENERATION, **config.get("generation", {}),
                            **self.settings.get("generation", {})}
-        self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        self.opener = runtime_opener()
 
     def request(self, url, payload=None):
+        target = urllib.parse.urlparse(url)
+        if (target.scheme != self.origin.scheme or target.netloc != self.origin.netloc
+                or target.query or target.fragment
+                or not (target.path.startswith("/v1/") or target.path in {"/props", "/health"})):
+            raise ValueError("runtime request must stay on the configured endpoint")
         data = None if payload is None else json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
         try:

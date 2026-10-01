@@ -38,6 +38,10 @@ secret store.
 
 ## Startup
 
+Normal Compose includes RuntimeManager on a private network. See
+[runtime deployment](runtime-deployment.md) for model provisioning, profiles,
+missing-model status, and standalone manager startup.
+
 Start in this order and verify each health check before continuing:
 
 1. Confirm PostgreSQL is reachable.
