@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import { buildReviewTargets, resolveReviewTarget } from "../lib/modelAnswerReviewTargets";
 import type { ModelAnswerImportDraft } from "../lib/api/modelAnswerImports";
 import { questionBreadcrumb } from "../lib/modelAnswerQuestionNavigation";
+import { validateModelAnswerRegistration } from "../lib/modelAnswerRegistrationValidation";
 
 test("review targets keep nested breadcrumbs and place unresolved and excluded after questions", () => {
   const draft = {
@@ -53,4 +54,41 @@ test("shared breadcrumb resolves nested labels and retains server label when a s
   expect(questionBreadcrumb(questions[2], questions)).toBe("問題2 > (2) > 2.");
   expect(questionBreadcrumb({ ...questions[2], label: "問題2 > (2) > 2." }, [questions[2]]))
     .toBe("問題2 > (2) > 2.");
+});
+
+test("registration validation is structured, candidate-addressable, and ignores excluded or unassigned entries", () => {
+  const base = {
+    questions: [{ id: "nested", parent_id: "sub", label: "問題2 > (2) > 2.", is_gradable: true }],
+    confirmed_entry_ids: [],
+    entries: [{ id: "valid", question_id: "nested", answer_text: "Answer", answer_kind: "primary",
+      disposition: "include", semantic_classification: { status: "classified", segments: [] } }],
+  } as unknown as ModelAnswerImportDraft;
+  const labels = new Map([["question:nested", "問題2 > (2) > 2."]]);
+  expect(validateModelAnswerRegistration(base, labels)).toEqual([]);
+
+  const blocked = {
+    ...base,
+    entries: [
+      ...base.entries,
+      { id: "empty", question_id: "nested", answer_text: "", answer_kind: "primary", disposition: "include" },
+      { id: "uncertain", question_id: "nested", answer_text: "Maybe", answer_kind: "primary", disposition: "include",
+        semantic_classification: { status: "needs_teacher_review", segments: [{ category: "question" }, { category: "uncertain" }] } },
+      { id: "unassigned", question_id: null, answer_text: "Rubric text", answer_kind: "primary", disposition: "include",
+        semantic_classification: { status: "classified", segments: [{ category: "rubric" }] } },
+      { id: "excluded", question_id: "nested", answer_text: "Excluded", disposition: "excluded",
+        semantic_classification: { status: "needs_teacher_review", segments: [{ category: "note" }] } },
+    ],
+  } as unknown as ModelAnswerImportDraft;
+  const result = validateModelAnswerRegistration(blocked, labels);
+  expect(result.map((item) => item.reasonCode)).toContain("empty_answer_text");
+  expect(result.map((item) => item.reasonCode)).toContain("duplicate_primary_answer");
+  expect(result.find((item) => item.candidateId === "uncertain")?.message)
+    .toContain("問題2 > (2) > 2. — 分類結果を確認してください（問題文・分類未確定）。");
+  expect(result.find((item) => item.candidateId === "unassigned")?.message)
+    .toContain("対応する設問なし (1) — 採点基準候補: 対応先の設問を選ぶ");
+  expect(result.some((item) => item.candidateId === "excluded")).toBe(false);
+  expect(result.every((item) => item.severity === "blocking")).toBe(true);
+  const alternativeOnly = { ...base, entries: [{ id: "alternative", question_id: "nested", answer_text: "Other", answer_kind: "alternative", disposition: "include" }] } as unknown as ModelAnswerImportDraft;
+  expect(validateModelAnswerRegistration(alternativeOnly, labels).map((item) => item.reasonCode))
+    .toContain("primary_answer_required");
 });

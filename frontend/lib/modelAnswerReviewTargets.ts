@@ -37,7 +37,8 @@ export function buildReviewTargets(draft: Pick<ModelAnswerImportDraft, "question
   const questions = orderedQuestions(draft.questions).map((question) => ({
     id: `question:${question.id}`, label: question.label, kind: "question" as const, questionId: question.id,
   }));
-  const unresolved = draft.entries.filter((entry) => dispositionOf(entry) === "unassigned")
+  const questionIds = new Set(draft.questions.map((question) => question.id));
+  const unresolved = draft.entries.filter((entry) => dispositionOf(entry) === "unassigned" || !entry.question_id || !questionIds.has(entry.question_id))
     .map((entry, index) => ({ id: `unassigned:${entry.id}`, label: `対応する設問なし (${index + 1})`,
       kind: "unassigned" as const, entryId: entry.id }));
   const excluded = draft.entries.filter((entry) => dispositionOf(entry) === "excluded")

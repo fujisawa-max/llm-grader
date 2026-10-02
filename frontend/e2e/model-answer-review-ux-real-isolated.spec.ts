@@ -77,8 +77,14 @@ test("review disposition, manual answer, navigation and in-pane PDF zoom persist
   await page.getByLabel("編集対象").selectOption(`question:${questionIds[0]}`);
   await page.getByRole("button", { name: /問題1 に模範解答を追加/ }).click();
   await expect(page.getByRole("button", { name: "模範解答として登録" })).toBeDisabled();
-  await expect(page.getByRole("status", { name: "登録できない理由" })).toContainText("模範解答本文が空");
+  const validation = page.getByRole("status", { name: "登録できない理由" });
+  await expect(validation).toContainText("問題1");
+  await expect(validation).toContainText("模範解答本文が空");
+  await validation.getByRole("button", { name: /模範解答本文が空.*該当候補を表示/ }).click();
+  await expect(page.locator(".model-answer-candidate-validation")).toContainText("模範解答本文が空");
+  await expect(page.locator(".model-answer-import-entry:focus")).toHaveCount(1);
   await page.getByLabel("模範解答本文 4").fill("Teacher-authored answer.");
+  await expect(validation).toHaveCount(0);
   await page.getByRole("button", { name: "下書き保存" }).click();
   await expect(page.getByText("下書きを保存しました。")).toBeVisible();
   await page.reload();

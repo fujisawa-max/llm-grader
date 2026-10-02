@@ -98,6 +98,9 @@
 .model-answer-import-entry { min-width:0; padding:14px; }
 .model-answer-import-entry-heading { display:flex; justify-content:space-between; align-items:center; gap:12px; }
 .model-answer-import-entry-heading h3 { margin:0; }
+.registration-validation-jump { padding:0; border:0; background:transparent; color:var(--accent); text-align:left; text-decoration:underline; cursor:pointer; font:inherit; }
+.registration-validation-jump:focus-visible { outline:2px solid var(--accent); outline-offset:3px; border-radius:2px; }
+.model-answer-candidate-validation { margin:10px 0; padding:9px 11px; border-left:3px solid var(--warn); background:#fff9e9; }
 .model-answer-classification { display:grid; gap:12px; border:1px solid var(--border,#d8dee8); border-radius:8px; padding:14px; background:var(--surface-soft,#f8fafc); }
 .model-answer-classification h4 { margin:0; }
 .model-answer-classification-groups { display:grid; gap:12px; }
