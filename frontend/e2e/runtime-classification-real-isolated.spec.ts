@@ -38,10 +38,11 @@ test("normal API bootstrap uses RuntimeManager for semantic classification", asy
   await expect(page.getByText("教師確認済み", { exact: true })).toBeVisible();
   await expect(page.getByLabel("模範解答本文 1")).toHaveValue(/The model memorizes/);
   await expect(page.getByLabel("模範解答本文 1")).not.toHaveValue(/Explain/);
-  await page.getByRole("button", { name: "変更を保存" }).click();
-  await expect(page.getByText(/変更を保存しました/)).toBeVisible();
+  await page.getByRole("button", { name: "下書き保存" }).click();
+  await expect(page.getByText(/下書きを保存しました/)).toBeVisible();
   await page.reload();
   await expect(page.getByText("教師確認済み", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "確認した模範解答を登録" }).click();
-  await expect(page.getByText("登録済み", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "模範解答として登録" }).click();
+  await expect(page).toHaveURL(new RegExp(`/tests/${testId}\\?section=answers`));
+  await expect(page.getByText("模範解答: 登録済み")).toBeVisible();
 });

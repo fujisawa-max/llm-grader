@@ -44,6 +44,29 @@ def _question_tokens(question) -> set[str]:
 def question_choices(questions: list[Any]) -> list[dict[str, Any]]:
     by_id = {q.id: q for q in questions}
 
+    # Database row order and PDF reading order do not describe the question tree.
+    # Traverse every node (including structural parents) before filtering choices.
+    children: dict[str | None, list[Any]] = {}
+    for question in questions:
+        parent = question.parent_id if question.parent_id in by_id else None
+        children.setdefault(parent, []).append(question)
+    ordered = []
+    seen: set[str] = set()
+
+    def walk(parent: str | None):
+        for question in sorted(children.get(parent, []),
+                               key=lambda item: (item.sort_order, item.question_number, item.id)):
+            if question.id in seen:
+                continue
+            seen.add(question.id)
+            ordered.append(question)
+            walk(question.id)
+
+    walk(None)
+    for question in questions:
+        if question.id not in seen:
+            ordered.append(question)
+
     def label_for(question, seen=None):
         seen = set(seen or ())
         if question.id in seen:
@@ -55,10 +78,28 @@ def question_choices(questions: list[Any]) -> list[dict[str, Any]]:
             return f"{label_for(parent, seen)} > {current}"
         return current
 
+    def body_for(question):
+        body = getattr(question, "question_text", None)
+        if body:
+            return str(body).strip()
+        content = getattr(question, "content", None)
+        items = content.get("items", []) if isinstance(content, dict) else []
+        def display_part(item):
+            value = str(item.get("text") or item.get("transcription") or item.get("latex") or "").strip()
+            if item.get("type") == "formula" and value and not value.startswith("$"):
+                return f"${value}$"
+            return value
+        return "\n".join(
+            display_part(item)
+            for item in items if isinstance(item, dict) and item.get("type") in {"text", "formula"}
+        ).strip()
+
+    rank = {question.id: index for index, question in enumerate(ordered)}
     return [
         {"id": q.id, "label": label_for(q), "display_label": q.display_label or q.question_number,
-         "parent_id": q.parent_id, "is_gradable": bool(q.is_gradable)}
-        for q in sorted(questions, key=lambda item: (item.sort_order, item.question_number, item.id))
+         "parent_id": q.parent_id, "is_gradable": bool(q.is_gradable), "hierarchy_order": rank[q.id],
+         "question_text": body_for(q)}
+        for q in ordered
         if q.is_gradable
     ]
 

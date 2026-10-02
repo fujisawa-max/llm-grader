@@ -3,6 +3,9 @@ import type { ModelAnswerDraftEntry, ModelAnswerImportDraft, ModelAnswerQuestion
 export interface ReviewTarget { id: string; label: string; kind: "question" | "unassigned" | "excluded"; questionId?: string; entryId?: string }
 
 function orderedQuestions(questions: ModelAnswerQuestionChoice[]): ModelAnswerQuestionChoice[] {
+  if (questions.every((question) => Number.isInteger(question.hierarchy_order))) {
+    return [...questions].sort((left, right) => left.hierarchy_order! - right.hierarchy_order!);
+  }
   const byId = new Map(questions.map((question) => [question.id, question]));
   const order = new Map(questions.map((question, index) => [question.id, index]));
   const children = new Map<string | null, ModelAnswerQuestionChoice[]>();

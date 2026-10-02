@@ -31,13 +31,20 @@ test("PDF analysis automatically classifies spatial Q1/Q2/Q3 regions and persist
   await page.getByText(/位置判定:/).first().click();
   await expect(page.getByText(/位置根拠:/).first()).toBeVisible();
   await page.getByLabel("模範解答本文 1").fill("Teacher corrected answer 1.");
-  await page.getByRole("button", { name: "変更を保存", exact: true }).click();
-  await expect(page.getByText(/変更を保存しました/)).toBeVisible();
+  await page.getByRole("button", { name: "下書き保存", exact: true }).click();
+  await expect(page.getByText(/下書きを保存しました/)).toBeVisible();
   await page.reload();
   await expect(page.getByLabel("模範解答本文 1")).toHaveValue("Teacher corrected answer 1.");
+  expect(await (await page.request.get(`/api/v1/tests/${testId}/model-answers`)).json()).toHaveLength(0);
   const confirm = page.waitForResponse((res) => res.url().endsWith("/confirm"));
-  await page.getByRole("button", { name: "確認した模範解答を登録" }).click();
+  await page.getByRole("button", { name: "模範解答として登録" }).click();
   expect((await confirm).status()).toBe(200);
+  await expect(page).toHaveURL(new RegExp(`/tests/${testId}\\?section=answers&question=${questionIds[0]}`));
+  await expect(page.getByLabel("対象設問")).toHaveValue(questionIds[0]);
+  await expect(page.getByLabel("模範解答本文", { exact: true })).toHaveValue("Teacher corrected answer 1.");
+  await expect(page.getByText("模範解答を登録しました。")).toBeVisible();
+  await page.reload();
+  await expect(page.getByLabel("模範解答本文", { exact: true })).toHaveValue("Teacher corrected answer 1.");
   const stored = await (await page.request.get(`/api/v1/tests/${testId}/model-answers`)).json();
   expect(stored).toHaveLength(3);
   for (const answer of stored) {

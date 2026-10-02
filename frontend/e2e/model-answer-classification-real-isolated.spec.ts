@@ -46,14 +46,14 @@ test("source-grounded semantic categories stay editable and persist with the imp
 
   const saveResponse = page.waitForResponse((response) =>
     response.url().includes("/model-answer-import-drafts/") && response.request().method() === "PUT");
-  await page.getByRole("button", { name: "変更を保存" }).click();
+  await page.getByRole("button", { name: "下書き保存" }).click();
   expect((await saveResponse).status()).toBe(200);
   await page.reload();
   await expect(answer).toHaveValue(/Explain overfitting and state its effect\.[\s\S]*The model memorizes the training examples/);
 
   const confirmResponse = page.waitForResponse((response) =>
     response.url().includes("/model-answer-import-drafts/") && response.url().endsWith("/confirm"));
-  await page.getByRole("button", { name: "確認した模範解答を登録" }).click();
+  await page.getByRole("button", { name: "模範解答として登録" }).click();
   expect((await confirmResponse).status()).toBe(200);
   const answers = await page.request.get(`/api/v1/tests/${testId}/model-answers`);
   expect(answers.ok()).toBeTruthy();

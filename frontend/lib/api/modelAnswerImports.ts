@@ -105,6 +105,8 @@ export interface ModelAnswerQuestionChoice {
   display_label: string;
   parent_id: string | null;
   is_gradable: boolean;
+  hierarchy_order?: number;
+  question_text?: string;
 }
 
 export interface ModelAnswerImportDraft {

@@ -13,9 +13,9 @@ test("review disposition, manual answer, navigation and in-pane PDF zoom persist
   await page.getByRole("button", { name: "ログイン" }).click();
   await expect(page).not.toHaveURL(/\/login/);
   await page.goto(`/tests/${testId}?section=answers`);
-  const questionNav = page.getByRole("navigation", { name: "問題を選択" });
+  const questionNav = page.getByLabel("対象設問");
   for (const label of ["問題1", "問題2", "問題3"]) {
-    await questionNav.getByRole("button", { name: new RegExp(label) }).click();
+    await questionNav.selectOption({ label });
     await expect(page.getByTestId("selected-question-detail")).toContainText(label);
   }
   expect(pageErrors).toEqual([]);
@@ -29,7 +29,7 @@ test("review disposition, manual answer, navigation and in-pane PDF zoom persist
   await expect(page.locator(".sidebar")).toHaveClass(/sidebar-collapsed/);
   await expect(page.getByRole("heading", { name: "LLM取り込み結果", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "保存済み模範解答" })).toHaveCount(0);
-  await expect(page.locator(".model-answer-review-toolbar").getByRole("button", { name: "変更を保存" })).toBeVisible();
+  await expect(page.locator(".model-answer-review-toolbar").getByRole("button", { name: "下書き保存" })).toBeVisible();
   const viewer = page.getByRole("region", { name: "模範解答PDF" });
   await expect(viewer.getByRole("button", { name: "拡大" })).toBeEnabled();
   await viewer.getByRole("button", { name: "拡大" }).click();
@@ -71,8 +71,8 @@ test("review disposition, manual answer, navigation and in-pane PDF zoom persist
   await page.getByLabel("編集対象").selectOption(`question:${questionIds[0]}`);
   await page.getByRole("button", { name: /問題1 に模範解答を追加/ }).click();
   await page.getByLabel("模範解答本文 4").fill("Teacher-authored answer.");
-  await page.getByRole("button", { name: "変更を保存" }).click();
-  await expect(page.getByText("変更を保存しました。")).toBeVisible();
+  await page.getByRole("button", { name: "下書き保存" }).click();
+  await expect(page.getByText("下書きを保存しました。")).toBeVisible();
   await page.reload();
   await page.getByLabel("編集対象").selectOption(`excluded:${draft.entries[0].id}`);
   await expect(page.getByText("模範解答ではない文章として除外されています。")).toBeVisible();
@@ -81,7 +81,7 @@ test("review disposition, manual answer, navigation and in-pane PDF zoom persist
   await page.getByLabel("編集対象").selectOption(`question:${questionIds[0]}`);
   await expect(page.getByLabel("模範解答本文 4")).toHaveValue("Teacher-authored answer.");
   const confirmed = page.waitForResponse((response) => response.url().endsWith("/confirm"));
-  await page.getByRole("button", { name: "確認した模範解答を登録" }).click();
+  await page.getByRole("button", { name: "模範解答として登録" }).click();
   expect((await confirmed).status()).toBe(200);
   const answers = await (await page.request.get(`/api/v1/tests/${testId}/model-answers`)).json();
   expect(answers).toHaveLength(2);
@@ -103,7 +103,7 @@ test("review disposition, manual answer, navigation and in-pane PDF zoom persist
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "保存済み模範解答を読み込む" }).click();
   await expect(page.getByLabel("模範解答本文 1")).toHaveValue("Teacher-authored answer.");
-  await page.getByRole("button", { name: "変更を保存" }).click();
+  await page.getByRole("button", { name: "下書き保存" }).click();
   await page.reload();
   await expect(page.getByLabel("模範解答本文 1")).toHaveValue("Teacher-authored answer.");
   const loadedDraft = await (await page.request.get(`/api/v1/model-answer-import-drafts/${secondDraft.id}`)).json();

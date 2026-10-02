@@ -63,6 +63,27 @@ class ModelAnswerDraftTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in choices], ["q1", "q2a", "q2b"])
         self.assertEqual(choices[1]["label"], "問題2 > (1)")
 
+    def test_question_choices_follow_full_tree_when_structural_parents_are_filtered(self):
+        def q(id, label, parent, order, gradable=True):
+            return SimpleNamespace(id=id, display_label=label, question_number=id,
+                                   parent_id=parent, sort_order=order, is_gradable=gradable,
+                                   question_text=f"Body {id} $x^2$")
+        questions = [q("q3a", "(1)", "q3", 1), q("q2b2", "2.", "q2b", 2),
+                     q("q2", "問題2", None, 2, False), q("q3", "問題3", None, 3, False),
+                     q("q2b", "(2)", "q2", 2, False), q("q2b1", "1.", "q2b", 1),
+                     q("q2a", "(1)", "q2", 1), q("q1", "問題1", None, 1)]
+        choices = question_choices(questions)
+        self.assertEqual([choice["id"] for choice in choices],
+                         ["q1", "q2a", "q2b1", "q2b2", "q3a"])
+        self.assertEqual(choices[3]["label"], "問題2 > (2) > 2.")
+        self.assertEqual(choices[3]["question_text"], "Body q2b2 $x^2$")
+        self.assertEqual([choice["hierarchy_order"] for choice in choices], [0, 2, 4, 5, 7])
+        questions[1].question_text = ""
+        questions[1].content = {"items": [{"type": "text", "text": "計算しなさい"},
+                                          {"type": "formula", "transcription": "x^2+1"}]}
+        fallback = next(choice for choice in question_choices(questions) if choice["id"] == "q2b2")
+        self.assertEqual(fallback["question_text"], "計算しなさい\n$x^2+1$")
+
     def test_repeated_question_prefix_is_removed_and_source_metadata_retained(self):
         question = self.questions[0]
         question.question_text = "機械学習における過学習とはどのような状態か説明しなさい。"

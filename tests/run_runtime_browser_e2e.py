@@ -113,13 +113,25 @@ def seed(root):
                                 max_points=None, is_gradable=False)
         sub = domain.question(nested_test.id, question_number="2.2", display_label="(2)", sort_order=2,
                               parent_id=major.id, max_points=None, is_gradable=False)
+        domain.question(nested_test.id, question_number="2.2.1", display_label="1.", sort_order=1,
+                        parent_id=sub.id, max_points=0, is_gradable=True)
         nested = domain.question(nested_test.id, question_number="2.2.2", display_label="2.", sort_order=2,
-                                 parent_id=sub.id, max_points=10, is_gradable=True)
+                                 parent_id=sub.id, max_points=10, is_gradable=True,
+                                 question_text="**Recall（再現率）**を $\\frac{TP}{TP+FN}$ で示しなさい。")
+        domain.question(nested_test.id, question_number="2.2.3", display_label="3.", sort_order=3,
+                        parent_id=sub.id, max_points=0, is_gradable=True)
+        third = domain.question(nested_test.id, question_number="3", display_label="問題3", sort_order=3,
+                                max_points=None, is_gradable=False)
+        third_child = domain.question(nested_test.id, question_number="3.1", display_label="(1)", sort_order=1,
+                                      parent_id=third.id, max_points=0, is_gradable=True)
         domain.material(nested_test.id, material_type="model_answer_source", storage_ref=str(review_source),
                         original_filename="review-ux-nested.pdf", mime_type="application/pdf",
                         sha256=review_digest)
+        domain.model_answer(nested_test.id, question_id=third_child.id, answer_text="Second-page answer.",
+                            provenance_json={"segments": [{"page_index": 1, "bbox": [20, 40, 120, 55]}]})
         geometry_env.update({"NESTED_REVIEW_TEST_ID": nested_test.id,
-                             "NESTED_REVIEW_QUESTION_ID": nested.id})
+                             "NESTED_REVIEW_QUESTION_ID": nested.id,
+                             "NESTED_REVIEW_PAGE_TWO_QUESTION_ID": third_child.id})
         session.commit()
         ids = test.id, material.id
     return engine, factory, db_url, email, password, ids, geometry_env

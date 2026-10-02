@@ -6,6 +6,9 @@ import { useParams, useRouter } from "next/navigation";
 import { Breadcrumbs, ErrorState, LoadingState, PageHeader } from "@/components/ui";
 import { MathPreview, mathInputHelp } from "@/components/MathText";
 import { SourcePdfPreview } from "@/components/SourcePdfPreview";
+import { MarkdownMathText } from "@/components/MarkdownMathText";
+import { ModelAnswerQuestionSelector } from "@/components/ModelAnswerQuestionSelector";
+import { questionBreadcrumb } from "@/lib/modelAnswerQuestionNavigation";
 import {
   modelAnswerImports,
   type ModelAnswerClassifiedSegment,
@@ -80,13 +83,14 @@ export default function ModelAnswerImportReviewPage() {
     return () => { active = false; };
   }, [draftId]);
 
-  const questionLabels = useMemo(() => new Map((draft?.questions || []).map((item) => [item.id, item.label])), [draft]);
+  const questionLabels = useMemo(() => new Map((draft?.questions || []).map((item) => [item.id, questionBreadcrumb(item, draft?.questions || [])])), [draft]);
   if (loading) return <LoadingState />;
   if (error && (!draft || !test)) return <ErrorState message={error} />;
   if (!draft || !test) return <ErrorState message="模範解答の確認内容が見つかりません" />;
   const targets = buildReviewTargets(draft);
   const selectedTarget = resolveReviewTarget(targets, selectedTargetId);
   const selectedQuestionId = selectedTarget?.kind === "question" ? selectedTarget.questionId : null;
+  const selectedQuestion = draft.questions.find((question) => question.id === selectedQuestionId);
   const visibleEntries = draft.entries.filter((entry) => selectedTarget?.kind === "question"
     ? entry.question_id === selectedQuestionId && dispositionOf(entry) !== "unassigned"
     : selectedTarget?.entryId === entry.id);
@@ -209,10 +213,10 @@ export default function ModelAnswerImportReviewPage() {
         entries: entryPayload(draft.entries),
       });
       setDraft(updated);
-      setNotice("変更を保存しました。");
+      setNotice("下書きを保存しました。正式な模範解答はまだ登録されていません。");
       return updated;
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "変更を保存できませんでした");
+      setError(cause instanceof Error ? cause.message : "下書きを保存できませんでした");
       return null;
     } finally {
       setBusy(false);
@@ -270,8 +274,10 @@ export default function ModelAnswerImportReviewPage() {
       setDraft(updated);
       const result = await modelAnswerImports.confirm(updated.id, updated.revision);
       setDraft(result.draft);
-      setNotice(`模範解答${result.model_answers.length}件を登録しました。設問ごとの模範解答一覧へ戻ります。`);
-      if (result.draft.state === "confirmed") window.setTimeout(() => router.push(`/tests/${draft.test_id}?section=answers`), 700);
+      setNotice(`模範解答${result.model_answers.length}件を登録しました。`);
+      const firstQuestion = selectedQuestionId && result.model_answers.some((answer) => answer.question_id === selectedQuestionId)
+        ? selectedQuestionId : result.model_answers[0]?.question_id;
+      if (firstQuestion) router.push(`/tests/${draft.test_id}?section=answers&question=${encodeURIComponent(firstQuestion)}&registered=1`);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "模範解答を登録できませんでした");
     } finally {
@@ -301,9 +307,9 @@ export default function ModelAnswerImportReviewPage() {
       {draft.pipeline.semantic_classification_fallback && <p className="warn">意味分類を利用できなかった項目は、位置情報と機械抽出結果を使用しています。元の文章は分類欄に保持されています。</p>}
     </section>}
     {draft.state === "editing" && <div className="model-answer-review-toolbar" role="toolbar" aria-label="模範解答の操作">
-      <button type="button" className="button secondary" disabled={busy || classifying} onClick={() => void save()}>変更を保存</button>
+      <button type="button" className="button secondary" disabled={busy || classifying} onClick={() => void save()}>下書き保存</button>
       <button type="button" className="button" disabled={busy || classifying || !eligible.length || classificationReviewCount > 0 || eligible.some((entry) => !entry.answer_text.trim())}
-        onClick={() => void confirm()}>確認した模範解答を登録</button>
+        onClick={() => void confirm()}>{busy ? "登録中…" : "模範解答として登録"}</button>
       <button type="button" className="button secondary" disabled={busy || classifying || draft.entries.length === 0} onClick={() => void classify()}>
         {classifying ? "意味分類中…" : "意味分類を再実行"}</button>
       <Link className="button secondary" href={`/tests/${test.id}?section=answers`}>戻る</Link>
@@ -313,20 +319,20 @@ export default function ModelAnswerImportReviewPage() {
     {draft.entries.length === 0 && <p className="warn" role="status">PDFから読み取れる本文がありません。PDFの文字データを確認するか、設問別編集欄で手入力してください。</p>}
     {error && <p className="error" role="alert">{error}</p>}
     {notice && <p role="status">{notice}</p>}
-    <div className="model-answer-target-picker">
-      <label className="field">編集対象
-        <select aria-label="編集対象" value={selectedTarget?.id || ""} onChange={(event) => setSelectedTargetId(event.target.value)}>
+    <ModelAnswerQuestionSelector label="編集対象" options={targets} selectedId={selectedTarget?.id || ""} onChange={setSelectedTargetId}>
           <optgroup label="設問">{targets.filter((target) => target.kind === "question").map((target) =>
-            <option key={target.id} value={target.id}>{target.label}</option>)}</optgroup>
+            <option key={target.id} value={target.id}>{questionLabels.get(target.questionId || "") || target.label}</option>)}</optgroup>
           {targets.some((target) => target.kind === "unassigned") && <optgroup label="対応する設問なし">{targets.filter((target) => target.kind === "unassigned").map((target) =>
             <option key={target.id} value={target.id}>{target.label}</option>)}</optgroup>}
           {targets.some((target) => target.kind === "excluded") && <optgroup label="除外済み">{targets.filter((target) => target.kind === "excluded").map((target) =>
             <option key={target.id} value={target.id}>{target.label}</option>)}</optgroup>}
-        </select>
-      </label>
-    </div>
+    </ModelAnswerQuestionSelector>
     <div className="model-answer-import-layout">
       <section className="panel model-answer-import-entries" aria-label="模範解答の確認項目">
+        {selectedQuestion && <section className="model-answer-question-text" aria-label="登録済み問題文">
+          <h2>{questionLabels.get(selectedQuestion.id)}</h2><h3>問題文</h3>
+          <MarkdownMathText source={selectedQuestion.question_text || "問題文は登録されていません。"} />
+        </section>}
         {selectedQuestionId && selectedSavedAnswer && <section className="saved-model-answers">
           <h2>保存済み模範解答</h2>
           <p>{questionLabels.get(selectedQuestionId)}・版 {selectedSavedAnswer.version}</p>

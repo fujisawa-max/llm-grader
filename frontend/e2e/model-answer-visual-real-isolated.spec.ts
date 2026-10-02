@@ -36,14 +36,14 @@ test("visual difference extracts added native answer text and persists provenanc
   await expect(page.getByText("抽出方法: 問題PDFとの差分")).toBeVisible();
   const saveResponse = page.waitForResponse((response) =>
     response.url().includes("/model-answer-import-drafts/") && response.request().method() === "PUT");
-  await page.getByRole("button", { name: "変更を保存" }).click();
+  await page.getByRole("button", { name: "下書き保存" }).click();
   expect((await saveResponse).status()).toBe(200);
   await page.reload();
   await expect(answer).toHaveValue(answerText);
 
   const confirmResponse = page.waitForResponse((response) =>
     response.url().includes("/model-answer-import-drafts/") && response.url().endsWith("/confirm"));
-  await page.getByRole("button", { name: "確認した模範解答を登録" }).click();
+  await page.getByRole("button", { name: "模範解答として登録" }).click();
   expect((await confirmResponse).status()).toBe(200);
   await expect(page).toHaveURL(new RegExp(`/tests/${testId}\\?section=answers`));
 
