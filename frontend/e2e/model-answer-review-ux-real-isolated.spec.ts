@@ -6,6 +6,12 @@ test.skip(!testId, "requires isolated real API, production frontend and managed 
 
 test("review disposition, manual answer, navigation and in-pane PDF zoom persist", async ({ page }) => {
   const pageErrors: string[] = [];
+  const createRequests: string[] = [];
+  const classifyRequests: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST" && request.url().endsWith("/model-answer-imports")) createRequests.push(request.url());
+    if (request.method() === "POST" && request.url().endsWith("/classify")) classifyRequests.push(request.url());
+  });
   page.on("pageerror", (error) => pageErrors.push(error.message));
   await page.goto("/login");
   await page.getByLabel("メールアドレス").fill(process.env.MODEL_ANSWER_CLASSIFICATION_EMAIL!);
@@ -70,6 +76,8 @@ test("review disposition, manual answer, navigation and in-pane PDF zoom persist
   await expect(page.getByLabel("編集対象")).toHaveValue(`unassigned:${draft.entries[1].id}`);
   await page.getByLabel("編集対象").selectOption(`question:${questionIds[0]}`);
   await page.getByRole("button", { name: /問題1 に模範解答を追加/ }).click();
+  await expect(page.getByRole("button", { name: "模範解答として登録" })).toBeDisabled();
+  await expect(page.getByRole("status", { name: "登録できない理由" })).toContainText("模範解答本文が空");
   await page.getByLabel("模範解答本文 4").fill("Teacher-authored answer.");
   await page.getByRole("button", { name: "下書き保存" }).click();
   await expect(page.getByText("下書きを保存しました。")).toBeVisible();
@@ -94,8 +102,18 @@ test("review disposition, manual answer, navigation and in-pane PDF zoom persist
   await page.getByRole("button", { name: "ナビゲーションを展開" }).click();
   await expect(page.locator(".sidebar")).not.toHaveClass(/sidebar-collapsed/);
   await page.goto(`/tests/${testId}?section=answers`);
+  await expect(page.getByRole("button", { name: "前回の解析結果を編集" })).toBeVisible();
+  const createCountBeforeResume = createRequests.length;
+  const classifyCountBeforeResume = classifyRequests.length;
+  await page.getByRole("button", { name: "前回の解析結果を編集" }).click();
+  await expect(page).toHaveURL(new RegExp(`/model-answer-import-reviews/${draft.id}$`));
+  await expect(page.getByLabel("模範解答本文 4")).toHaveValue("Teacher-authored answer.");
+  expect(createRequests).toHaveLength(createCountBeforeResume);
+  expect(classifyRequests).toHaveLength(classifyCountBeforeResume);
+  await page.getByRole("link", { name: "戻る" }).click();
   const secondCreated = page.waitForResponse((response) => response.url().endsWith("/model-answer-imports") && response.request().method() === "POST");
-  await page.getByRole("button", { name: "review-ux-model-answer.pdfを解析して模範解答を確認" }).click();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "再解析する" }).click();
   const secondDraft = await (await secondCreated).json();
   await expect(page.getByRole("heading", { name: "今回のLLM取り込み結果" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "保存済み模範解答" })).toBeVisible();

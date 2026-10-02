@@ -31,6 +31,27 @@ def _endpoint(app, path, method=None):
 
 
 class ModelAnswerImportApiTests(unittest.TestCase):
+    def test_draft_discovery_is_source_scoped_newest_first_and_runtime_free(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            factory, test_id, material_id, *_ = self.make_fixture(
+                root, "Question 1\nAnswer one\nQuestion 2\n(1) Answer two one")
+            with patch.dict("os.environ", {"LLM_GRADER_ARTIFACT_ROOT": str(root)}):
+                app = create_app(factory, question_import_root=root / "question-imports", allowed_roots=[root])
+            create = _endpoint(app, "/api/v1/tests/{test_id}/model-answer-imports")
+            discover = _endpoint(app, "/api/v1/tests/{test_id}/model-answer-import-drafts")
+            with factory() as session:
+                older = create(test_id, ImportCreate(material_id=material_id), session)
+                newer = create(test_id, ImportCreate(material_id=material_id), session)
+                rows = discover(test_id, material_id, session)["drafts"]
+                self.assertEqual([row["id"] for row in rows[:2]], [newer["id"], older["id"]])
+                self.assertEqual(rows[0]["state"], "editing")
+                self.assertTrue(rows[0]["resumable"])
+                self.assertEqual(rows[0]["entry_count"], len(newer["entries"]))
+                with self.assertRaises(HTTPException) as missing:
+                    discover(test_id, "missing-material", session)
+                self.assertEqual(missing.exception.status_code, 404)
+
     def test_saved_answer_load_reference_keeps_pdf_source_and_rejects_wrong_target(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

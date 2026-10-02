@@ -146,9 +146,27 @@ export interface ImportedModelAnswer {
   is_current: boolean;
 }
 
+export interface ModelAnswerImportDraftSummary {
+  id: string;
+  test_id: string;
+  material_id: string;
+  source_sha256: string;
+  state: string;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+  entry_count: number;
+  confirmed_entry_count: number;
+  resumable: boolean;
+  pipeline?: ModelAnswerImportDraft["pipeline"];
+}
+
 const json = (value: unknown) => ({ method: "POST", body: JSON.stringify(value) });
 
 export const modelAnswerImports = {
+  list: (testId: string, materialId?: string) => apiFetch<{ drafts: ModelAnswerImportDraftSummary[] }>(
+    `/tests/${encodeURIComponent(testId)}/model-answer-import-drafts${materialId ? `?material_id=${encodeURIComponent(materialId)}` : ""}`,
+  ),
   create: (testId: string, materialId: string) => apiFetch<ModelAnswerImportDraft>(
     `/tests/${encodeURIComponent(testId)}/model-answer-imports`, json({ material_id: materialId }),
   ),

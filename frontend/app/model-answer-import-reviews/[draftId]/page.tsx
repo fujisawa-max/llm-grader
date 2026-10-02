@@ -277,7 +277,7 @@ export default function ModelAnswerImportReviewPage() {
       setNotice(`模範解答${result.model_answers.length}件を登録しました。`);
       const firstQuestion = selectedQuestionId && result.model_answers.some((answer) => answer.question_id === selectedQuestionId)
         ? selectedQuestionId : result.model_answers[0]?.question_id;
-      if (firstQuestion) router.push(`/tests/${draft.test_id}?section=answers&question=${encodeURIComponent(firstQuestion)}&registered=1`);
+      if (firstQuestion && result.model_answers.length > 0) router.push(`/tests/${draft.test_id}?section=answers&question=${encodeURIComponent(firstQuestion)}&registered=1`);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "模範解答を登録できませんでした");
     } finally {
@@ -288,6 +288,19 @@ export default function ModelAnswerImportReviewPage() {
   const unresolved = draft.entries.filter((entry) => (entry.disposition || (entry.question_id ? "include" : "unassigned")) === "unassigned").length;
   const classificationReviewCount = draft.entries.filter((entry) => (entry.disposition || (entry.question_id ? "include" : "unassigned")) === "include" && entry.semantic_classification?.status === "needs_teacher_review").length;
   const eligible = draft.entries.filter((entry) => (entry.disposition || (entry.question_id ? "include" : "unassigned")) === "include" && !draft.confirmed_entry_ids?.includes(entry.id));
+  const registerBlockers: string[] = [];
+  if (!eligible.length) registerBlockers.push("登録対象となる模範解答がありません。候補を「取り込み対象」にしてください。");
+  const unmappedIncluded = eligible.filter((entry) => !entry.question_id).length;
+  if (unmappedIncluded) registerBlockers.push(`取り込み対象のうち対応先が未設定の候補が${unmappedIncluded}件あります。対応先を選ぶか、その候補を除外してください。`);
+  const invalidQuestionCount = eligible.filter((entry) => entry.question_id && !draft.questions.some((question) => question.id === entry.question_id && question.is_gradable)).length;
+  if (invalidQuestionCount) registerBlockers.push(`登録できない設問への対応が${invalidQuestionCount}件あります。採点対象の設問を選び直してください。`);
+  const emptyAnswerCount = eligible.filter((entry) => !entry.answer_text.trim()).length;
+  if (emptyAnswerCount) registerBlockers.push(`模範解答本文が空の候補が${emptyAnswerCount}件あります。本文を入力してください。`);
+  if (classificationReviewCount) registerBlockers.push(`分類結果の確認が必要な候補が${classificationReviewCount}件あります。分類内容を確認してください。`);
+  const primaryQuestionIds = eligible.filter((entry) => (entry.answer_kind || "primary") === "primary" && entry.question_id).map((entry) => entry.question_id);
+  if (new Set(primaryQuestionIds).size !== primaryQuestionIds.length) registerBlockers.push("同じ設問に主な模範解答が複数あります。1件に整理するか、別解に変更してください。");
+  const missingPrimary = new Set(eligible.filter((entry) => (entry.answer_kind || "primary") === "alternative" && entry.question_id && !primaryQuestionIds.includes(entry.question_id)).map((entry) => entry.question_id));
+  if (missingPrimary.size) registerBlockers.push("主な模範解答がない設問に別解があります。先に主な模範解答を追加してください。");
   const runtime = draft.entries.find((entry) => entry.semantic_classification?.runtime_type)?.semantic_classification?.runtime_type;
   const pages = (entry: ModelAnswerDraftEntry) => [...new Set(entry.source.segments.map((segment) => segment.page_index + 1))];
 
@@ -308,12 +321,16 @@ export default function ModelAnswerImportReviewPage() {
     </section>}
     {draft.state === "editing" && <div className="model-answer-review-toolbar" role="toolbar" aria-label="模範解答の操作">
       <button type="button" className="button secondary" disabled={busy || classifying} onClick={() => void save()}>下書き保存</button>
-      <button type="button" className="button" disabled={busy || classifying || !eligible.length || classificationReviewCount > 0 || eligible.some((entry) => !entry.answer_text.trim())}
+      <button type="button" className="button" disabled={busy || classifying || registerBlockers.length > 0}
         onClick={() => void confirm()}>{busy ? "登録中…" : "模範解答として登録"}</button>
       <button type="button" className="button secondary" disabled={busy || classifying || draft.entries.length === 0} onClick={() => void classify()}>
         {classifying ? "意味分類中…" : "意味分類を再実行"}</button>
       <Link className="button secondary" href={`/tests/${test.id}?section=answers`}>戻る</Link>
     </div>}
+    {draft.state === "editing" && registerBlockers.length > 0 && <section className="warn" aria-label="登録できない理由" role="status">
+      <strong>登録前に確認が必要です</strong><ul>{registerBlockers.map((reason) => <li key={reason}>{reason}</li>)}</ul>
+      <p>「対応する設問なし」または除外済みの候補は登録対象に含まれません。登録する候補だけを対応付けてください。</p>
+    </section>}
     {unresolved > 0 && <p className="warn" role="status">対応する設問が未確定の候補が{unresolved}件あります。レビューに保持され、模範解答には登録されません。</p>}
     {classificationReviewCount > 0 && <p className="warn" role="status">意味分類の確認が必要な項目が{classificationReviewCount}件あります。要確認の文章を分類し、分類結果を確認済みにしてください。</p>}
     {draft.entries.length === 0 && <p className="warn" role="status">PDFから読み取れる本文がありません。PDFの文字データを確認するか、設問別編集欄で手入力してください。</p>}

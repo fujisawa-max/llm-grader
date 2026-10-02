@@ -373,6 +373,34 @@ def router(db, artifact_root, classifier=None):
             shutil.rmtree(output_dir.parent, ignore_errors=True)
             fail(422, "NATIVE_EXTRACTION_FAILED", "PDFから文字を読み取れませんでした。PDF形式と文字データを確認してください")
 
+    @routes.get("/tests/{test_id}/model-answer-import-drafts")
+    def list_drafts(test_id: str, material_id: str | None = None, session=Depends(db)):
+        """List imports without invoking extraction or a model runtime."""
+        owned_test(test_id, session)
+        statement = select(ModelAnswerImportDraft).where(ModelAnswerImportDraft.test_id == test_id)
+        if material_id:
+            material = session.get(TestMaterial, material_id)
+            if not material or material.test_id != test_id or material.material_type != "model_answer_source":
+                fail(404, "SOURCE_MATERIAL_NOT_FOUND", "模範解答資料が見つかりません")
+            statement = statement.where(ModelAnswerImportDraft.material_id == material_id)
+        drafts = list(session.scalars(statement.order_by(
+            ModelAnswerImportDraft.updated_at.desc(), ModelAnswerImportDraft.created_at.desc(),
+            ModelAnswerImportDraft.id.desc())))
+        summaries = []
+        for draft in drafts:
+            snapshot = draft.snapshot if isinstance(draft.snapshot, dict) else {}
+            entries = snapshot.get("entries", [])
+            summaries.append({
+                "id": draft.id, "test_id": draft.test_id, "material_id": draft.material_id,
+                "source_sha256": draft.source_sha256,
+                "state": draft.state, "revision": draft.revision,
+                "created_at": draft.created_at.isoformat(), "updated_at": draft.updated_at.isoformat(),
+                "entry_count": len(entries),
+                "confirmed_entry_count": len(snapshot.get("confirmed_entry_ids", [])),
+                "pipeline": snapshot.get("pipeline"), "resumable": draft.state == "editing",
+            })
+        return {"drafts": summaries}
+
     @routes.get("/model-answer-import-drafts/{draft_id}")
     def get_draft(draft_id: str, session=Depends(db)):
         return view(owned_draft(draft_id, session), session)

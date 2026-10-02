@@ -23,7 +23,10 @@ test("normal API bootstrap uses RuntimeManager for semantic classification", asy
   expect(classifierProfile.hardware.gpu_count).toBe(2);
 
   await page.goto(`/tests/${testId}?section=answers`);
-  await page.getByRole("button", { name: "semantic-model-answer.pdfを解析して模範解答を確認", exact: true }).click();
+  await expect(page.getByText("前回の解析結果は模範解答として登録済みです。新しい解析結果は別の下書きとして作成できます。")).toBeVisible();
+  const reanalysis = page.waitForResponse((res) => res.url().endsWith("/model-answer-imports") && res.request().method() === "POST");
+  await page.getByRole("button", { name: /semantic-model-answer\.pdfを再解析する/ }).click();
+  expect((await reanalysis).status()).toBe(201);
   await expect(page).toHaveURL(/\/model-answer-import-reviews\//);
   await expect(page.getByText(/意味分類: 完了/)).toBeVisible();
   page.once("dialog", (dialog) => void dialog.accept());
@@ -45,4 +48,7 @@ test("normal API bootstrap uses RuntimeManager for semantic classification", asy
   await page.getByRole("button", { name: "模範解答として登録" }).click();
   await expect(page).toHaveURL(new RegExp(`/tests/${testId}\\?section=answers`));
   await expect(page.getByText("模範解答: 登録済み")).toBeVisible();
+  await expect(page.getByLabel("模範解答本文")).toHaveValue(/The model memorizes/);
+  await page.reload();
+  await expect(page.getByLabel("模範解答本文")).toHaveValue(/The model memorizes/);
 });
