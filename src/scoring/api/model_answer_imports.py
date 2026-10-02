@@ -69,7 +69,7 @@ class EntryEdit(BaseModel):
     id: str
     question_id: str | None = None
     answer_text: str = Field(max_length=100000)
-    disposition: Literal["include", "unassigned", "excluded"] | None = None
+    disposition: Literal["include", "unassigned", "excluded", "ignored"] | None = None
     answer_kind: Literal["primary", "alternative"] | None = None
     loaded_model_answer_id: str | None = None
     classification_segments: list[ClassificationSegmentEdit] | None = None
@@ -153,13 +153,29 @@ def router(db, artifact_root, classifier=None):
         updated = []
         for original in entries:
             entry = dict(original)
+            if entry.get("teacher_correction", {}).get("teacher_confirmed"):
+                # Teacher-authored choices are authoritative across a rerun.
+                updated.append(entry)
+                continue
+            candidate = str(entry.get("candidate_text") or
+                            (entry.get("semantic_classification") or {}).get("candidate_text") or
+                            entry.get("answer_text") or "")
+            if (not candidate.strip() and not entry.get("teacher_correction")
+                    and entry.get("source", {}).get("kind") != "teacher_manual"):
+                # Preserve source/provenance while keeping empty extraction noise
+                # out of semantic classification and teacher registration work.
+                entry["disposition"] = "ignored"
+                entry["ignore_reason"] = "blank_or_whitespace"
+                entry["semantic_classification"] = {
+                    **(entry.get("semantic_classification") or {}),
+                    "status": "ignored", "reason": "blank_or_whitespace",
+                }
+                updated.append(entry)
+                continue
             if entry.get("disposition") in {"excluded", "unassigned"} or entry.get("source", {}).get("kind") == "teacher_manual":
                 updated.append(entry)
                 continue
             question = by_id.get(entry.get("question_id"))
-            candidate = str(entry.get("candidate_text") or
-                            (entry.get("semantic_classification") or {}).get("candidate_text") or
-                            entry.get("answer_text") or "")
             native = entry.get("source", {}).get("segments", [])
             source_segments = None
             if native and all(item.get("id") and "original_text" in item for item in native):
@@ -193,7 +209,16 @@ def router(db, artifact_root, classifier=None):
                                            if key in result})
                     previous = entry.get("semantic_classification") or {}
                     entry["semantic_classification"] = classification
-                    # Low confidence stays editable and blocks confirm; source is in metadata.
+                    categories = {segment.get("category") for segment in classification.get("segments", [])}
+                    if (classification.get("status") == "classified"
+                            and not classification.get("primary_answer_text", "").strip()
+                            and categories and categories.issubset({"question", "rubric", "note"})):
+                        # Keep source evidence in the draft, but do not treat
+                        # clearly non-answer material as a formal answer target.
+                        entry["disposition"] = "excluded"
+                        entry["ignore_reason"] = "classified_as_non_answer"
+                    # Low confidence is advisory unless the teacher has not
+                    # explicitly accepted or edited the registration content.
                     if previous.get("status") == "teacher_reviewed":
                         classification = apply_teacher_segment_edits(classification, [
                             {"id": item["id"], "category": item["category"], "text": item["text"]}
@@ -483,9 +508,27 @@ def router(db, artifact_root, classifier=None):
                 entry["answer_text"], entry["question_text_removal"] = remove_question_text(
                     next(question for question in questions if question.id == edit.question_id),
                     entry["answer_text"])
-            entry["teacher_correction"] = {"question_id": edit.question_id, "answer_text": edit.answer_text,
-                                            "disposition": disposition, "answer_kind": answer_kind,
-                                            "revision": draft.revision + 1}
+            prior_kind = original_by_id.get(edit.id, {}).get("answer_kind", "primary")
+            prior_disposition = original_by_id.get(edit.id, {}).get("disposition", "include")
+            original_classification = original_by_id.get(edit.id, {}).get("semantic_classification") or {}
+            original_segments = original_classification.get("segments", [])
+            classification_changed = edit.classification_segments is not None and [
+                {"id": segment.get("id"), "category": segment.get("category"), "text": segment.get("text")}
+                for segment in original_segments
+            ] != [segment.model_dump() for segment in edit.classification_segments]
+            explicit_teacher_change = edit.id not in original_by_id or any((
+                edit.question_id != original_by_id[edit.id].get("question_id"),
+                edit.answer_text != original_by_id[edit.id].get("answer_text"),
+                disposition != prior_disposition,
+                answer_kind != prior_kind,
+                edit.classification_reviewed,
+                classification_changed,
+            ))
+            if explicit_teacher_change:
+                entry["teacher_correction"] = {"question_id": edit.question_id, "answer_text": edit.answer_text,
+                                                "disposition": disposition, "answer_kind": answer_kind,
+                                                "revision": draft.revision + 1,
+                                                "teacher_confirmed": True}
             classification = entry.get("semantic_classification")
             if classification and edit.classification_segments is not None:
                 try:
@@ -551,6 +594,15 @@ def router(db, artifact_root, classifier=None):
         _, questions = choices_for(draft.test_id, session)
         question_by_id = {question.id: question for question in questions}
         entries = draft.snapshot.get("entries", [])
+        # Backward-compatible normalization for old drafts: whitespace-only
+        # extraction artifacts are ignored without deleting their provenance.
+        entries = [({**entry, "disposition": "ignored", "ignore_reason": "blank_or_whitespace",
+                     "semantic_classification": {**(entry.get("semantic_classification") or {}),
+                                                  "status": "ignored", "reason": "blank_or_whitespace"}}
+                    if (not str(entry.get("answer_text") or entry.get("candidate_text") or "").strip()
+                        and not entry.get("teacher_correction")
+                        and entry.get("source", {}).get("kind") != "teacher_manual")
+                    else entry) for entry in entries]
         if not entries:
             fail(422, "EMPTY_DRAFT", "模範解答本文がありません")
         confirmed_ids = set(draft.snapshot.get("confirmed_entry_ids", []))
@@ -573,10 +625,10 @@ def router(db, artifact_root, classifier=None):
         if any(not str(entry.get("answer_text") or "").strip() for entry in included):
             count = sum(1 for entry in included if not str(entry.get("answer_text") or "").strip())
             fail(422, "EMPTY_ANSWER_TEXT", f"模範解答本文が空の項目が{count}件あります")
-        pending_classification = sum(
-            1 for entry in included
+        pending_classification = sum(1 for entry in included
             if (entry.get("semantic_classification") or {}).get("status") == "needs_teacher_review"
-        )
+            and not entry.get("teacher_correction", {}).get("teacher_confirmed")
+            and entry.get("source", {}).get("kind") != "teacher_manual")
         if pending_classification:
             fail(422, "CLASSIFICATION_REVIEW_REQUIRED",
                  f"分類結果を確認していない模範解答が{pending_classification}件あります")

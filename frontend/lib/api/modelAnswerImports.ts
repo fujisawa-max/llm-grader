@@ -67,7 +67,10 @@ export interface ModelAnswerDraftEntry {
   mapped_question_label?: string | null;
   extraction_method?: "visual_difference_guided_native_text" | "native_text_fallback" | string;
   answer_text: string;
-  disposition?: "include" | "unassigned" | "excluded";
+  candidate_text?: string;
+  disposition?: "include" | "unassigned" | "excluded" | "ignored";
+  ignore_reason?: string;
+  teacher_correction?: { teacher_confirmed?: boolean; [key: string]: unknown };
   answer_kind?: "primary" | "alternative";
   loaded_model_answer?: { id: string; version: number; question_id: string };
   geometry?: SpatialAssignment;
@@ -91,7 +94,7 @@ export interface ModelAnswerDraftEntryUpdate {
   id: string;
   question_id: string | null;
   answer_text: string;
-  disposition?: "include" | "unassigned" | "excluded";
+  disposition?: "include" | "unassigned" | "excluded" | "ignored";
   answer_kind?: "primary" | "alternative";
   loaded_model_answer_id?: string | null;
   classification_segments?: Array<Pick<ModelAnswerClassifiedSegment, "id" | "category" | "text">>;

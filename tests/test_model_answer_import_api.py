@@ -467,7 +467,7 @@ class ModelAnswerImportApiTests(unittest.TestCase):
                 }])
                 self.assertEqual(session.scalars(select(RubricVersion)).all(), [])
 
-    def test_low_confidence_blocks_confirmation_until_teacher_resolves_segments(self):
+    def test_low_confidence_blocks_until_teacher_explicitly_resolves_segments(self):
         class UncertainClassifier:
             def classify(self, *, question_context, candidate_text, source_segments=None):
                 segments = source_segments if source_segments is not None else split_source_segments(candidate_text)
@@ -509,6 +509,76 @@ class ModelAnswerImportApiTests(unittest.TestCase):
                 self.assertEqual(reviewed["entries"][0]["semantic_classification"]["status"], "teacher_reviewed")
                 confirmed = confirm(reviewed["id"], ConfirmRequest(expected_revision=3), session)
                 self.assertEqual(confirmed["draft"]["state"], "confirmed")
+
+    def test_teacher_text_edit_accepts_low_confidence_answer_without_classification_review(self):
+        class UncertainClassifier:
+            def classify(self, *, question_context, candidate_text, source_segments=None):
+                segments = source_segments if source_segments is not None else split_source_segments(candidate_text)
+                return {"status": "needs_teacher_review", "confidence": 0.4, "threshold": 0.82,
+                        "segments": [{"id": item["id"], "category": "uncertain", "confidence": 0.4}
+                                     for item in segments]}
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            factory, test_id, material_id, _q1_id, _q21_id, _q22_id = self.make_fixture(
+                root, "Question 1\nAn answer the teacher will review directly.")
+            with patch.dict("os.environ", {"LLM_GRADER_ARTIFACT_ROOT": str(root)}):
+                app = create_app(factory, question_import_root=root / "question-imports", allowed_roots=[root],
+                                 model_answer_classifier=UncertainClassifier())
+            create = _endpoint(app, "/api/v1/tests/{test_id}/model-answer-imports")
+            classify = _endpoint(app, "/api/v1/model-answer-import-drafts/{draft_id}/classify")
+            update = _endpoint(app, "/api/v1/model-answer-import-drafts/{draft_id}", "PUT")
+            confirm = _endpoint(app, "/api/v1/model-answer-import-drafts/{draft_id}/confirm")
+            with factory() as session:
+                draft = create(test_id, ImportCreate(material_id=material_id), session)
+                classified = classify(draft["id"], ClassificationRequest(expected_revision=1), session)
+                entry = classified["entries"][0]
+                edits = [EntryEdit(id=item["id"], question_id=item["question_id"],
+                                   answer_text="Teacher-confirmed formal answer." if item["id"] == entry["id"]
+                                   else item["answer_text"], disposition=item.get("disposition"),
+                                   answer_kind=item.get("answer_kind")) for item in classified["entries"]]
+                edited = update(classified["id"], DraftEdit(expected_revision=2, entries=edits), session)
+                self.assertEqual(edited["entries"][0]["semantic_classification"]["status"], "needs_teacher_review")
+                self.assertTrue(edited["entries"][0]["teacher_correction"]["teacher_confirmed"])
+                saved = confirm(edited["id"], ConfirmRequest(expected_revision=3), session)
+                self.assertEqual(saved["model_answers"][0]["answer_text"], "Teacher-confirmed formal answer.")
+
+    def test_blank_native_candidate_is_ignored_before_semantic_classification(self):
+        calls = []
+
+        class CountingClassifier:
+            def classify(self, *, question_context, candidate_text, source_segments=None):
+                calls.append(candidate_text)
+                segments = source_segments if source_segments is not None else split_source_segments(candidate_text)
+                return {"status": "classified", "confidence": 0.99, "threshold": 0.82,
+                        "segments": [{"id": item["id"], "category": "model_answer", "confidence": 0.99}
+                                     for item in segments]}
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            factory, test_id, material_id, *_ = self.make_fixture(
+                root, "Question 1\nA real answer remains classified.")
+            with patch.dict("os.environ", {"LLM_GRADER_ARTIFACT_ROOT": str(root)}):
+                app = create_app(factory, question_import_root=root / "question-imports", allowed_roots=[root],
+                                 model_answer_classifier=CountingClassifier())
+            create = _endpoint(app, "/api/v1/tests/{test_id}/model-answer-imports")
+            with factory() as session:
+                draft = create(test_id, ImportCreate(material_id=material_id), session)
+                blank = dict(draft["entries"][0])
+                blank.update({"id": "blank-noise", "candidate_text": " \n\t", "answer_text": " \n"})
+                blank["source"] = {**blank["source"], "segments": [{"original_text": " \n\t"}]}
+                entries = [blank, *draft["entries"]]
+                # Reuse the review classifier path through a real draft row with a legacy/noisy entry.
+                from scoring.db.models import ModelAnswerImportDraft
+                row = session.get(ModelAnswerImportDraft, draft["id"])
+                row.snapshot = {**row.snapshot, "entries": entries}
+                session.commit()
+                classify = _endpoint(app, "/api/v1/model-answer-import-drafts/{draft_id}/classify")
+                classified = classify(draft["id"], ClassificationRequest(expected_revision=1), session)
+                ignored = next(item for item in classified["entries"] if item["id"] == "blank-noise")
+                self.assertEqual(ignored["disposition"], "ignored")
+                self.assertEqual(ignored["ignore_reason"], "blank_or_whitespace")
+                self.assertNotIn(" \n\t", calls)
 
     def test_unavailable_classifier_keeps_native_text_and_preserves_existing_confirm_flow(self):
         with tempfile.TemporaryDirectory() as temporary:

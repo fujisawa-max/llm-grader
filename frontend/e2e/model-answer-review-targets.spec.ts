@@ -92,3 +92,44 @@ test("registration validation is structured, candidate-addressable, and ignores 
   expect(validateModelAnswerRegistration(alternativeOnly, labels).map((item) => item.reasonCode))
     .toContain("primary_answer_required");
 });
+
+test("registration validation ignores blank/noise and irrelevant uncertain entries but keeps true formal blockers", () => {
+  const draft = {
+    questions: [{ id: "q1", parent_id: null, label: "問題1", is_gradable: true }],
+    confirmed_entry_ids: [],
+    entries: [
+      { id: "accepted", question_id: "q1", answer_text: "Answer", candidate_text: "source", disposition: "include",
+        semantic_classification: { status: "needs_teacher_review", segments: [{ category: "uncertain" }] } },
+      { id: "teacher-edited", question_id: "q1", answer_text: "Teacher answer", answer_kind: "alternative", disposition: "include",
+        teacher_correction: { teacher_confirmed: true },
+        semantic_classification: { status: "needs_teacher_review", segments: [{ category: "uncertain" }] } },
+      { id: "blank", question_id: "q1", answer_text: " \n\t", candidate_text: "\u00a0", disposition: "ignored",
+        semantic_classification: { status: "ignored", reason: "blank_or_whitespace", segments: [] } },
+      { id: "excluded-uncertain", question_id: "q1", answer_text: "", disposition: "excluded",
+        semantic_classification: { status: "needs_teacher_review", segments: [{ category: "question" }] } },
+      { id: "rubric", question_id: null, answer_text: "5 points", disposition: "unassigned",
+        semantic_classification: { status: "needs_teacher_review", segments: [{ category: "rubric" }] } },
+    ],
+  } as unknown as ModelAnswerImportDraft;
+  const result = validateModelAnswerRegistration(draft, new Map([["question:q1", "問題1"]]));
+  expect(result.map((item) => [item.candidateId, item.reasonCode])).toEqual([
+    ["accepted", "classification_review_required"],
+  ]);
+  const teacherAccepted = { ...draft, entries: draft.entries.map((entry) => entry.id === "accepted"
+    ? { ...entry, teacher_correction: { teacher_confirmed: true } } : entry) } as ModelAnswerImportDraft;
+  expect(validateModelAnswerRegistration(teacherAccepted, new Map([["question:q1", "問題1"]]))).toEqual([]);
+});
+
+test("blank ignored extraction does not create a target or registration warning beside a valid answer", () => {
+  const draft = {
+    questions: [{ id: "q1", parent_id: null, label: "問題1", is_gradable: true }],
+    confirmed_entry_ids: [],
+    entries: [
+      { id: "answer", question_id: "q1", answer_text: "Answer", disposition: "include" },
+      { id: "noise", question_id: "q1", answer_text: " \n", candidate_text: "\t", disposition: "ignored",
+        ignore_reason: "blank_or_whitespace" },
+    ],
+  } as unknown as ModelAnswerImportDraft;
+  expect(buildReviewTargets(draft).map((target) => target.id)).toEqual(["question:q1"]);
+  expect(validateModelAnswerRegistration(draft, new Map([["question:q1", "問題1"]]))).toEqual([]);
+});

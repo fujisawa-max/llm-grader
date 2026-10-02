@@ -66,7 +66,7 @@ test("review disposition, manual answer, navigation and in-pane PDF zoom persist
   await viewer.getByRole("button", { name: "前のページ" }).click();
   await expect(viewer.getByText("1 / 2")).toBeVisible();
   await page.getByLabel("模範解答 1 の対応先").selectOption("__excluded__");
-  await expect(page.getByText("模範解答ではない文章として除外されています。")).toBeVisible();
+  await expect(page.getByText("取り込み対象外として除外されています。")).toBeVisible();
   await expect(page.getByLabel("模範解答本文 1")).toHaveCount(0);
   await page.getByRole("button", { name: "取り込み対象に戻す" }).click();
   await expect(page.getByLabel("模範解答本文 1")).toBeVisible();
@@ -89,7 +89,7 @@ test("review disposition, manual answer, navigation and in-pane PDF zoom persist
   await expect(page.getByText("下書きを保存しました。")).toBeVisible();
   await page.reload();
   await page.getByLabel("編集対象").selectOption(`excluded:${draft.entries[0].id}`);
-  await expect(page.getByText("模範解答ではない文章として除外されています。")).toBeVisible();
+  await expect(page.getByText("取り込み対象外として除外されています。")).toBeVisible();
   await page.getByLabel("編集対象").selectOption(`unassigned:${draft.entries[1].id}`);
   await expect(page.getByLabel("模範解答 2 の対応先")).toHaveValue("__unassigned__");
   await page.getByLabel("編集対象").selectOption(`question:${questionIds[0]}`);

@@ -56,7 +56,8 @@ export function validateModelAnswerRegistration(
       add(entry, "invalid_question_mapping", `${categoryPrefix}登録できる採点対象の設問を選び直してください。`, firstCategory);
     }
     if (!entry.answer_text.trim()) add(entry, "empty_answer_text", "模範解答本文が空です。本文を入力してください。");
-    if (entry.semantic_classification?.status === "needs_teacher_review") {
+    if (entry.semantic_classification?.status === "needs_teacher_review"
+        && entry.source?.kind !== "teacher_manual" && !entry.teacher_correction?.teacher_confirmed) {
       const categories = [...new Set(entry.semantic_classification.segments.map((segment) => segment.category))];
       const category = categories.map((value) => categoryLabels[value] || "分類未確定").join("・") || "分類未確定";
       add(entry, "classification_review_required", `分類結果を確認してください（${category}）。`, categories[0]);

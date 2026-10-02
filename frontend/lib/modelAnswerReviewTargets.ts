@@ -29,19 +29,20 @@ function orderedQuestions(questions: ModelAnswerQuestionChoice[]): ModelAnswerQu
   return result;
 }
 
-export function dispositionOf(entry: ModelAnswerDraftEntry): "include" | "unassigned" | "excluded" {
+export function dispositionOf(entry: ModelAnswerDraftEntry): "include" | "unassigned" | "excluded" | "ignored" {
   return entry.disposition || (entry.question_id ? "include" : "unassigned");
 }
 
 export function buildReviewTargets(draft: Pick<ModelAnswerImportDraft, "questions" | "entries">): ReviewTarget[] {
+  const visibleEntries = draft.entries.filter((entry) => dispositionOf(entry) !== "ignored");
   const questions = orderedQuestions(draft.questions).map((question) => ({
     id: `question:${question.id}`, label: question.label, kind: "question" as const, questionId: question.id,
   }));
   const questionIds = new Set(draft.questions.map((question) => question.id));
-  const unresolved = draft.entries.filter((entry) => dispositionOf(entry) === "unassigned" || !entry.question_id || !questionIds.has(entry.question_id))
+  const unresolved = visibleEntries.filter((entry) => dispositionOf(entry) === "unassigned" || !entry.question_id || !questionIds.has(entry.question_id))
     .map((entry, index) => ({ id: `unassigned:${entry.id}`, label: `対応する設問なし (${index + 1})`,
       kind: "unassigned" as const, entryId: entry.id }));
-  const excluded = draft.entries.filter((entry) => dispositionOf(entry) === "excluded")
+  const excluded = visibleEntries.filter((entry) => dispositionOf(entry) === "excluded")
     .map((entry, index) => ({ id: `excluded:${entry.id}`, label: `除外済み > ${entry.question_id ? "模範解答ではない文章" : "取り込み対象外"} (${index + 1})`,
       kind: "excluded" as const, entryId: entry.id }));
   return [...questions, ...unresolved, ...excluded];

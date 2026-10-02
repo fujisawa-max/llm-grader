@@ -94,9 +94,9 @@ export default function ModelAnswerImportReviewPage() {
   const selectedTarget = resolveReviewTarget(targets, selectedTargetId);
   const selectedQuestionId = selectedTarget?.kind === "question" ? selectedTarget.questionId : null;
   const selectedQuestion = draft.questions.find((question) => question.id === selectedQuestionId);
-  const visibleEntries = draft.entries.filter((entry) => selectedTarget?.kind === "question"
+  const visibleEntries = draft.entries.filter((entry) => dispositionOf(entry) !== "ignored" && (selectedTarget?.kind === "question"
     ? entry.question_id === selectedQuestionId && dispositionOf(entry) !== "unassigned"
-    : selectedTarget?.entryId === entry.id);
+    : selectedTarget?.entryId === entry.id));
   const selectedSavedAnswer = draft.saved_answers?.find((answer) => answer.question_id === selectedQuestionId);
   const pdfEntry = visibleEntries.find((entry) => entry.source.segments.length > 0);
   const pdfSegment = pdfEntry?.source.segments.find((segment) => segment.bbox) || pdfEntry?.source.segments[0];
@@ -257,7 +257,8 @@ export default function ModelAnswerImportReviewPage() {
     if (!draft) return;
     const active = draft.entries.filter((entry) => (entry.disposition || (entry.question_id ? "include" : "unassigned")) === "include" && !draft.confirmed_entry_ids?.includes(entry.id));
     const empty = active.filter((entry) => !entry.answer_text.trim()).length;
-    const pending = active.filter((entry) => entry.semantic_classification?.status === "needs_teacher_review").length;
+    const pending = active.filter((entry) => entry.semantic_classification?.status === "needs_teacher_review"
+      && entry.source.kind !== "teacher_manual" && !entry.teacher_correction?.teacher_confirmed).length;
     if (!active.length || empty || pending) {
       setError([
         !active.length ? "登録する模範解答候補を選んでください。" : "",
@@ -383,7 +384,9 @@ export default function ModelAnswerImportReviewPage() {
             ⚠ {item.message}
           </p>)}
           {entry.disposition === "excluded" ? <div className="model-answer-excluded-compact">
-            <p>模範解答ではない文章として除外されています。</p>
+            <p>{entry.ignore_reason === "blank_or_whitespace" ? "空の抽出候補として無視されています。"
+              : entry.ignore_reason === "classified_as_non_answer" ? "模範解答以外の候補として取り込み対象外です。"
+                : "取り込み対象外として除外されています。"}</p>
             <button type="button" className="button secondary" disabled={busy || classifying || draft.state !== "editing"}
               onClick={() => {
                 updateEntry(entry.id, { disposition: entry.question_id ? "include" : "unassigned" });
@@ -437,7 +440,7 @@ export default function ModelAnswerImportReviewPage() {
               </span>
             </header>
             {entry.semantic_classification.status === "fallback" && <p className="warn">意味分類を利用できませんでした。抽出本文を変更せず保持しています。分類機能が復旧した後に再実行するか、本文を手動で編集してください。</p>}
-            {entry.semantic_classification.status === "needs_teacher_review" && <p className="warn">信頼度が低い、または判断できない文章があります。内容を確認し、必要なら分類を変更してください。</p>}
+            {entry.semantic_classification.status === "needs_teacher_review" && !entry.teacher_correction?.teacher_confirmed && entry.source.kind !== "teacher_manual" && <p className="warn">信頼度が低い、または判断できない文章があります。内容を確認し、必要なら分類を変更してください。</p>}
             {entry.semantic_classification.confidence !== null && <p className="muted">分類信頼度: {Math.round(entry.semantic_classification.confidence * 100)}%</p>}
             <div className="model-answer-classification-groups">
               <div><strong>LLM取り込み結果</strong>
