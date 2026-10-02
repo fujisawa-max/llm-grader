@@ -69,6 +69,7 @@ export interface ModelAnswerDraftEntry {
   answer_text: string;
   disposition?: "include" | "unassigned" | "excluded";
   answer_kind?: "primary" | "alternative";
+  loaded_model_answer?: { id: string; version: number; question_id: string };
   geometry?: SpatialAssignment;
   semantic_classification?: ModelAnswerSemanticClassification;
   question_text_removal?: {
@@ -92,6 +93,7 @@ export interface ModelAnswerDraftEntryUpdate {
   answer_text: string;
   disposition?: "include" | "unassigned" | "excluded";
   answer_kind?: "primary" | "alternative";
+  loaded_model_answer_id?: string | null;
   classification_segments?: Array<Pick<ModelAnswerClassifiedSegment, "id" | "category" | "text">>;
   classification_reviewed?: boolean;
   manual_alternative_answers?: Array<{ id: string; text: string }>;

@@ -71,6 +71,7 @@ class EntryEdit(BaseModel):
     answer_text: str = Field(max_length=100000)
     disposition: Literal["include", "unassigned", "excluded"] | None = None
     answer_kind: Literal["primary", "alternative"] | None = None
+    loaded_model_answer_id: str | None = None
     classification_segments: list[ClassificationSegmentEdit] | None = None
     classification_reviewed: bool = False
     manual_alternative_answers: list[AlternativeAnswerEdit] | None = None
@@ -432,6 +433,15 @@ def router(db, artifact_root, classifier=None):
             previous_question = entry.get("question_id")
             disposition = edit.disposition or ("include" if edit.question_id else "unassigned")
             answer_kind = edit.answer_kind or entry.get("answer_kind") or "primary"
+            if edit.loaded_model_answer_id:
+                saved_answer = session.get(ModelAnswer, edit.loaded_model_answer_id)
+                if (not saved_answer or saved_answer.test_id != draft.test_id
+                        or saved_answer.question_id != edit.question_id or not saved_answer.is_current):
+                    fail(422, "INVALID_SAVED_MODEL_ANSWER", "読み込む保存済み模範解答を確認してください")
+                entry["loaded_model_answer"] = {"id": saved_answer.id, "version": saved_answer.version,
+                                                "question_id": saved_answer.question_id}
+            elif entry.get("loaded_model_answer") and edit.question_id != previous_question:
+                entry.pop("loaded_model_answer", None)
             if disposition == "include" and not edit.question_id:
                 fail(422, "INVALID_QUESTION_MAPPING", "取り込む候補には対応先の設問を指定してください")
             entry["disposition"] = disposition
@@ -566,6 +576,7 @@ def router(db, artifact_root, classifier=None):
                     "pipeline": draft.snapshot.get("pipeline"),
                     "geometry": entry.get("geometry"),
                     "teacher_correction": entry.get("teacher_correction"),
+                    "loaded_model_answer": entry.get("loaded_model_answer"),
                     "review_alternatives": [
                         {"id": other["id"], "answer_text": other["answer_text"],
                          "source": other.get("source"), "teacher_correction": other.get("teacher_correction")}

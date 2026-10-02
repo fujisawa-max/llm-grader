@@ -23,9 +23,11 @@ test("PDF analysis automatically classifies spatial Q1/Q2/Q3 regions and persist
   await expect(page.getByText(/意味分類: 完了/)).toBeVisible();
   await expect(page.getByRole("button", { name: "意味分類を実行", exact: true })).toHaveCount(0);
   for (let i = 1; i <= 3; i++) {
+    await page.getByLabel("編集対象").selectOption(`question:${questionIds[i - 1]}`);
     await expect(page.getByLabel(`模範解答本文 ${i}`)).toHaveValue(new RegExp(`^Source answer ${i}\\.\\s*$`));
     await expect(page.getByLabel(`模範解答 ${i} の対応先`)).toHaveValue(questionIds[i - 1]);
   }
+  await page.getByLabel("編集対象").selectOption(`question:${questionIds[0]}`);
   await page.getByText(/位置判定:/).first().click();
   await expect(page.getByText(/位置根拠:/).first()).toBeVisible();
   await page.getByLabel("模範解答本文 1").fill("Teacher corrected answer 1.");

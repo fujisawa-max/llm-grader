@@ -91,13 +91,35 @@ def seed(root):
                                        display_label=f"問題{number}", sort_order=number, max_points=10,
                                        is_gradable=True, question_text=f"Explain concept {number}.")
             review_ux_question_ids.append(question.id)
+        review_pdf = pymupdf.open(stream=source.read_bytes(), filetype="pdf")
+        review_pdf.new_page(width=600, height=800)
+        review_content = review_pdf.tobytes()
+        review_pdf.close()
+        review_digest = hashlib.sha256(review_content).hexdigest()
+        review_source = root / "sources" / review_ux_test.id / f"{review_digest}.pdf"
+        review_source.parent.mkdir(parents=True, exist_ok=True)
+        review_source.write_bytes(review_content)
         review_ux_material = domain.material(
             review_ux_test.id, material_type="model_answer_source",
-            storage_ref=str(source), original_filename="review-ux-model-answer.pdf",
-            mime_type="application/pdf", sha256=digest)
+            storage_ref=str(review_source), original_filename="review-ux-model-answer.pdf",
+            mime_type="application/pdf", sha256=review_digest)
         geometry_env.update({"REVIEW_UX_TEST_ID": review_ux_test.id,
                              "REVIEW_UX_QUESTION_IDS": json.dumps(review_ux_question_ids),
                              "REVIEW_UX_MATERIAL_ID": review_ux_material.id})
+        nested_test = domain.test(offering.id, name="Nested review navigation fixture", total_points=20)
+        domain.question(nested_test.id, question_number="1", display_label="問題1", sort_order=1,
+                        max_points=10, is_gradable=True)
+        major = domain.question(nested_test.id, question_number="2", display_label="問題2", sort_order=2,
+                                max_points=None, is_gradable=False)
+        sub = domain.question(nested_test.id, question_number="2.2", display_label="(2)", sort_order=2,
+                              parent_id=major.id, max_points=None, is_gradable=False)
+        nested = domain.question(nested_test.id, question_number="2.2.2", display_label="2.", sort_order=2,
+                                 parent_id=sub.id, max_points=10, is_gradable=True)
+        domain.material(nested_test.id, material_type="model_answer_source", storage_ref=str(review_source),
+                        original_filename="review-ux-nested.pdf", mime_type="application/pdf",
+                        sha256=review_digest)
+        geometry_env.update({"NESTED_REVIEW_TEST_ID": nested_test.id,
+                             "NESTED_REVIEW_QUESTION_ID": nested.id})
         session.commit()
         ids = test.id, material.id
     return engine, factory, db_url, email, password, ids, geometry_env
@@ -154,7 +176,8 @@ def main():
                                     "e2e/runtime-classification-real-isolated.spec.ts",
                                     "e2e/model-answer-classification-real-isolated.spec.ts",
                                     "e2e/model-answer-geometry-real-isolated.spec.ts",
-                                    "e2e/model-answer-review-ux-real-isolated.spec.ts", "--workers=1"],
+                                    "e2e/model-answer-review-ux-real-isolated.spec.ts",
+                                    "e2e/model-answer-nested-navigation-real-isolated.spec.ts", "--workers=1"],
                                    cwd=REPO / "frontend", env=env, check=True)
                     assert any("POST /v1/chat/completions" in line
                                for line in manager.logs("ornith_rubric_draft")["lines"])

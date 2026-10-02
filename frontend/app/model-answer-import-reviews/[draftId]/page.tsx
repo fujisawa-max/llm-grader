@@ -15,6 +15,7 @@ import {
 } from "@/lib/api/modelAnswerImports";
 import { testData, tests } from "@/lib/api/domain";
 import type { Material, Test } from "@/types/domain";
+import { buildReviewTargets, dispositionOf, resolveReviewTarget } from "@/lib/modelAnswerReviewTargets";
 
 const categoryLabels: Record<ModelAnswerContentCategory, string> = {
   question: "問題文",
@@ -56,6 +57,7 @@ export default function ModelAnswerImportReviewPage() {
   const [classifying, setClassifying] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [selectedTargetId, setSelectedTargetId] = useState("");
 
   useEffect(() => {
     let active = true;
@@ -80,8 +82,19 @@ export default function ModelAnswerImportReviewPage() {
 
   const questionLabels = useMemo(() => new Map((draft?.questions || []).map((item) => [item.id, item.label])), [draft]);
   if (loading) return <LoadingState />;
-  if (error) return <ErrorState message={error} />;
+  if (error && (!draft || !test)) return <ErrorState message={error} />;
   if (!draft || !test) return <ErrorState message="模範解答の確認内容が見つかりません" />;
+  const targets = buildReviewTargets(draft);
+  const selectedTarget = resolveReviewTarget(targets, selectedTargetId);
+  const selectedQuestionId = selectedTarget?.kind === "question" ? selectedTarget.questionId : null;
+  const visibleEntries = draft.entries.filter((entry) => selectedTarget?.kind === "question"
+    ? entry.question_id === selectedQuestionId && dispositionOf(entry) !== "unassigned"
+    : selectedTarget?.entryId === entry.id);
+  const selectedSavedAnswer = draft.saved_answers?.find((answer) => answer.question_id === selectedQuestionId);
+  const pdfEntry = visibleEntries.find((entry) => entry.source.segments.length > 0);
+  const pdfSegment = pdfEntry?.source.segments.find((segment) => segment.bbox) || pdfEntry?.source.segments[0];
+  const pdfLocation = pdfSegment ? { id: `${selectedTarget?.id}:${pdfSegment.id || pdfSegment.page_index}`,
+    page: pdfSegment.page_index + 1, bbox: pdfSegment.bbox || undefined } : undefined;
 
   function updateEntry(entryId: string, patch: Partial<ModelAnswerDraftEntry>) {
     setDraft((current) => current ? {
@@ -91,7 +104,7 @@ export default function ModelAnswerImportReviewPage() {
     setNotice("");
   }
 
-  function addManualEntry(questionId: string) {
+  function addManualEntry(questionId: string, answerText = "", loadedAnswerId?: string) {
     setDraft((current) => {
       if (!current) return current;
       const hasPrimary = current.entries.some((entry) => entry.question_id === questionId &&
@@ -102,11 +115,26 @@ export default function ModelAnswerImportReviewPage() {
         mapping_state: "manual_mapped",
         disposition: "include",
         answer_kind: hasPrimary ? "alternative" : "primary",
-        answer_text: "",
+        answer_text: answerText,
+        ...(loadedAnswerId ? { loaded_model_answer: { id: loadedAnswerId, version: current.saved_answers?.find((answer) => answer.id === loadedAnswerId)?.version || 1, question_id: questionId } } : {}),
         source: { kind: "teacher_manual", material_id: null, source_sha256: null, segments: [] },
       }] };
     });
     setNotice("手入力の模範解答候補を追加しました。本文を入力して保存してください。");
+    setSelectedTargetId(`question:${questionId}`);
+  }
+
+  function loadSavedAnswer(questionId: string) {
+    const saved = draft?.saved_answers?.find((answer) => answer.question_id === questionId);
+    if (!saved?.answer_text) return;
+    if (!window.confirm("保存済み模範解答を今回の編集欄へ読み込みます。現在編集中の本文を置き換える場合があります。続行しますか？")) return;
+    const primary = draft?.entries.find((entry) => entry.question_id === questionId &&
+      dispositionOf(entry) === "include" && (entry.answer_kind || "primary") === "primary" &&
+      !draft.confirmed_entry_ids?.includes(entry.id));
+    if (primary) updateEntry(primary.id, { answer_text: saved.answer_text, loaded_model_answer: {
+      id: saved.id, version: saved.version, question_id: questionId } });
+    else addManualEntry(questionId, saved.answer_text, saved.id);
+    setNotice(`保存済み模範解答 v${saved.version} を編集欄へ読み込みました。今回のPDF出典情報は保持されています。`);
   }
 
   const entryPayload = (entries: ModelAnswerDraftEntry[]) => entries.map((entry) => ({
@@ -115,6 +143,7 @@ export default function ModelAnswerImportReviewPage() {
     answer_text: entry.answer_text,
     disposition: entry.disposition || (entry.question_id ? "include" : "unassigned"),
     answer_kind: entry.answer_kind || "primary",
+    loaded_model_answer_id: entry.loaded_model_answer?.id || null,
     ...(entry.semantic_classification ? {
       classification_segments: entry.semantic_classification.segments.map(({ id, category, text }) => ({ id, category, text })),
       classification_reviewed: entry.semantic_classification.status === "teacher_reviewed",
@@ -284,45 +313,66 @@ export default function ModelAnswerImportReviewPage() {
     {draft.entries.length === 0 && <p className="warn" role="status">PDFから読み取れる本文がありません。PDFの文字データを確認するか、設問別編集欄で手入力してください。</p>}
     {error && <p className="error" role="alert">{error}</p>}
     {notice && <p role="status">{notice}</p>}
+    <div className="model-answer-target-picker">
+      <label className="field">編集対象
+        <select aria-label="編集対象" value={selectedTarget?.id || ""} onChange={(event) => setSelectedTargetId(event.target.value)}>
+          <optgroup label="設問">{targets.filter((target) => target.kind === "question").map((target) =>
+            <option key={target.id} value={target.id}>{target.label}</option>)}</optgroup>
+          {targets.some((target) => target.kind === "unassigned") && <optgroup label="対応する設問なし">{targets.filter((target) => target.kind === "unassigned").map((target) =>
+            <option key={target.id} value={target.id}>{target.label}</option>)}</optgroup>}
+          {targets.some((target) => target.kind === "excluded") && <optgroup label="除外済み">{targets.filter((target) => target.kind === "excluded").map((target) =>
+            <option key={target.id} value={target.id}>{target.label}</option>)}</optgroup>}
+        </select>
+      </label>
+    </div>
     <div className="model-answer-import-layout">
       <section className="panel model-answer-import-entries" aria-label="模範解答の確認項目">
-        {draft.saved_answers && draft.saved_answers.length > 0 && <details className="saved-model-answers">
-          <summary>保存済み模範解答（{draft.saved_answers.length}件）</summary>
-          {draft.saved_answers.map((answer) => <article key={answer.id} className="panel">
-            <strong>{questionLabels.get(answer.question_id || "") || "設問"}・版 {answer.version}</strong>
-            <MathPreview source={answer.answer_text || ""} />
-          </article>)}
-        </details>}
+        {selectedQuestionId && selectedSavedAnswer && <section className="saved-model-answers">
+          <h2>保存済み模範解答</h2>
+          <p>{questionLabels.get(selectedQuestionId)}・版 {selectedSavedAnswer.version}</p>
+          <MathPreview source={selectedSavedAnswer.answer_text || ""} />
+          {draft.state === "editing" && <button type="button" className="button secondary" disabled={busy || classifying}
+            onClick={() => loadSavedAnswer(selectedQuestionId)}>保存済み模範解答を読み込む</button>}
+        </section>}
         <h2>{draft.saved_answers?.length ? "今回のLLM取り込み結果" : "LLM取り込み結果"}</h2>
-        {draft.state === "editing" && <div className="model-answer-manual-add">
-          <h3>設問に模範解答を追加</h3>
-          <div className="actions">{draft.questions.filter((question) => question.is_gradable).map((question) =>
-            <button key={question.id} type="button" className="button secondary" onClick={() => addManualEntry(question.id)}>
-              {question.label} に模範解答を追加</button>)}</div>
+        {selectedQuestionId && draft.state === "editing" && <div className="model-answer-manual-add">
+          <button type="button" className="button secondary" onClick={() => addManualEntry(selectedQuestionId)}>
+            {questionLabels.get(selectedQuestionId)} に模範解答を追加</button>
         </div>}
-        {draft.entries.map((entry, index) => <article className="panel model-answer-import-entry" key={entry.id} data-entry-id={entry.id}>
+        {selectedTarget?.kind === "question" && visibleEntries.length === 0 && <p className="muted">この設問の取り込み候補はありません。必要なら模範解答を追加してください。</p>}
+        {draft.entries.map((entry, index) => visibleEntries.includes(entry) ? <article className="panel model-answer-import-entry" key={entry.id} data-entry-id={entry.id}>
           <header className="model-answer-import-entry-heading">
             <h3>{entry.source.kind === "teacher_manual" ? "教師が追加した候補" : "取り込み候補"} {index + 1}</h3>
             <span className={entry.mapping_state === "needs_review" ? "review-needs-check" : "review-confirmed"}>
               {entry.mapping_state === "automatic" ? "自動で対応" : entry.mapping_state === "manual_mapped" ? "教師が対応" : "対応先を確認"}
             </span>
           </header>
+          {entry.disposition === "excluded" ? <div className="model-answer-excluded-compact">
+            <p>模範解答ではない文章として除外されています。</p>
+            <button type="button" className="button secondary" disabled={busy || classifying || draft.state !== "editing"}
+              onClick={() => {
+                updateEntry(entry.id, { disposition: entry.question_id ? "include" : "unassigned" });
+                setSelectedTargetId(entry.question_id ? `question:${entry.question_id}` : `unassigned:${entry.id}`);
+              }}>取り込み対象に戻す</button>
+          </div> : <>
           <label className="field">候補の扱い・対応先
-            <select aria-label={`模範解答 ${index + 1} の対応先`} value={entry.disposition === "excluded" ? "__excluded__" : (entry.disposition === "unassigned" || !entry.question_id) ? "__unassigned__" : entry.question_id} disabled={busy || classifying || draft.state !== "editing" || draft.confirmed_entry_ids?.includes(entry.id)}
+            <select aria-label={`模範解答 ${index + 1} の対応先`} value={(entry.disposition === "unassigned" || !entry.question_id) ? "__unassigned__" : entry.question_id} disabled={busy || classifying || draft.state !== "editing" || draft.confirmed_entry_ids?.includes(entry.id)}
               onChange={(event) => {
                 const value = event.target.value;
                 updateEntry(entry.id, value === "__excluded__" ? { disposition: "excluded" }
-                  : value === "__unassigned__" ? { disposition: "unassigned", question_id: null, mapping_state: "needs_review" }
-                    : { disposition: "include", question_id: value, mapping_state: "manual_mapped" });
+                  : value === "__unassigned__" ? { disposition: "unassigned", question_id: null, mapping_state: "needs_review", loaded_model_answer: undefined }
+                    : { disposition: "include", question_id: value, mapping_state: "manual_mapped", loaded_model_answer: undefined });
+                if (value === "__excluded__") setSelectedTargetId(`excluded:${entry.id}`);
+                else if (value === "__unassigned__") setSelectedTargetId(`unassigned:${entry.id}`);
+                else setSelectedTargetId(`question:${value}`);
               }}>
               <option value="__unassigned__">対応する設問なし</option>
               <option value="__excluded__">模範解答ではない文章</option>
               {draft.questions.map((question) => <option key={question.id} value={question.id}>{question.label}</option>)}
             </select>
           </label>
-          {entry.disposition === "excluded" && <button type="button" className="button secondary" onClick={() => updateEntry(entry.id, { disposition: entry.question_id ? "include" : "unassigned" })}>取り込み対象へ戻す</button>}
-          {entry.disposition !== "excluded" && <button type="button" className="button secondary" disabled={draft.state !== "editing"} onClick={() => updateEntry(entry.id, { disposition: "excluded" })}>取り込み対象外にする</button>}
-          {entry.disposition === "excluded" && <p className="muted">この文章は登録せず、出典と教師の判断をレビューに保持します。</p>}
+          <button type="button" className="button secondary" disabled={draft.state !== "editing"}
+            onClick={() => { updateEntry(entry.id, { disposition: "excluded" }); setSelectedTargetId(`excluded:${entry.id}`); }}>取り込み対象外にする</button>
           <p className="model-answer-source-info">{entry.source.kind === "teacher_manual" ? "出典: 教師入力" : `出典ページ: ${pages(entry).length ? pages(entry).map((page) => `p.${page}`).join("、") : "ページ情報なし"}`}</p>
           <label className="field">解答の種類
             <select aria-label={`模範解答 ${index + 1} の種類`} value={entry.answer_kind || "primary"} disabled={busy || classifying || draft.state !== "editing" || draft.confirmed_entry_ids?.includes(entry.id)} onChange={(event) => updateEntry(entry.id, { answer_kind: event.target.value as "primary" | "alternative" })}>
@@ -428,14 +478,15 @@ export default function ModelAnswerImportReviewPage() {
           {entry.question_text_removal?.status === "removed" && !entry.answer_text.trim() &&
             <p className="warn" role="alert">問題文以外の模範解答を抽出できませんでした。PDFを確認し、本文を入力してください。</p>}
           <small className="math-help">{mathInputHelp}</small>
-          <details><summary>数式・Markdownプレビュー</summary><MathPreview source={entry.answer_text} /></details>
+          <details open><summary>数式・Markdownプレビュー</summary><MathPreview source={entry.answer_text} /></details>
           {entry.question_id && <p className="muted">対応先: {questionLabels.get(entry.question_id) || "設問"}</p>}
-        </article>)}
+          </>}
+        </article> : null)}
         {draft.state === "confirmed" && <p className="review-confirmed">登録済み</p>}
       </section>
       <aside className="panel model-answer-import-source" aria-label="模範解答PDF">
         <h2>元の模範解答PDF</h2>
-        <SourcePdfPreview testId={test.id} material={material || undefined} label="模範解答PDF" paneZoom />
+        <SourcePdfPreview testId={test.id} material={material || undefined} label="模範解答PDF" paneZoom targetLocation={pdfLocation} />
       </aside>
     </div>
   </main>;

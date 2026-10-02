@@ -31,6 +31,39 @@ def _endpoint(app, path, method=None):
 
 
 class ModelAnswerImportApiTests(unittest.TestCase):
+    def test_saved_answer_load_reference_keeps_pdf_source_and_rejects_wrong_target(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            factory, test_id, material_id, q1_id, q21_id, _ = self.make_fixture(
+                root, "Question 1\nAnswer one\nQuestion 2\n(1) Answer two one")
+            with factory() as session:
+                saved = DomainService(session).model_answer(test_id, question_id=q1_id,
+                                                             answer_text="Earlier teacher answer")
+                session.commit()
+                saved_id = saved.id
+            with patch.dict("os.environ", {"LLM_GRADER_ARTIFACT_ROOT": str(root)}):
+                app = create_app(factory, question_import_root=root / "question-imports", allowed_roots=[root])
+            create = _endpoint(app, "/api/v1/tests/{test_id}/model-answer-imports")
+            update = _endpoint(app, "/api/v1/model-answer-import-drafts/{draft_id}", "PUT")
+            with factory() as session:
+                draft = create(test_id, ImportCreate(material_id=material_id), session)
+                entry = draft["entries"][0]
+                self.assertEqual(draft["saved_answers"][0]["id"], saved_id)
+                edited = update(draft["id"], DraftEdit(expected_revision=1, entries=[
+                    EntryEdit(id=entry["id"], question_id=q1_id, answer_text="Earlier teacher answer",
+                              loaded_model_answer_id=saved_id),
+                    EntryEdit(id=draft["entries"][1]["id"], question_id=q21_id,
+                              answer_text=draft["entries"][1]["answer_text"]),
+                ]), session)
+                self.assertEqual(edited["entries"][0]["loaded_model_answer"]["id"], saved_id)
+                self.assertEqual(edited["entries"][0]["source"], entry["source"])
+                with self.assertRaises(HTTPException) as wrong:
+                    update(draft["id"], DraftEdit(expected_revision=2, entries=[
+                        EntryEdit(id=entry["id"], question_id=q21_id, answer_text="Wrong",
+                                  loaded_model_answer_id=saved_id),
+                    ]), session)
+                self.assertEqual(wrong.exception.status_code, 422)
+
     def test_disposition_manual_candidate_and_provenance(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

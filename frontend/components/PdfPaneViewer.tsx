@@ -5,7 +5,7 @@ import type { PDFDocumentLoadingTask, PDFDocumentProxy } from "pdfjs-dist";
 
 type ZoomMode = "manual" | "width" | "page";
 
-export function PdfPaneViewer({ url, label }: { url: string; label: string }) {
+export function PdfPaneViewer({ url, label, targetLocation }: { url: string; label: string; targetLocation?: { id: string; page: number; bbox?: number[] } }) {
   const [document, setDocument] = useState<PDFDocumentProxy | null>(null);
   const [page, setPage] = useState(1);
   const [mode, setMode] = useState<ZoomMode>("width");
@@ -17,6 +17,14 @@ export function PdfPaneViewer({ url, label }: { url: string; label: string }) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const renderRef = useRef<ReturnType<Awaited<ReturnType<PDFDocumentProxy["getPage"]>>["render"]> | null>(null);
+  const pointerRef = useRef<{ id: number; x: number; y: number; left: number; top: number; moved: boolean } | null>(null);
+  const [dragging, setDragging] = useState(false);
+
+  useEffect(() => {
+    if (document && targetLocation && targetLocation.page >= 1 && targetLocation.page <= document.numPages) {
+      setPage(targetLocation.page);
+    }
+  }, [document, targetLocation?.id, targetLocation?.page]);
 
   useEffect(() => {
     let active = true;
@@ -79,7 +87,15 @@ export function PdfPaneViewer({ url, label }: { url: string; label: string }) {
         task = pdfPage.render({ canvasContext, viewport, transform: [dpr, 0, 0, dpr, 0, 0] });
         renderRef.current = task;
         await task.promise;
-        if (active) { setShownZoom(Math.round(scale * 100)); setError(""); }
+        if (active) {
+          setShownZoom(Math.round(scale * 100));
+          setError("");
+          if (targetLocation?.page === page && viewportRef.current) {
+            const box = targetLocation.bbox;
+            viewportRef.current.scrollLeft = box ? Math.max(0, box[0] * scale - viewportRef.current.clientWidth / 3) : 0;
+            viewportRef.current.scrollTop = box ? Math.max(0, box[1] * scale - viewportRef.current.clientHeight / 3) : 0;
+          }
+        }
       } catch (cause) {
         if (active && !(cause instanceof Error && cause.name === "RenderingCancelledException")) {
           console.error("PDF pane render failed", cause);
@@ -90,9 +106,15 @@ export function PdfPaneViewer({ url, label }: { url: string; label: string }) {
       }
     })();
     return () => { active = false; task?.cancel(); };
-  }, [document, page, mode, zoom, size]);
+  }, [document, page, mode, zoom, size, targetLocation?.id]);
 
   const step = (direction: number) => { setZoom(Math.max(25, Math.min(400, shownZoom + direction * 25))); setMode("manual"); };
+  const endPan = (pointerId: number) => {
+    if (pointerRef.current?.id !== pointerId) return;
+    pointerRef.current = null;
+    setDragging(false);
+    if (viewportRef.current?.hasPointerCapture(pointerId)) viewportRef.current.releasePointerCapture(pointerId);
+  };
   return <section className="pdf-pane-viewer" aria-label={label}>
     <div className="pdf-pane-toolbar" role="toolbar" aria-label="PDF表示操作">
       <button type="button" aria-label="縮小" onClick={() => step(-1)} disabled={!document}>−</button>
@@ -107,6 +129,26 @@ export function PdfPaneViewer({ url, label }: { url: string; label: string }) {
     </div>
     {error && <p className="error" role="alert">{error} <button type="button" onClick={() => setRetry(value => value + 1)}>再試行</button></p>}
     {!document && !error && <p className="loading" role="status">PDFを読み込んでいます…</p>}
-    <div className="pdf-pane-viewport" ref={viewportRef}><canvas ref={canvasRef} aria-label={`${label} ${page}ページ`} role="img" /></div>
+    <div className={`pdf-pane-viewport ${dragging ? "pdf-pane-dragging" : ""}`} ref={viewportRef}
+      onPointerDown={(event) => {
+        if (event.button !== 0 || event.target !== canvasRef.current) return;
+        pointerRef.current = { id: event.pointerId, x: event.clientX, y: event.clientY,
+          left: event.currentTarget.scrollLeft, top: event.currentTarget.scrollTop, moved: false };
+        event.currentTarget.setPointerCapture(event.pointerId);
+      }}
+      onPointerMove={(event) => {
+        const origin = pointerRef.current;
+        if (!origin || origin.id !== event.pointerId) return;
+        const dx = event.clientX - origin.x;
+        const dy = event.clientY - origin.y;
+        if (!origin.moved && Math.hypot(dx, dy) < 4) return;
+        origin.moved = true;
+        setDragging(true);
+        event.currentTarget.scrollLeft = origin.left - dx;
+        event.currentTarget.scrollTop = origin.top - dy;
+      }}
+      onPointerUp={(event) => endPan(event.pointerId)} onPointerCancel={(event) => endPan(event.pointerId)}>
+      <canvas ref={canvasRef} aria-label={`${label} ${page}ページ`} role="img" />
+    </div>
   </section>;
 }
