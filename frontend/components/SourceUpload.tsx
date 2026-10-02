@@ -1,5 +1,5 @@
 "use client";
-import {useRef,useState} from "react";
+import {useEffect,useRef,useState} from "react";
 import {apiFetch} from "@/lib/api/client";
 import {reviews} from "@/lib/api/reviews";
 import {useRouter} from "next/navigation";
@@ -29,6 +29,14 @@ function registrationError(error:unknown){
 export function SourceUpload({testId,role,materials,students=[],submissions=[],refresh}:{
  testId:string;role:Role;materials:Material[];students?:Student[];submissions?:Submission[];refresh:()=>Promise<void>}) {
  const [items,setItems]=useState<Item[]>([]);const [busy,setBusy]=useState(false);const [progress,setProgress]=useState("");const [notice,setNotice]=useState("");const [preview,setPreview]=useState<Material>(); const studentMode=role==="student_answer_source";
+ const [answerAnalysis,setAnswerAnalysis]=useState(false);
+ const [analysisStage,setAnalysisStage]=useState("");
+ useEffect(()=>{
+   if(!answerAnalysis)return;
+   const first=window.setTimeout(()=>setAnalysisStage("位置情報を解析し、必要に応じてLLMを起動しています…"),3000);
+   const second=window.setTimeout(()=>setAnalysisStage("LLMによる分類を待っています。初回のモデル読み込みには時間がかかる場合があります…"),10000);
+   return ()=>{window.clearTimeout(first);window.clearTimeout(second);};
+ },[answerAnalysis]);
  const inputRef=useRef<HTMLInputElement>(null);
  const rowSequence=useRef(0);
  const pending=items.filter(item=>item.state!=="登録済み");
@@ -48,11 +56,11 @@ export function SourceUpload({testId,role,materials,students=[],submissions=[],r
    }catch(e){setNotice(e instanceof Error?e.message:"問題用紙の確認を開始できませんでした");}finally{setBusy(false);}
  }
  async function reviewModelAnswerPdf(material:Material){
-   setBusy(true);setNotice("PDFから模範解答を読み取っています…");
+   setBusy(true);setAnswerAnalysis(true);setAnalysisStage("PDFを解析しています…");setNotice("");
    try {
      const draft=await modelAnswerImports.create(testId,material.id);
      router.push(`/model-answer-import-reviews/${draft.id}`);
-   }catch(e){setNotice(e instanceof Error?e.message:"模範解答の確認を開始できませんでした");}finally{setBusy(false);}
+   }catch(e){setNotice(e instanceof Error?e.message:"模範解答の確認を開始できませんでした");}finally{setBusy(false);setAnswerAnalysis(false);setAnalysisStage("");}
  }
  const patch=(id:string,values:Partial<Item>)=>setItems(rows=>rows.map(row=>row.id===id?{...row,...values}:row));
  function choose(files:File[]){
@@ -115,6 +123,7 @@ export function SourceUpload({testId,role,materials,students=[],submissions=[],r
  <div className="actions">{registered.map((m,i)=><button className="button secondary" key={m.id} onClick={()=>setPreview(m)}>{i+1}. {m.original_filename||"登録資料"}を確認</button>)}</div>
  {role==="question_sheet"&&registered.filter(m=>m.mime_type==="application/pdf").map(m=><button className="button secondary" disabled={busy} key={m.id} onClick={()=>void reviewPdf(m)}>{m.original_filename}を解析して設問を確認</button>)}
  {role==="model_answer_source"&&registered.filter(m=>m.mime_type==="application/pdf").map(m=><button className="button secondary" disabled={busy} key={m.id} onClick={()=>void reviewModelAnswerPdf(m)}>{m.original_filename}を解析して模範解答を確認</button>)}
+ {answerAnalysis&&<div className="model-answer-processing" role="status" aria-live="polite"><span className="model-answer-spinner" aria-hidden="true"/><div><strong>{analysisStage}</strong><p>完了すると模範解答のレビュー画面へ進みます。</p></div></div>}
  {preview&&<><button type="button" onClick={()=>setPreview(undefined)}>資料を閉じる</button>{preview.mime_type==="application/pdf"?<SourcePdfPreview testId={testId} material={preview} label={captions[role]} inline/>:<img className="registered-source-preview" src={testData.materialFileUrl(testId,preview.id)} alt={captions[role]+"原資料"}/>}</>}
  <p>{role==="question_sheet"?"次の作業: 問題の内容とページ順を確認し、下の「問題を追加」から設問を登録してください。PDFの解析・レビューは既存の問題取り込み経路で行います。":role==="model_answer_source"?"登録済みPDFは解析して設問ごとの模範解答を確認できます。手入力での登録も下の編集欄から引き続き行えます。":"次の作業: 原答案と学生の対応を確認してください。読み取り処理・設問対応の確認は別の明示的な処理です。"}</p>
  </section>;

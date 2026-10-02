@@ -84,6 +84,20 @@ def seed(root):
         session.commit()
         geometry_env = {"GEOMETRY_TEST_ID": geometry_test.id, "GEOMETRY_MATERIAL_ID": geometry_material_id,
                         "GEOMETRY_QUESTION_IDS": json.dumps(question_ids)}
+        review_ux_test = domain.test(offering.id, name="Review UX isolated fixture", total_points=30)
+        review_ux_question_ids = []
+        for number in range(1, 4):
+            question = domain.question(review_ux_test.id, question_number=str(number),
+                                       display_label=f"問題{number}", sort_order=number, max_points=10,
+                                       is_gradable=True, question_text=f"Explain concept {number}.")
+            review_ux_question_ids.append(question.id)
+        review_ux_material = domain.material(
+            review_ux_test.id, material_type="model_answer_source",
+            storage_ref=str(source), original_filename="review-ux-model-answer.pdf",
+            mime_type="application/pdf", sha256=digest)
+        geometry_env.update({"REVIEW_UX_TEST_ID": review_ux_test.id,
+                             "REVIEW_UX_QUESTION_IDS": json.dumps(review_ux_question_ids),
+                             "REVIEW_UX_MATERIAL_ID": review_ux_material.id})
         session.commit()
         ids = test.id, material.id
     return engine, factory, db_url, email, password, ids, geometry_env
@@ -139,7 +153,8 @@ def main():
                     subprocess.run(["npm", "run", "e2e", "--",
                                     "e2e/runtime-classification-real-isolated.spec.ts",
                                     "e2e/model-answer-classification-real-isolated.spec.ts",
-                                    "e2e/model-answer-geometry-real-isolated.spec.ts", "--workers=1"],
+                                    "e2e/model-answer-geometry-real-isolated.spec.ts",
+                                    "e2e/model-answer-review-ux-real-isolated.spec.ts", "--workers=1"],
                                    cwd=REPO / "frontend", env=env, check=True)
                     assert any("POST /v1/chat/completions" in line
                                for line in manager.logs("ornith_rubric_draft")["lines"])

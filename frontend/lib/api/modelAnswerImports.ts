@@ -67,6 +67,8 @@ export interface ModelAnswerDraftEntry {
   mapped_question_label?: string | null;
   extraction_method?: "visual_difference_guided_native_text" | "native_text_fallback" | string;
   answer_text: string;
+  disposition?: "include" | "unassigned" | "excluded";
+  answer_kind?: "primary" | "alternative";
   geometry?: SpatialAssignment;
   semantic_classification?: ModelAnswerSemanticClassification;
   question_text_removal?: {
@@ -77,8 +79,9 @@ export interface ModelAnswerDraftEntry {
     question_id?: string | null;
   };
   source: {
-    material_id: string;
-    source_sha256: string;
+    kind?: "teacher_manual" | string;
+    material_id: string | null;
+    source_sha256: string | null;
     segments: ModelAnswerSourceSegment[];
   };
 }
@@ -87,6 +90,8 @@ export interface ModelAnswerDraftEntryUpdate {
   id: string;
   question_id: string | null;
   answer_text: string;
+  disposition?: "include" | "unassigned" | "excluded";
+  answer_kind?: "primary" | "alternative";
   classification_segments?: Array<Pick<ModelAnswerClassifiedSegment, "id" | "category" | "text">>;
   classification_reviewed?: boolean;
   manual_alternative_answers?: Array<{ id: string; text: string }>;
@@ -108,6 +113,8 @@ export interface ModelAnswerImportDraft {
   state: "editing" | "confirmed" | string;
   revision: number;
   entries: ModelAnswerDraftEntry[];
+  saved_answers?: Array<{ id: string; question_id: string | null; answer_text: string | null; version: number }>;
+  confirmed_entry_ids?: string[];
   questions: ModelAnswerQuestionChoice[];
   page_count: number;
   parser: { backend?: string; library?: string; version?: string };

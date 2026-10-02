@@ -1,6 +1,7 @@
 import hashlib
 import tempfile
 import unittest
+from uuid import uuid4
 from pathlib import Path
 from unittest.mock import patch
 
@@ -30,6 +31,92 @@ def _endpoint(app, path, method=None):
 
 
 class ModelAnswerImportApiTests(unittest.TestCase):
+    def test_disposition_manual_candidate_and_provenance(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            factory, test_id, material_id, q1_id, q21_id, _ = self.make_fixture(
+                root, "Question 1\nAnswer one\nQuestion 2\n(1) Answer two one")
+            with patch.dict("os.environ", {"LLM_GRADER_ARTIFACT_ROOT": str(root)}):
+                app = create_app(factory, question_import_root=root / "question-imports", allowed_roots=[root])
+            create = _endpoint(app, "/api/v1/tests/{test_id}/model-answer-imports")
+            update = _endpoint(app, "/api/v1/model-answer-import-drafts/{draft_id}", "PUT")
+            confirm = _endpoint(app, "/api/v1/model-answer-import-drafts/{draft_id}/confirm")
+            with factory() as session:
+                draft = create(test_id, ImportCreate(material_id=material_id), session)
+                original = draft["entries"]
+                self.assertEqual(len(original), 2)
+                manual_id = f"teacher-entry-{uuid4()}"
+                edits = [
+                    EntryEdit(id=original[0]["id"], question_id=q1_id, answer_text=original[0]["answer_text"],
+                              disposition="excluded"),
+                    EntryEdit(id=original[1]["id"], question_id=None, answer_text=original[1]["answer_text"],
+                              disposition="unassigned"),
+                    EntryEdit(id=manual_id, question_id=q1_id, answer_text="Teacher answer.",
+                              disposition="include", answer_kind="primary"),
+                ]
+                edited = update(draft["id"], DraftEdit(expected_revision=1, entries=edits), session)
+                self.assertEqual(edited["entries"][0]["source"], original[0]["source"])
+                self.assertEqual(edited["entries"][0]["disposition"], "excluded")
+                self.assertEqual(edited["entries"][1]["disposition"], "unassigned")
+                self.assertEqual(edited["entries"][2]["source"]["kind"], "teacher_manual")
+                self.assertIsNone(edited["entries"][2]["source"]["material_id"])
+                saved = confirm(draft["id"], ConfirmRequest(expected_revision=2), session)
+                self.assertEqual(saved["draft"]["state"], "editing")
+                self.assertEqual(len(saved["model_answers"]), 1)
+                answer = saved["model_answers"][0]
+                self.assertEqual(answer["question_id"], q1_id)
+                self.assertIsNone(answer["material_id"])
+                self.assertEqual(answer["provenance_json"]["kind"], "teacher_manual_model_answer_import")
+                self.assertIsNone(answer["provenance_json"]["source_sha256"])
+                self.assertEqual(answer["provenance_json"]["review_material_id"], material_id)
+                self.assertEqual(saved["draft"]["entries"][0]["source"], original[0]["source"])
+                self.assertEqual(saved["draft"]["entries"][1]["question_id"], None)
+                self.assertIn(manual_id, saved["draft"]["confirmed_entry_ids"])
+
+    def test_manual_alternative_and_fake_target_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            factory, test_id, material_id, q1_id, _, _ = self.make_fixture(root, "Question 1\nAnswer one")
+            with patch.dict("os.environ", {"LLM_GRADER_ARTIFACT_ROOT": str(root)}):
+                app = create_app(factory, question_import_root=root / "question-imports", allowed_roots=[root])
+            create = _endpoint(app, "/api/v1/tests/{test_id}/model-answer-imports")
+            update = _endpoint(app, "/api/v1/model-answer-import-drafts/{draft_id}", "PUT")
+            confirm = _endpoint(app, "/api/v1/model-answer-import-drafts/{draft_id}/confirm")
+            with factory() as session:
+                draft = create(test_id, ImportCreate(material_id=material_id), session)
+                primary = EntryEdit(id=draft["entries"][0]["id"], question_id=q1_id, answer_text="Primary")
+                alternative = EntryEdit(id=f"teacher-entry-{uuid4()}", question_id=q1_id,
+                                        answer_text="Alternative", answer_kind="alternative")
+                with self.assertRaises(HTTPException):
+                    update(draft["id"], DraftEdit(expected_revision=1, entries=[primary, alternative.model_copy(
+                        update={"question_id": "foreign-question"})]), session)
+                session.rollback()
+                edited = update(draft["id"], DraftEdit(expected_revision=1,
+                                                        entries=[primary, alternative]), session)
+                saved = confirm(draft["id"], ConfirmRequest(expected_revision=edited["revision"]), session)
+                self.assertEqual(len(saved["model_answers"]), 1)
+                self.assertEqual(saved["model_answers"][0]["provenance_json"]["review_alternatives"][0]["answer_text"],
+                                 "Alternative")
+
+    def test_remapping_preserves_teacher_edited_answer(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            factory, test_id, material_id, q1_id, q21_id, _ = self.make_fixture(
+                root, "Question 1\nOriginal answer")
+            with patch.dict("os.environ", {"LLM_GRADER_ARTIFACT_ROOT": str(root)}):
+                app = create_app(factory, question_import_root=root / "question-imports", allowed_roots=[root])
+            create = _endpoint(app, "/api/v1/tests/{test_id}/model-answer-imports")
+            update = _endpoint(app, "/api/v1/model-answer-import-drafts/{draft_id}", "PUT")
+            with factory() as session:
+                draft = create(test_id, ImportCreate(material_id=material_id), session)
+                entry_id = draft["entries"][0]["id"]
+                first = update(draft["id"], DraftEdit(expected_revision=1, entries=[EntryEdit(
+                    id=entry_id, question_id=q1_id, answer_text="Teacher wording")]), session)
+                second = update(draft["id"], DraftEdit(expected_revision=first["revision"], entries=[EntryEdit(
+                    id=entry_id, question_id=q21_id, answer_text="Teacher wording")]), session)
+                self.assertEqual(second["entries"][0]["answer_text"], "Teacher wording")
+                self.assertEqual(second["entries"][0]["question_id"], q21_id)
+
     def make_pdf(self, path: Path, text: str):
         document = pymupdf.open()
         page = document.new_page(width=420, height=600)

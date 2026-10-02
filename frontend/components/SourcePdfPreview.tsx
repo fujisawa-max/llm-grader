@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { Material } from "@/types/domain";
+import { PdfPaneViewer } from "./PdfPaneViewer";
 
 const apiBase = (process.env.NEXT_PUBLIC_API_BASE_URL || "/api/v1").replace(/\/$/, "");
 type PdfState = "checking" | "ready" | "error";
@@ -12,7 +13,7 @@ function PdfFrame({ url, label, state, onRetry, onFrameError }: { url: string; l
   return <iframe className="pdf-frame" src={url} title={label} onError={onFrameError} />;
 }
 
-export function SourcePdfPreview({ testId, material, label, inline = false }: { testId: string; material?: Material; label: string; inline?: boolean }) {
+export function SourcePdfPreview({ testId, material, label, inline = false, paneZoom = false }: { testId: string; material?: Material; label: string; inline?: boolean; paneZoom?: boolean }) {
   const [open, setOpen] = useState(false);
   const [retry, setRetry] = useState(0);
   const [state, setState] = useState<PdfState>(material ? "checking" : "error");
@@ -36,6 +37,7 @@ export function SourcePdfPreview({ testId, material, label, inline = false }: { 
   }, [open]);
   const retryPreview = () => setRetry(value => value + 1);
   if (!material) return <p className="muted">{label}は登録されていません。</p>;
+  if (paneZoom) return <PdfPaneViewer url={url} label={label} />;
   if (inline) return <>
     <section className="source-pdf-inline" aria-label={label}><header className="source-pdf-inline-header"><h3>{label}</h3><button type="button" className="button secondary" onClick={() => setOpen(true)} aria-haspopup="dialog">拡大表示</button></header><PdfFrame url={checkedUrl} label={label} state={state} onRetry={retryPreview} onFrameError={() => setState("error")} /></section>
     {open && <div className="pdf-modal" role="dialog" aria-modal="true" aria-label={label} onMouseDown={(event) => { if (event.target === event.currentTarget) setOpen(false); }}>

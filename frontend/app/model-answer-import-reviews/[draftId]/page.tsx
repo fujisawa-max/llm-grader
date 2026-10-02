@@ -18,7 +18,7 @@ import type { Material, Test } from "@/types/domain";
 
 const categoryLabels: Record<ModelAnswerContentCategory, string> = {
   question: "問題文",
-  model_answer: "標準解答",
+  model_answer: "模範解答候補",
   alternative_answer: "別解・別の正答例",
   rubric: "採点基準候補",
   note: "補足・その他",
@@ -38,7 +38,7 @@ function groupsFor(segments: ModelAnswerClassifiedSegment[], category: ModelAnsw
     else groups.at(-1)!.push(segment);
   }
   return groups.map((items, index) => ({
-    label: category === "model_answer" ? (index ? `標準解答 ${index + 1}` : "標準解答")
+    label: category === "model_answer" ? `模範解答候補 ${index + 1}`
       : category === "alternative_answer" ? `別解 ${index + 1}` : categoryLabels[category],
     text: items.map((item) => item.text).join(""),
     segmentIds: items.map((item) => item.id),
@@ -91,6 +91,38 @@ export default function ModelAnswerImportReviewPage() {
     setNotice("");
   }
 
+  function addManualEntry(questionId: string) {
+    setDraft((current) => {
+      if (!current) return current;
+      const hasPrimary = current.entries.some((entry) => entry.question_id === questionId &&
+        (entry.disposition || "include") === "include" && (entry.answer_kind || "primary") === "primary");
+      return { ...current, entries: [...current.entries, {
+        id: `teacher-entry-${globalThis.crypto.randomUUID()}`,
+        question_id: questionId,
+        mapping_state: "manual_mapped",
+        disposition: "include",
+        answer_kind: hasPrimary ? "alternative" : "primary",
+        answer_text: "",
+        source: { kind: "teacher_manual", material_id: null, source_sha256: null, segments: [] },
+      }] };
+    });
+    setNotice("手入力の模範解答候補を追加しました。本文を入力して保存してください。");
+  }
+
+  const entryPayload = (entries: ModelAnswerDraftEntry[]) => entries.map((entry) => ({
+    id: entry.id,
+    question_id: entry.question_id,
+    answer_text: entry.answer_text,
+    disposition: entry.disposition || (entry.question_id ? "include" : "unassigned"),
+    answer_kind: entry.answer_kind || "primary",
+    ...(entry.semantic_classification ? {
+      classification_segments: entry.semantic_classification.segments.map(({ id, category, text }) => ({ id, category, text })),
+      classification_reviewed: entry.semantic_classification.status === "teacher_reviewed",
+      ...(entry.semantic_classification.manual_alternative_answers !== undefined
+        ? { manual_alternative_answers: entry.semantic_classification.manual_alternative_answers } : {}),
+    } : {}),
+  }));
+
   function updateClassificationSegment(
     entryId: string,
     segmentId: string,
@@ -115,7 +147,7 @@ export default function ModelAnswerImportReviewPage() {
 
   function setEntryAnswerFromClassification(entry: ModelAnswerDraftEntry, text: string) {
     if (!text.trim()) {
-      setError("標準解答本文が空です。分類を見直すか、本文を入力してください。");
+      setError("模範解答本文が空です。分類を見直すか、本文を入力してください。");
       return;
     }
     updateEntry(entry.id, { answer_text: text });
@@ -145,17 +177,7 @@ export default function ModelAnswerImportReviewPage() {
     try {
       const updated = await modelAnswerImports.update(draft.id, {
         expected_revision: draft.revision,
-        entries: draft.entries.map((entry) => ({
-          id: entry.id,
-          question_id: entry.question_id,
-          answer_text: entry.answer_text,
-          ...(entry.semantic_classification ? {
-            classification_segments: entry.semantic_classification.segments.map(({ id, category, text }) => ({ id, category, text })),
-            classification_reviewed: entry.semantic_classification.status === "teacher_reviewed",
-            ...(entry.semantic_classification.manual_alternative_answers !== undefined
-              ? { manual_alternative_answers: entry.semantic_classification.manual_alternative_answers } : {}),
-          } : {}),
-        })),
+        entries: entryPayload(draft.entries),
       });
       setDraft(updated);
       setNotice("変更を保存しました。");
@@ -197,12 +219,12 @@ export default function ModelAnswerImportReviewPage() {
 
   async function confirm() {
     if (!draft) return;
-    const unmapped = draft.entries.filter((entry) => !entry.question_id).length;
-    const empty = draft.entries.filter((entry) => !entry.answer_text.trim()).length;
-    const pending = draft.entries.filter((entry) => entry.semantic_classification?.status === "needs_teacher_review").length;
-    if (unmapped || empty || pending) {
+    const active = draft.entries.filter((entry) => (entry.disposition || (entry.question_id ? "include" : "unassigned")) === "include" && !draft.confirmed_entry_ids?.includes(entry.id));
+    const empty = active.filter((entry) => !entry.answer_text.trim()).length;
+    const pending = active.filter((entry) => entry.semantic_classification?.status === "needs_teacher_review").length;
+    if (!active.length || empty || pending) {
       setError([
-        unmapped ? `対応先が未設定の模範解答が${unmapped}件あります。` : "",
+        !active.length ? "登録する模範解答候補を選んでください。" : "",
         empty ? `模範解答本文が空の項目が${empty}件あります。` : "",
         pending ? `分類結果を確認していない項目が${pending}件あります。` : "",
       ].filter(Boolean).join(" "));
@@ -214,23 +236,13 @@ export default function ModelAnswerImportReviewPage() {
     try {
       const updated = await modelAnswerImports.update(draft.id, {
         expected_revision: draft.revision,
-        entries: draft.entries.map((entry) => ({
-          id: entry.id,
-          question_id: entry.question_id,
-          answer_text: entry.answer_text,
-          ...(entry.semantic_classification ? {
-            classification_segments: entry.semantic_classification.segments.map(({ id, category, text }) => ({ id, category, text })),
-            classification_reviewed: entry.semantic_classification.status === "teacher_reviewed",
-            ...(entry.semantic_classification.manual_alternative_answers !== undefined
-              ? { manual_alternative_answers: entry.semantic_classification.manual_alternative_answers } : {}),
-          } : {}),
-        })),
+        entries: entryPayload(draft.entries),
       });
       setDraft(updated);
       const result = await modelAnswerImports.confirm(updated.id, updated.revision);
       setDraft(result.draft);
       setNotice(`模範解答${result.model_answers.length}件を登録しました。設問ごとの模範解答一覧へ戻ります。`);
-      window.setTimeout(() => router.push(`/tests/${draft.test_id}?section=answers`), 700);
+      if (result.draft.state === "confirmed") window.setTimeout(() => router.push(`/tests/${draft.test_id}?section=answers`), 700);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "模範解答を登録できませんでした");
     } finally {
@@ -238,8 +250,9 @@ export default function ModelAnswerImportReviewPage() {
     }
   }
 
-  const unresolved = draft.entries.filter((entry) => !entry.question_id).length;
-  const classificationReviewCount = draft.entries.filter((entry) => entry.semantic_classification?.status === "needs_teacher_review").length;
+  const unresolved = draft.entries.filter((entry) => (entry.disposition || (entry.question_id ? "include" : "unassigned")) === "unassigned").length;
+  const classificationReviewCount = draft.entries.filter((entry) => (entry.disposition || (entry.question_id ? "include" : "unassigned")) === "include" && entry.semantic_classification?.status === "needs_teacher_review").length;
+  const eligible = draft.entries.filter((entry) => (entry.disposition || (entry.question_id ? "include" : "unassigned")) === "include" && !draft.confirmed_entry_ids?.includes(entry.id));
   const runtime = draft.entries.find((entry) => entry.semantic_classification?.runtime_type)?.semantic_classification?.runtime_type;
   const pages = (entry: ModelAnswerDraftEntry) => [...new Set(entry.source.segments.map((segment) => segment.page_index + 1))];
 
@@ -258,40 +271,64 @@ export default function ModelAnswerImportReviewPage() {
         {draft.pipeline.profile_id && `　/　使用profile: ${draft.pipeline.profile_id}`} {runtime && ` / runtime: ${runtime}`}　/　位置優先の設問対応</p>
       {draft.pipeline.semantic_classification_fallback && <p className="warn">意味分類を利用できなかった項目は、位置情報と機械抽出結果を使用しています。元の文章は分類欄に保持されています。</p>}
     </section>}
-    {draft.state === "editing" && <button type="button" className="button secondary"
-      disabled={busy || classifying || draft.entries.length === 0} onClick={() => void classify()}>
-      {classifying ? "意味分類中…" : "意味分類を再実行"}
-    </button>}
-    {unresolved > 0 && <p className="warn" role="status">対応先が未設定の模範解答が{unresolved}件あります。すべての対応先を選ぶまで登録できません。</p>}
+    {draft.state === "editing" && <div className="model-answer-review-toolbar" role="toolbar" aria-label="模範解答の操作">
+      <button type="button" className="button secondary" disabled={busy || classifying} onClick={() => void save()}>変更を保存</button>
+      <button type="button" className="button" disabled={busy || classifying || !eligible.length || classificationReviewCount > 0 || eligible.some((entry) => !entry.answer_text.trim())}
+        onClick={() => void confirm()}>確認した模範解答を登録</button>
+      <button type="button" className="button secondary" disabled={busy || classifying || draft.entries.length === 0} onClick={() => void classify()}>
+        {classifying ? "意味分類中…" : "意味分類を再実行"}</button>
+      <Link className="button secondary" href={`/tests/${test.id}?section=answers`}>戻る</Link>
+    </div>}
+    {unresolved > 0 && <p className="warn" role="status">対応する設問が未確定の候補が{unresolved}件あります。レビューに保持され、模範解答には登録されません。</p>}
     {classificationReviewCount > 0 && <p className="warn" role="status">意味分類の確認が必要な項目が{classificationReviewCount}件あります。要確認の文章を分類し、分類結果を確認済みにしてください。</p>}
     {draft.entries.length === 0 && <p className="warn" role="status">PDFから読み取れる本文がありません。PDFの文字データを確認するか、設問別編集欄で手入力してください。</p>}
     {error && <p className="error" role="alert">{error}</p>}
     {notice && <p role="status">{notice}</p>}
     <div className="model-answer-import-layout">
       <section className="panel model-answer-import-entries" aria-label="模範解答の確認項目">
-        <h2>設問ごとの模範解答</h2>
+        {draft.saved_answers && draft.saved_answers.length > 0 && <details className="saved-model-answers">
+          <summary>保存済み模範解答（{draft.saved_answers.length}件）</summary>
+          {draft.saved_answers.map((answer) => <article key={answer.id} className="panel">
+            <strong>{questionLabels.get(answer.question_id || "") || "設問"}・版 {answer.version}</strong>
+            <MathPreview source={answer.answer_text || ""} />
+          </article>)}
+        </details>}
+        <h2>{draft.saved_answers?.length ? "今回のLLM取り込み結果" : "LLM取り込み結果"}</h2>
+        {draft.state === "editing" && <div className="model-answer-manual-add">
+          <h3>設問に模範解答を追加</h3>
+          <div className="actions">{draft.questions.filter((question) => question.is_gradable).map((question) =>
+            <button key={question.id} type="button" className="button secondary" onClick={() => addManualEntry(question.id)}>
+              {question.label} に模範解答を追加</button>)}</div>
+        </div>}
         {draft.entries.map((entry, index) => <article className="panel model-answer-import-entry" key={entry.id} data-entry-id={entry.id}>
           <header className="model-answer-import-entry-heading">
-            <h3>模範解答 {index + 1}</h3>
+            <h3>{entry.source.kind === "teacher_manual" ? "教師が追加した候補" : "取り込み候補"} {index + 1}</h3>
             <span className={entry.mapping_state === "needs_review" ? "review-needs-check" : "review-confirmed"}>
               {entry.mapping_state === "automatic" ? "自動で対応" : entry.mapping_state === "manual_mapped" ? "教師が対応" : "対応先を確認"}
             </span>
           </header>
-          <label className="field">対応先の設問
-            <select aria-label={`模範解答 ${index + 1} の対応先`} value={entry.question_id || ""} disabled={busy || classifying || draft.state !== "editing"}
-              onChange={(event) => updateEntry(entry.id, {
-                question_id: event.target.value || null,
-                mapping_state: event.target.value ? "manual_mapped" : "needs_review",
-                ...(entry.semantic_classification ? {
-                  answer_text: entry.semantic_classification.candidate_text,
-                  semantic_classification: undefined,
-                } : {}),
-              })}>
-              <option value="">対応先を選択してください</option>
+          <label className="field">候補の扱い・対応先
+            <select aria-label={`模範解答 ${index + 1} の対応先`} value={entry.disposition === "excluded" ? "__excluded__" : (entry.disposition === "unassigned" || !entry.question_id) ? "__unassigned__" : entry.question_id} disabled={busy || classifying || draft.state !== "editing" || draft.confirmed_entry_ids?.includes(entry.id)}
+              onChange={(event) => {
+                const value = event.target.value;
+                updateEntry(entry.id, value === "__excluded__" ? { disposition: "excluded" }
+                  : value === "__unassigned__" ? { disposition: "unassigned", question_id: null, mapping_state: "needs_review" }
+                    : { disposition: "include", question_id: value, mapping_state: "manual_mapped" });
+              }}>
+              <option value="__unassigned__">対応する設問なし</option>
+              <option value="__excluded__">模範解答ではない文章</option>
               {draft.questions.map((question) => <option key={question.id} value={question.id}>{question.label}</option>)}
             </select>
           </label>
-          <p className="model-answer-source-info">出典ページ: {pages(entry).length ? pages(entry).map((page) => `p.${page}`).join("、") : "ページ情報なし"}</p>
+          {entry.disposition === "excluded" && <button type="button" className="button secondary" onClick={() => updateEntry(entry.id, { disposition: entry.question_id ? "include" : "unassigned" })}>取り込み対象へ戻す</button>}
+          {entry.disposition !== "excluded" && <button type="button" className="button secondary" disabled={draft.state !== "editing"} onClick={() => updateEntry(entry.id, { disposition: "excluded" })}>取り込み対象外にする</button>}
+          {entry.disposition === "excluded" && <p className="muted">この文章は登録せず、出典と教師の判断をレビューに保持します。</p>}
+          <p className="model-answer-source-info">{entry.source.kind === "teacher_manual" ? "出典: 教師入力" : `出典ページ: ${pages(entry).length ? pages(entry).map((page) => `p.${page}`).join("、") : "ページ情報なし"}`}</p>
+          <label className="field">解答の種類
+            <select aria-label={`模範解答 ${index + 1} の種類`} value={entry.answer_kind || "primary"} disabled={busy || classifying || draft.state !== "editing" || draft.confirmed_entry_ids?.includes(entry.id)} onChange={(event) => updateEntry(entry.id, { answer_kind: event.target.value as "primary" | "alternative" })}>
+              <option value="primary">主な模範解答</option><option value="alternative">別解</option>
+            </select>
+          </label>
           {entry.geometry && <details>
             <summary>位置判定: {entry.geometry.assignment_status === "automatic" ? "高信頼" : "未確定"}（{Math.round(entry.geometry.confidence * 100)}%）</summary>
             <p>位置根拠: {entry.geometry.evidence}</p>
@@ -304,7 +341,7 @@ export default function ModelAnswerImportReviewPage() {
             <p className="muted">抽出方法: 問題PDFとの差分</p>}
           <label className="field">模範解答本文
             <textarea aria-label={`模範解答本文 ${index + 1}`} value={entry.answer_text} maxLength={100000} rows={6}
-              disabled={busy || classifying || draft.state !== "editing"}
+              disabled={busy || classifying || draft.state !== "editing" || draft.confirmed_entry_ids?.includes(entry.id)}
               onChange={(event) => updateEntry(entry.id, { answer_text: event.target.value })} />
           </label>
           {entry.semantic_classification && <section className="model-answer-classification" aria-label={`模範解答 ${index + 1} の意味分類`}>
@@ -318,21 +355,18 @@ export default function ModelAnswerImportReviewPage() {
             {entry.semantic_classification.status === "needs_teacher_review" && <p className="warn">信頼度が低い、または判断できない文章があります。内容を確認し、必要なら分類を変更してください。</p>}
             {entry.semantic_classification.confidence !== null && <p className="muted">分類信頼度: {Math.round(entry.semantic_classification.confidence * 100)}%</p>}
             <div className="model-answer-classification-groups">
-              <div><strong>標準解答</strong>
-                {groupsFor(entry.semantic_classification.segments, "model_answer").map((group, groupIndex) => <div key={`answer-${groupIndex}`}>
-                  <p>{group.label}</p><MathPreview source={group.text} />
-                </div>)}
-                {groupsFor(entry.semantic_classification.segments, "model_answer").length === 0 && <p className="muted">標準解答候補がありません。</p>}
+              <div><strong>LLM取り込み結果</strong>
+                {groupsFor(entry.semantic_classification.segments, "model_answer").length === 0 && <p className="muted">模範解答候補がありません。</p>}
                 <button type="button" className="button secondary" disabled={busy || classifying || draft.state !== "editing"}
                   onClick={() => setEntryAnswerFromClassification(entry, groupsFor(entry.semantic_classification!.segments, "model_answer").map((group) => group.text).join(""))}>
-                  標準解答を本文へ反映
+                  分類結果を本文へ反映
                 </button>
               </div>
               <div><strong>別解・複数正答候補</strong>
                 {groupsFor(entry.semantic_classification.segments, "alternative_answer").map((group, groupIndex) => <div key={`alternative-${groupIndex}`}>
                   <p>{group.label}</p><MathPreview source={group.text} />
                   <button type="button" className="button secondary" disabled={busy || classifying || draft.state !== "editing"}
-                    onClick={() => setEntryAnswerFromClassification(entry, group.text)}>この別解を標準解答として使う</button>
+                    onClick={() => setEntryAnswerFromClassification(entry, group.text)}>この別解を主な模範解答として使う</button>
                 </div>)}
                 {(entry.semantic_classification.manual_alternative_answers || []).map((candidate, candidateIndex) => <div key={candidate.id}>
                   <label className="field">教師が追加した別解 {candidateIndex + 1}
@@ -345,7 +379,7 @@ export default function ModelAnswerImportReviewPage() {
                   <MathPreview source={candidate.text} />
                   <div className="actions">
                     <button type="button" className="button secondary" disabled={busy || classifying || draft.state !== "editing" || !candidate.text.trim()}
-                      onClick={() => setEntryAnswerFromClassification(entry, candidate.text)}>この別解を標準解答として使う</button>
+                      onClick={() => setEntryAnswerFromClassification(entry, candidate.text)}>この別解を主な模範解答として使う</button>
                     <button type="button" className="button secondary" disabled={busy || classifying || draft.state !== "editing"}
                       onClick={() => updateManualAlternatives(entry,
                         (entry.semantic_classification?.manual_alternative_answers || []).filter((item) => item.id !== candidate.id))}>別解候補を削除</button>
@@ -367,7 +401,7 @@ export default function ModelAnswerImportReviewPage() {
             </div>
             <details className="model-answer-classification-editor">
               <summary>分類内容を確認・修正</summary>
-              <p className="muted">分類を変更すると、下の「本文へ反映」で標準解答本文を更新できます。文章は抽出元の内容から編集できます。</p>
+              <p className="muted">分類を変更すると「分類結果を本文へ反映」で模範解答本文を更新できます。文章は抽出元の内容から編集できます。</p>
               {entry.semantic_classification.segments.map((segment, segmentIndex) => <div className="model-answer-classification-segment" key={segment.id}>
                 <label className="field">抽出箇所 {segmentIndex + 1} の分類
                   <select aria-label={`模範解答 ${index + 1} 抽出箇所 ${segmentIndex + 1} の分類`} value={segment.category}
@@ -394,20 +428,14 @@ export default function ModelAnswerImportReviewPage() {
           {entry.question_text_removal?.status === "removed" && !entry.answer_text.trim() &&
             <p className="warn" role="alert">問題文以外の模範解答を抽出できませんでした。PDFを確認し、本文を入力してください。</p>}
           <small className="math-help">{mathInputHelp}</small>
-          <MathPreview source={entry.answer_text} />
+          <details><summary>数式・Markdownプレビュー</summary><MathPreview source={entry.answer_text} /></details>
           {entry.question_id && <p className="muted">対応先: {questionLabels.get(entry.question_id) || "設問"}</p>}
         </article>)}
         {draft.state === "confirmed" && <p className="review-confirmed">登録済み</p>}
-        {draft.state === "editing" && <div className="actions">
-          <button type="button" className="button secondary" disabled={busy} onClick={() => void save()}>変更を保存</button>
-          <button type="button" className="button" disabled={busy || classifying || draft.entries.length === 0 || unresolved > 0 || classificationReviewCount > 0 || draft.entries.some((entry) => !entry.answer_text.trim())}
-            onClick={() => void confirm()}>確認した模範解答を登録</button>
-          <Link className="button secondary" href={`/tests/${test.id}?section=answers`}>模範解答画面へ戻る</Link>
-        </div>}
       </section>
       <aside className="panel model-answer-import-source" aria-label="模範解答PDF">
         <h2>元の模範解答PDF</h2>
-        <SourcePdfPreview testId={test.id} material={material || undefined} label="模範解答PDF" inline />
+        <SourcePdfPreview testId={test.id} material={material || undefined} label="模範解答PDF" paneZoom />
       </aside>
     </div>
   </main>;

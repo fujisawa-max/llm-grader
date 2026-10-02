@@ -6,7 +6,8 @@ import shutil
 import time
 import logging
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
@@ -15,17 +16,14 @@ from sqlalchemy import select
 from ..db.models import (
     Course,
     CourseOffering,
+    ModelAnswer,
     ModelAnswerImportDraft,
     Test,
     TestMaterial,
     TestQuestion,
 )
 from ..domain import DomainService
-from ..model_answer_drafts import (
-    draft_view,
-    question_choices,
-    remove_question_text,
-)
+from ..model_answer_drafts import draft_view, question_choices, remove_question_text
 from ..model_answer_geometry import PIPELINE_VERSION, build_geometry_entries
 from ..model_answer_visual import (
     BINARIZE_THRESHOLD,
@@ -71,6 +69,8 @@ class EntryEdit(BaseModel):
     id: str
     question_id: str | None = None
     answer_text: str = Field(max_length=100000)
+    disposition: Literal["include", "unassigned", "excluded"] | None = None
+    answer_kind: Literal["primary", "alternative"] | None = None
     classification_segments: list[ClassificationSegmentEdit] | None = None
     classification_reviewed: bool = False
     manual_alternative_answers: list[AlternativeAnswerEdit] | None = None
@@ -124,7 +124,12 @@ def router(db, artifact_root, classifier=None):
 
     def view(draft, session):
         choices, _ = choices_for(draft.test_id, session)
-        return draft_view(draft, choices)
+        saved = list(session.scalars(select(ModelAnswer).where(
+            ModelAnswer.test_id == draft.test_id, ModelAnswer.is_current.is_(True))))
+        return {**draft_view(draft, choices), "saved_answers": [
+            {"id": answer.id, "question_id": answer.question_id, "answer_text": answer.answer_text,
+             "version": answer.version} for answer in saved],
+            "confirmed_entry_ids": draft.snapshot.get("confirmed_entry_ids", [])}
 
     def question_context(question, label):
         parts = []
@@ -147,6 +152,9 @@ def router(db, artifact_root, classifier=None):
         updated = []
         for original in entries:
             entry = dict(original)
+            if entry.get("disposition") in {"excluded", "unassigned"} or entry.get("source", {}).get("kind") == "teacher_manual":
+                updated.append(entry)
+                continue
             question = by_id.get(entry.get("question_id"))
             candidate = str(entry.get("candidate_text") or
                             (entry.get("semantic_classification") or {}).get("candidate_text") or
@@ -373,7 +381,10 @@ def router(db, artifact_root, classifier=None):
         draft = owned_draft(draft_id, session)
         revision_check(draft, body.expected_revision)
         choices, questions = choices_for(draft.test_id, session)
-        entries = classify_entries(draft.snapshot.get("entries", []), questions, choices)
+        pending = [entry for entry in draft.snapshot.get("entries", [])
+                   if entry.get("id") not in set(draft.snapshot.get("confirmed_entry_ids", []))]
+        classified = {entry["id"]: entry for entry in classify_entries(pending, questions, choices)}
+        entries = [classified.get(entry["id"], entry) for entry in draft.snapshot.get("entries", [])]
         draft.snapshot = {**draft.snapshot, "entries": entries, "pipeline": pipeline_status(entries)}
         draft.revision += 1
         session.commit()
@@ -386,30 +397,58 @@ def router(db, artifact_root, classifier=None):
         revision_check(draft, body.expected_revision)
         original_entries = draft.snapshot.get("entries", [])
         original_by_id = {entry.get("id"): entry for entry in original_entries}
-        if len(body.entries) != len(original_entries) or {entry.id for entry in body.entries} != set(original_by_id):
-            fail(422, "DRAFT_ENTRIES_CHANGED", "解析した項目の構成は変更できません")
+        confirmed_ids = set(draft.snapshot.get("confirmed_entry_ids", []))
+        submitted_ids = [entry.id for entry in body.entries]
+        if len(submitted_ids) != len(set(submitted_ids)) or not set(original_by_id).issubset(submitted_ids):
+            fail(422, "DRAFT_ENTRIES_CHANGED", "解析した項目を削除・重複できません")
+        for entry_id in set(submitted_ids) - set(original_by_id):
+            try:
+                if not entry_id.startswith("teacher-entry-"):
+                    raise ValueError("invalid prefix")
+                UUID(entry_id.removeprefix("teacher-entry-"))
+            except ValueError:
+                fail(422, "INVALID_MANUAL_ENTRY", "追加した模範解答の識別子を確認してください")
         choices, questions = choices_for(draft.test_id, session)
         valid_question_ids = {question.id for question in questions if question.is_gradable}
-        question_by_id = {question.id: question for question in questions}
         mapped_ids = [entry.question_id for entry in body.entries if entry.question_id]
         if any(question_id not in valid_question_ids for question_id in mapped_ids):
             fail(422, "INVALID_QUESTION_MAPPING", "対応先にはこの試験の採点対象設問を選択してください")
-        if len(mapped_ids) != len(set(mapped_ids)):
-            fail(422, "DUPLICATE_QUESTION_MAPPING", "同じ設問に複数の模範解答を対応させることはできません")
 
         updated = []
         for edit in body.entries:
-            entry = dict(original_by_id[edit.id])
+            if edit.id in confirmed_ids:
+                original = original_by_id[edit.id]
+                if (edit.question_id != original.get("question_id")
+                        or edit.answer_text != original.get("answer_text")
+                        or (edit.disposition and edit.disposition != original.get("disposition", "include"))
+                        or (edit.answer_kind and edit.answer_kind != original.get("answer_kind", "primary"))):
+                    fail(409, "CONFIRMED_ENTRY_IMMUTABLE", "登録済みの候補は変更できません")
+                updated.append(original)
+                continue
+            entry = dict(original_by_id[edit.id]) if edit.id in original_by_id else {
+                "id": edit.id, "question_id": None, "answer_text": "", "candidate_text": "",
+                "mapping_state": "manual_mapped", "source": {"kind": "teacher_manual", "material_id": None,
+                    "source_sha256": None, "segments": []}, "extraction_method": "teacher_manual"}
             previous_question = entry.get("question_id")
+            disposition = edit.disposition or ("include" if edit.question_id else "unassigned")
+            answer_kind = edit.answer_kind or entry.get("answer_kind") or "primary"
+            if disposition == "include" and not edit.question_id:
+                fail(422, "INVALID_QUESTION_MAPPING", "取り込む候補には対応先の設問を指定してください")
+            entry["disposition"] = disposition
+            entry["answer_kind"] = answer_kind
             entry["question_id"] = edit.question_id
             entry["answer_text"] = edit.answer_text
+            removal = entry.get("question_text_removal") or {}
+            if (edit.question_id and removal.get("question_id") != edit.question_id
+                    and not entry.get("teacher_correction") and edit.id in original_by_id
+                    and edit.answer_text == original_by_id[edit.id].get("answer_text")):
+                entry["answer_text"], entry["question_text_removal"] = remove_question_text(
+                    next(question for question in questions if question.id == edit.question_id),
+                    entry["answer_text"])
             entry["teacher_correction"] = {"question_id": edit.question_id, "answer_text": edit.answer_text,
+                                            "disposition": disposition, "answer_kind": answer_kind,
                                             "revision": draft.revision + 1}
             classification = entry.get("semantic_classification")
-            if classification and previous_question != edit.question_id:
-                entry["answer_text"] = str(classification.get("candidate_text") or entry["answer_text"])
-                classification = None
-                entry.pop("semantic_classification", None)
             if classification and edit.classification_segments is not None:
                 try:
                     classification = apply_teacher_segment_edits(
@@ -438,11 +477,8 @@ def router(db, artifact_root, classifier=None):
                     **entry["semantic_classification"],
                     "manual_alternative_answers": alternatives,
                 }
-            removal = entry.get("question_text_removal") or {}
-            if edit.question_id and removal.get("question_id") != edit.question_id:
-                entry["answer_text"], entry["question_text_removal"] = remove_question_text(
-                    question_by_id[edit.question_id], entry["answer_text"],
-                )
+            # Teacher text is authoritative after editing. Re-mapping must not
+            # strip or replace content the teacher has reviewed.
             if not edit.question_id:
                 entry["mapping_state"] = "needs_review"
             elif edit.question_id == previous_question and entry.get("mapping_state") == "automatic":
@@ -453,6 +489,10 @@ def router(db, artifact_root, classifier=None):
                 next((choice["label"] for choice in choices if choice["id"] == edit.question_id), None)
             )
             updated.append(entry)
+        primary_ids = [entry["question_id"] for entry in updated
+                       if entry["disposition"] == "include" and entry["answer_kind"] == "primary"]
+        if len(primary_ids) != len(set(primary_ids)):
+            fail(422, "DUPLICATE_QUESTION_MAPPING", "同じ設問の主な模範解答は1件にしてください")
         draft.snapshot = {**draft.snapshot, "entries": updated}
         draft.revision += 1
         session.commit()
@@ -475,19 +515,28 @@ def router(db, artifact_root, classifier=None):
         entries = draft.snapshot.get("entries", [])
         if not entries:
             fail(422, "EMPTY_DRAFT", "模範解答本文がありません")
-        mapped = [entry.get("question_id") for entry in entries]
+        confirmed_ids = set(draft.snapshot.get("confirmed_entry_ids", []))
+        included = [entry for entry in entries
+                    if entry.get("disposition", "include" if entry.get("question_id") else "unassigned") == "include"
+                    and entry.get("id") not in confirmed_ids]
+        mapped = [entry.get("question_id") for entry in included]
+        if not included:
+            fail(422, "NO_ANSWERS_TO_CONFIRM", "登録する模範解答を1件以上選んでください")
         if any(not question_id for question_id in mapped):
-            count = sum(1 for question_id in mapped if not question_id)
-            fail(422, "UNMAPPED_ENTRIES", f"対応先が未設定の模範解答が{count}件あります")
-        if len(mapped) != len(set(mapped)):
-            fail(422, "DUPLICATE_QUESTION_MAPPING", "同じ設問に複数の模範解答が対応しています")
+            fail(422, "UNMAPPED_ENTRIES", "取り込む候補の対応先を選択してください")
+        primary = [entry for entry in included if entry.get("answer_kind", "primary") == "primary"]
+        primary_ids = [entry["question_id"] for entry in primary]
+        if len(primary_ids) != len(set(primary_ids)):
+            fail(422, "DUPLICATE_QUESTION_MAPPING", "同じ設問の主な模範解答は1件にしてください")
+        if set(mapped) != set(primary_ids):
+            fail(422, "PRIMARY_ANSWER_REQUIRED", "別解を登録する設問には主な模範解答も必要です")
         if any(question_id not in question_by_id or not question_by_id[question_id].is_gradable for question_id in mapped):
             fail(422, "INVALID_QUESTION_MAPPING", "対応先にはこの試験の採点対象設問を選択してください")
-        if any(not str(entry.get("answer_text") or "").strip() for entry in entries):
-            count = sum(1 for entry in entries if not str(entry.get("answer_text") or "").strip())
+        if any(not str(entry.get("answer_text") or "").strip() for entry in included):
+            count = sum(1 for entry in included if not str(entry.get("answer_text") or "").strip())
             fail(422, "EMPTY_ANSWER_TEXT", f"模範解答本文が空の項目が{count}件あります")
         pending_classification = sum(
-            1 for entry in entries
+            1 for entry in included
             if (entry.get("semantic_classification") or {}).get("status") == "needs_teacher_review"
         )
         if pending_classification:
@@ -497,12 +546,16 @@ def router(db, artifact_root, classifier=None):
         service = DomainService(session)
         created = []
         try:
-            for entry in entries:
+            for entry in primary:
+                alternatives = [other for other in included if other.get("question_id") == entry["question_id"]
+                                and other.get("answer_kind") == "alternative"]
+                manual = entry.get("source", {}).get("kind") == "teacher_manual"
                 provenance = {
-                    "kind": "native_pdf_model_answer_import",
+                    "kind": "teacher_manual_model_answer_import" if manual else "native_pdf_model_answer_import",
                     "draft_id": draft.id,
-                    "material_id": material.id,
-                    "source_sha256": actual_sha,
+                    "material_id": None if manual else material.id,
+                    "source_sha256": None if manual else actual_sha,
+                    "review_material_id": material.id,
                     "parser": draft.snapshot.get("parser", {}),
                     "segments": entry.get("source", {}).get("segments", []),
                     "question_text_removal": entry.get("question_text_removal"),
@@ -513,23 +566,30 @@ def router(db, artifact_root, classifier=None):
                     "pipeline": draft.snapshot.get("pipeline"),
                     "geometry": entry.get("geometry"),
                     "teacher_correction": entry.get("teacher_correction"),
+                    "review_alternatives": [
+                        {"id": other["id"], "answer_text": other["answer_text"],
+                         "source": other.get("source"), "teacher_correction": other.get("teacher_correction")}
+                        for other in alternatives],
                 }
                 answer = service.model_answer(
                     draft.test_id,
                     question_id=entry["question_id"],
                     answer_text=entry["answer_text"],
-                    material_id=material.id,
+                    material_id=None if manual else material.id,
                     provenance_json=provenance,
                 )
                 created.append(answer)
-            draft.state = "confirmed"
+            remaining = [entry for entry in entries if entry.get("disposition") == "unassigned"]
+            draft.state = "editing" if remaining else "confirmed"
             draft.snapshot = {
                 **draft.snapshot,
+                "confirmed_entry_ids": sorted(confirmed_ids | {entry["id"] for entry in included}),
                 "confirmed_model_answers": [
                     {"id": answer.id, "question_id": answer.question_id, "version": answer.version}
                     for answer in created
                 ],
             }
+            draft.revision += 1
             session.commit()
         except HTTPException:
             session.rollback()

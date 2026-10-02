@@ -12,6 +12,7 @@
   "dependencies": {
     "katex": "0.18.9",
     "next": "15.5.7",
+    "pdfjs-dist": "^4.10.38",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "react-markdown": "10.1.0",

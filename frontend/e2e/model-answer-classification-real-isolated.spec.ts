@@ -40,7 +40,7 @@ test("source-grounded semantic categories stay editable and persist with the imp
   await page.getByText("分類内容を確認・修正", { exact: true }).click();
   const category = page.getByLabel("模範解答 1 抽出箇所 2 の分類");
   await category.selectOption("model_answer");
-  await page.getByRole("button", { name: "標準解答を本文へ反映" }).click();
+  await page.getByRole("button", { name: "分類結果を本文へ反映" }).click();
   await expect(answer).toHaveValue(/Explain overfitting and state its effect\.[\s\S]*The model memorizes the training examples/);
   await expect(page.getByText("教師確認済み", { exact: true })).toBeVisible();
 
