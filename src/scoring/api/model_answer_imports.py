@@ -42,6 +42,12 @@ from ..model_answer_classification import (
     is_effectively_blank,
     validate_classifier_result,
 )
+from ..rubric_consolidation import (
+    mechanically_premerge_rubric_segments,
+    mechanical_rubric_groups,
+    reconstruct_rubric_groups,
+    validate_rubric_groups,
+)
 from ..pdf_native import PyMuPdfNativeExtractor, sha256_file
 
 logger = logging.getLogger(__name__)
@@ -71,6 +77,12 @@ class RubricCandidateEdit(BaseModel):
     id: str = Field(min_length=1, max_length=200)
     description: str = Field(max_length=100000)
     points: int = Field(ge=0)
+    segment_ids: list[str] = Field(default_factory=list, max_length=100)
+    confidence: float | None = None
+    points_conflict: bool = False
+    points_confirmed: bool = False
+    grouping_confirmed: bool = False
+    grouping_method: str = "legacy"
 
 
 class EntryEdit(BaseModel):
@@ -85,6 +97,7 @@ class EntryEdit(BaseModel):
     classification_reviewed: bool = False
     manual_alternative_answers: list[AlternativeAnswerEdit] | None = None
     rubric_edits: list[RubricCandidateEdit] | None = None
+    rubric_merge_history: list[list[RubricCandidateEdit]] | None = None
 
 
 class DraftEdit(BaseModel):
@@ -161,6 +174,33 @@ def router(db, artifact_root, classifier=None):
         body = "".join(parts).strip() or str(question.question_text or "")
         return {"label": label, "body": body}
 
+    def consolidate_rubrics(classification, deadline):
+        source = [dict(segment) for segment in classification.get("segments", [])
+                  if segment.get("category") == "rubric" and not is_effectively_blank(segment.get("source_text", segment.get("text", "")))]
+        if not source:
+            return [], "none"
+        if len(source) == 1:
+            group = {"group_id": f"single-{source[0]['id']}", "segment_ids": [source[0]["id"]],
+                     "kind": "rubric", "confidence": float(source[0].get("confidence", 1.0))}
+            return reconstruct_rubric_groups(source, [group], method="mechanical_premerge"), "mechanical_premerge"
+        premerged = mechanically_premerge_rubric_segments(source)
+        grouper = getattr(classifier, "group_rubric_segments", None)
+        try:
+            if not callable(grouper):
+                raise RuntimeError("rubric grouping is unsupported by classifier")
+            compact_groups = grouper(segments=premerged, deadline_monotonic=deadline)
+            compact_groups = validate_rubric_groups({"groups": compact_groups}, premerged)
+            members = {item["id"]: item.get("member_ids", [item["id"]]) for item in premerged}
+            groups = [{**group, "segment_ids": [source_id for compact_id in group["segment_ids"]
+                                                    for source_id in members[compact_id]]}
+                      for group in compact_groups]
+            groups = validate_rubric_groups({"groups": groups}, source)
+            return reconstruct_rubric_groups(source, groups, method="llm_group"), "llm_group"
+        except Exception as exc:
+            logger.info("Rubric semantic grouping fell back: %s", type(exc).__name__)
+            groups = mechanical_rubric_groups(source)
+            return reconstruct_rubric_groups(source, groups, method="mechanical_fallback"), "mechanical_fallback"
+
     def classify_entries(entries, questions, choices):
         deadline = time.monotonic() + AUTOMATIC_CLASSIFICATION_BUDGET_SECONDS
         by_id = {question.id: question for question in questions}
@@ -222,6 +262,9 @@ def router(db, artifact_root, classifier=None):
                         threshold=getattr(classifier, "threshold", CONFIDENCE_THRESHOLD))
                     classification.update({key: result[key] for key in ("profile_id", "model_id", "runtime_type")
                                            if key in result})
+                    rubric_groups, grouping_method = consolidate_rubrics(classification, deadline)
+                    classification["rubric_groups"] = rubric_groups
+                    classification["rubric_grouping_method"] = grouping_method
                     previous = entry.get("semantic_classification") or {}
                     entry["semantic_classification"] = classification
                     categories = {segment.get("category") for segment in classification.get("segments", [])}
@@ -539,11 +582,21 @@ def router(db, artifact_root, classifier=None):
                     (entry.get("semantic_classification") or {}).get("segments", [])
                     if segment.get("category") == "rubric"}
                 ids = [item["id"] for item in submitted_rubric_edits]
-                if len(ids) != len(set(ids)) or any(item_id not in rubric_segment_ids for item_id in ids):
+                covered = [segment_id for item in submitted_rubric_edits
+                           for segment_id in (item.get("segment_ids") or [item["id"]])]
+                if (len(ids) != len(set(ids)) or len(covered) != len(set(covered))
+                        or any(item_id not in rubric_segment_ids for item_id in covered)):
                     fail(422, "INVALID_RUBRIC_CANDIDATE", "採点基準候補の元文章を確認してください")
                 entry["rubric_edits"] = submitted_rubric_edits
             rubric_changed = (edit.rubric_edits is not None
                 and submitted_rubric_edits != original_rubric_edits)
+            history = None
+            if edit.rubric_merge_history is not None:
+                history = [[item.model_dump() for item in group] for group in edit.rubric_merge_history]
+                if len(history) > 50:
+                    fail(422, "INVALID_RUBRIC_MERGE_HISTORY", "マージ履歴が多すぎます")
+                entry["rubric_merge_history"] = history
+            history_changed = (history is not None and history != original_by_id.get(edit.id, {}).get("rubric_merge_history", []))
             explicit_teacher_change = edit.id not in original_by_id or any((
                 edit.question_id != original_by_id[edit.id].get("question_id"),
                 edit.answer_text != original_by_id[edit.id].get("answer_text"),
@@ -552,6 +605,7 @@ def router(db, artifact_root, classifier=None):
                 edit.classification_reviewed,
                 classification_changed,
                 rubric_changed,
+                history_changed,
             ))
             if explicit_teacher_change:
                 entry["teacher_correction"] = {"question_id": edit.question_id, "answer_text": edit.answer_text,
@@ -633,7 +687,9 @@ def router(db, artifact_root, classifier=None):
             allowed_ids = {segment.get("id") for segment in
                 (entry.get("semantic_classification") or {}).get("segments", [])
                 if segment.get("category") == "rubric"}
-            if any(item.get("id") not in allowed_ids for item in rubric_edits):
+            covered_ids = [segment_id for item in rubric_edits
+                           for segment_id in (item.get("segment_ids") or [item["id"]])]
+            if len(covered_ids) != len(set(covered_ids)) or any(item_id not in allowed_ids for item_id in covered_ids):
                 fail(422, "INVALID_RUBRIC_CANDIDATE", "採点基準候補の元文章を確認してください")
             edited_by_question.setdefault(entry["question_id"], []).extend(
                 [{**item, "entry": entry} for item in rubric_edits])
@@ -657,19 +713,32 @@ def router(db, artifact_root, classifier=None):
                 for index, item in enumerate(selected, 1):
                     if not str(item.get("description") or "").strip() or int(item.get("points", 0)) <= 0:
                         fail(422, "RUBRIC_CANDIDATE_INCOMPLETE", f"{question.display_label} の採点基準本文と配点を入力してください")
-                    entry, segment_id = item["entry"], item["id"]
-                    segment = next((value for value in
-                        (entry.get("semantic_classification") or {}).get("segments", [])
-                        if value.get("id") == segment_id and value.get("category") == "rubric"), {})
-                    source_segment = next((value for value in entry.get("source", {}).get("segments", [])
-                        if segment_id == value.get("id") or segment_id in value.get("element_ids", [])), {})
-                    criterion_id = f"import-{entry['id'][:12]}-{index}"
+                    if item.get("points_conflict") and not item.get("points_confirmed"):
+                        fail(422, "RUBRIC_POINTS_CONFLICT", f"{question.display_label} の採点基準候補に複数の配点があります。配点を確認してください")
+                    confidence = item.get("confidence")
+                    if (confidence is not None and float(confidence) < 0.82
+                            and not item.get("grouping_confirmed")):
+                        fail(422, "RUBRIC_GROUPING_UNCONFIRMED", f"{question.display_label} の採点基準候補のグルーピングを確認してください")
+                    entry = item["entry"]
+                    segment_ids = item.get("segment_ids") or [item["id"]]
+                    segments_by_id = {value.get("id"): value for value in
+                        (entry.get("semantic_classification") or {}).get("segments", [])}
+                    source_by_id = {value.get("id"): value for value in entry.get("source", {}).get("segments", [])}
+                    original_segments = [segments_by_id[segment_id] for segment_id in segment_ids]
+                    criterion_id = f"import-{entry['id'][:8]}-{index}"
                     criteria.append({"id": criterion_id, "description": item["description"].strip(),
                                      "points": item["points"]})
                     source_records.append({"criterion_id": criterion_id, "candidate_id": entry["id"],
-                        "segment_id": segment_id, "original_text": segment.get("source_text") or segment.get("text"),
-                        "teacher_text": item["description"], "page_index": source_segment.get("page_index"),
-                        "bbox": source_segment.get("bbox")})
+                        "segment_ids": segment_ids,
+                        "original_text": "".join(value.get("source_text", value.get("text", ""))
+                                                   for value in original_segments),
+                        "teacher_text": item["description"], "confidence": item.get("confidence"),
+                        "points_conflict": item.get("points_conflict", False),
+                        "grouping_method": item.get("grouping_method", "legacy"),
+                        "source_segments": [{"page_index": source_by_id.get(segment_id, {}).get("page_index"),
+                                             "bbox": source_by_id.get(segment_id, {}).get("bbox"),
+                                             "text": original_segments[offset].get("source_text", original_segments[offset].get("text"))}
+                                            for offset, segment_id in enumerate(segment_ids)]})
                 provenance["questions"][question_id] = source_records
             else:
                 criteria = (base_rows.get(question_id) or {}).get("criteria", [])

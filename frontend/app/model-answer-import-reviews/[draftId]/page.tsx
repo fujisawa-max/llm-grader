@@ -15,6 +15,7 @@ import {
   type ModelAnswerContentCategory,
   type ModelAnswerDraftEntry,
   type ModelAnswerImportDraft,
+  type RubricConsolidatedGroup,
 } from "@/lib/api/modelAnswerImports";
 import { testData, tests } from "@/lib/api/domain";
 import type { Material, Test } from "@/types/domain";
@@ -58,6 +59,38 @@ function groupsFor(segments: ModelAnswerClassifiedSegment[], category: ModelAnsw
   }));
 }
 
+type RubricEdit = NonNullable<ModelAnswerDraftEntry["rubric_edits"]>[number];
+function rubricRows(entry: ModelAnswerDraftEntry): RubricEdit[] {
+  const saved = entry.rubric_edits;
+  if (saved?.length) return saved;
+  const segments = entry.semantic_classification?.segments || [];
+  const segmentsById = new Map((entry.semantic_classification?.segments || []).map((segment) => [segment.id, segment]));
+  const groups = entry.semantic_classification?.rubric_groups?.filter((group) => group.kind === "rubric"
+    && group.segment_ids.every((id) => segmentsById.get(id)?.category === "rubric")) || [];
+  if (groups.length) return groups.map((group: RubricConsolidatedGroup) => ({
+    id: group.id, segment_ids: group.segment_ids, description: group.description, points: group.points,
+    confidence: group.confidence, points_conflict: group.points_conflict, points_confirmed: false,
+    grouping_confirmed: !group.needs_teacher_review,
+    grouping_method: group.merge_type,
+  }));
+  return segments.filter((segment) => segment.category === "rubric").map((segment) => ({
+    id: segment.id, segment_ids: [segment.id], ...pointHint(segment.text), grouping_confirmed: true,
+    grouping_method: "legacy",
+  }));
+}
+
+function joinRubricDescriptions(items: string[]) {
+  return items.reduce((result, item) => {
+    if (!result) return item.trim();
+    const left = result.trimEnd(); const right = item.trimStart();
+    if (!left || !right) return left + right;
+    if (/^[、。，．！？!?：；:;）)】』」]/.test(right) || /[（(「『【]$/.test(left)) return left + right;
+    if (/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]$/u.test(left)
+        && /^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(right)) return left + right;
+    return `${left} ${right}`;
+  }, "");
+}
+
 export default function ModelAnswerImportReviewPage() {
   const draftId = String(useParams().draftId);
   const router = useRouter();
@@ -71,6 +104,7 @@ export default function ModelAnswerImportReviewPage() {
   const [notice, setNotice] = useState("");
   const [selectedTargetId, setSelectedTargetId] = useState("");
   const [rubricRegistering, setRubricRegistering] = useState(false);
+  const [selectedRubricGroups, setSelectedRubricGroups] = useState<Record<string, string[]>>({});
 
   useEffect(() => {
     let active = true;
@@ -161,6 +195,7 @@ export default function ModelAnswerImportReviewPage() {
     answer_kind: entry.answer_kind || "primary",
     loaded_model_answer_id: entry.loaded_model_answer?.id || null,
     ...(entry.rubric_edits ? { rubric_edits: entry.rubric_edits } : {}),
+    ...(entry.rubric_merge_history ? { rubric_merge_history: entry.rubric_merge_history } : {}),
     ...(entry.semantic_classification ? {
       classification_segments: entry.semantic_classification.segments.map(({ id, category, text }) => ({ id, category, text })),
       classification_reviewed: entry.semantic_classification.status === "teacher_reviewed",
@@ -169,23 +204,54 @@ export default function ModelAnswerImportReviewPage() {
     } : {}),
   }));
 
-  function updateRubricEdit(entry: ModelAnswerDraftEntry, id: string, patch: Partial<{description: string; points: number}>) {
-    const groups = entry.semantic_classification ? groupsFor(entry.semantic_classification.segments, "rubric") : [];
-    const existing = entry.rubric_edits || groups.flatMap((group) => group.segmentIds.map((segmentId) => {
-      const segment = entry.semantic_classification!.segments.find((item) => item.id === segmentId)!;
-      return { id: segmentId, ...pointHint(segment.text) };
-    }));
+  function updateRubricEdit(entry: ModelAnswerDraftEntry, id: string, patch: Partial<RubricEdit>) {
+    const existing = rubricRows(entry);
     updateEntry(entry.id, { rubric_edits: existing.map((item) => item.id === id ? { ...item, ...patch } : item) });
+  }
+
+  function mergeRubricGroups(entry: ModelAnswerDraftEntry, ids: string[], type: "manual_above" | "manual_multi") {
+    const rows = rubricRows(entry);
+    if (ids.length < 2) return;
+    const chosen = rows.filter((row) => ids.includes(row.id));
+    if (chosen.length !== ids.length) return;
+    const history = [...(entry.rubric_merge_history || []), rows];
+    const segments = entry.semantic_classification?.segments || [];
+    const rank = new Map(segments.map((segment, index) => [segment.id, index]));
+    const orderedIds = chosen.flatMap((row) => row.segment_ids || [row.id]).sort((a, b) => (rank.get(a) ?? 0) - (rank.get(b) ?? 0));
+    const descriptions = chosen.map((row) => row.description);
+    const pointValues = chosen.map((row) => row.points).filter((value) => value > 0);
+    const distinctPoints = [...new Set(pointValues)];
+    const merged: RubricEdit = {
+      id: `manual-${orderedIds.join("-")}`, segment_ids: orderedIds,
+      description: joinRubricDescriptions(descriptions),
+      points: distinctPoints.length === 1 && pointValues.length === chosen.length ? distinctPoints[0] : 0,
+      confidence: Math.min(...chosen.map((row) => row.confidence ?? 0)),
+      points_conflict: chosen.some((row) => row.points_conflict) || distinctPoints.length > 1 || pointValues.length > 1,
+      points_confirmed: false, grouping_confirmed: true, grouping_method: type,
+    };
+    const firstIndex = Math.min(...chosen.map((row) => rows.findIndex((rowItem) => rowItem.id === row.id)));
+    const next = rows.filter((row) => !ids.includes(row.id));
+    next.splice(firstIndex, 0, merged);
+    updateEntry(entry.id, { rubric_edits: next, rubric_merge_history: history });
+    setSelectedRubricGroups((current) => ({ ...current, [entry.id]: [] }));
+  }
+
+  function undoRubricMerge(entry: ModelAnswerDraftEntry) {
+    const history = entry.rubric_merge_history || [];
+    if (!history.length) return;
+    updateEntry(entry.id, { rubric_edits: history[history.length - 1], rubric_merge_history: history.slice(0, -1) });
   }
 
   async function registerRubric() {
     if (!draft) return;
-    const hasRubric = draft.entries.some((entry) => entry.rubric_edits?.length);
+    const preparedEntries = draft.entries.map((entry) => !entry.rubric_edits?.length && rubricRows(entry).length
+      ? { ...entry, rubric_edits: rubricRows(entry) } : entry);
+    const hasRubric = preparedEntries.some((entry) => entry.rubric_edits?.length);
     if (!hasRubric) { setError("登録する採点基準候補がありません。"); return; }
     setRubricRegistering(true); setError(""); setNotice("");
     try {
       const updated = await modelAnswerImports.update(draft.id, {
-        expected_revision: draft.revision, entries: entryPayload(draft.entries),
+        expected_revision: draft.revision, entries: entryPayload(preparedEntries),
       });
       setDraft(updated);
       const result = await modelAnswerImports.registerRubric(updated.id, updated.revision);
@@ -212,7 +278,11 @@ export default function ModelAnswerImportReviewPage() {
         const status = hasUncertain ? "needs_teacher_review"
           : (acknowledge || entry.semantic_classification.status === "teacher_reviewed") ? "teacher_reviewed"
             : entry.semantic_classification.status;
-        return { ...entry, semantic_classification: { ...entry.semantic_classification, segments, status } };
+        const rubricIds = new Set(segments.filter((segment) => segment.category === "rubric").map((segment) => segment.id));
+        const rubricEdits = entry.rubric_edits?.filter((edit) =>
+          (edit.segment_ids || [edit.id]).every((id) => rubricIds.has(id)));
+        return { ...entry, ...(entry.rubric_edits ? { rubric_edits: rubricEdits } : {}),
+          semantic_classification: { ...entry.semantic_classification, segments, status } };
       }),
     } : current);
     setNotice("");
@@ -367,7 +437,7 @@ export default function ModelAnswerImportReviewPage() {
       <button type="button" className="button secondary" disabled={busy || classifying} onClick={() => void save()}>下書き保存</button>
       <button type="button" className="button" disabled={busy || classifying || registrationValidation.length > 0}
         onClick={() => void confirm()}>{busy ? "登録中…" : "模範解答として登録"}</button>
-      <button type="button" className="button secondary" disabled={busy || classifying || rubricRegistering || !draft.entries.some((entry) => entry.rubric_edits?.length)}
+      <button type="button" className="button secondary" disabled={busy || classifying || rubricRegistering || !draft.entries.some((entry) => rubricRows(entry).length)}
         onClick={() => void registerRubric()}>{rubricRegistering ? "採点基準を登録中…" : "採点基準として登録"}</button>
       <button type="button" className="button secondary" disabled={busy || classifying || draft.entries.length === 0} onClick={() => void classify()}>
         {classifying ? "意味分類中…" : "意味分類を再実行"}</button>
@@ -520,27 +590,55 @@ export default function ModelAnswerImportReviewPage() {
                 if (!groups.length) return null;
                 const heading = category === "rubric" ? "採点基準候補"
                   : category === "question" ? "除外された問題文" : categoryLabels[category];
-                if (category === "rubric") return <details key={category} open>
-                  <summary>{heading}（{groups.length}件）</summary>
-                  {entry.semantic_classification!.segments.filter((segment) => segment.category === "rubric").map((segment, groupIndex) => {
-                    const hinted = pointHint(segment.text);
-                    const edit = entry.rubric_edits?.find((item) => item.id === segment.id) || { id: segment.id, ...hinted };
-                    return <div className="rubric-candidate-edit" key={segment.id}>
-                      <label className="field">採点基準 {groupIndex + 1}
-                        <textarea aria-label={`採点基準候補 ${index + 1}-${groupIndex + 1}`} value={edit.description}
-                          disabled={busy || classifying || draft.state !== "editing"}
-                          onChange={(event) => updateRubricEdit(entry, segment.id, { description: event.target.value })} />
-                      </label>
-                      <label className="field">配点
-                        <input type="number" min="1" step="1" aria-label={`採点基準候補 ${index + 1}-${groupIndex + 1} の配点`}
-                          value={edit.points || ""} disabled={busy || classifying || draft.state !== "editing"}
-                          onChange={(event) => updateRubricEdit(entry, segment.id, { points: Number(event.target.value) })} />
-                      </label>
-                      <MathPreview source={segment.text} />
-                    </div>;
-                  })}
-                  <p className="muted">登録すると採点基準の新しい未承認版を作成します。採点前に既存の承認操作が必要です。</p>
-                </details>;
+                if (category === "rubric") {
+                  const candidates = rubricRows(entry);
+                  const selectedIds = selectedRubricGroups[entry.id] || [];
+                  return <details key={category} open>
+                    <summary>{heading}（{candidates.length}件）</summary>
+                    <p className="muted">元segment {entry.semantic_classification!.segments.filter((item) => item.category === "rubric").length}件・グルーピング: {entry.semantic_classification?.rubric_grouping_method || "既存候補"}</p>
+                    <div className="actions">
+                      <button type="button" className="button secondary" disabled={busy || selectedIds.length < 2}
+                        onClick={() => mergeRubricGroups(entry, selectedIds, "manual_multi")}>選択した項目をマージ</button>
+                      <button type="button" className="button secondary" disabled={busy || !(entry.rubric_merge_history?.length)}
+                        onClick={() => undoRubricMerge(entry)}>マージを解除（元に戻す）</button>
+                    </div>
+                    {candidates.map((edit, groupIndex) => {
+                      const sourceIds = edit.segment_ids || [edit.id];
+                      const sourceText = sourceIds.map((sourceId) => entry.semantic_classification!.segments.find((item) => item.id === sourceId)?.source_text || "").join("");
+                      return <div className="rubric-candidate-edit" key={edit.id}>
+                        <label><input type="checkbox" aria-label={`採点基準候補 ${index + 1}-${groupIndex + 1} を選択`}
+                          checked={selectedIds.includes(edit.id)} onChange={(event) => setSelectedRubricGroups((current) => ({
+                            ...current, [entry.id]: event.target.checked ? [...selectedIds, edit.id] : selectedIds.filter((id) => id !== edit.id),
+                          }))} /> 採点基準 {groupIndex + 1}</label>
+                        {groupIndex > 0 && <button type="button" className="button secondary" disabled={busy || classifying}
+                          onClick={() => mergeRubricGroups(entry, [candidates[groupIndex - 1].id, edit.id], "manual_above")}>上とマージ</button>}
+                        <label className="field">本文
+                          <textarea aria-label={`採点基準候補 ${index + 1}-${groupIndex + 1} 本文`} value={edit.description}
+                            disabled={busy || classifying || draft.state !== "editing"}
+                            onChange={(event) => updateRubricEdit(entry, edit.id, { description: event.target.value, grouping_confirmed: true, grouping_method: edit.grouping_method || "teacher_edit" })} />
+                        </label>
+                        <label className="field">配点
+                          <input type="number" min="1" step="1" aria-label={`採点基準候補 ${index + 1}-${groupIndex + 1} の配点`}
+                            value={edit.points || ""} disabled={busy || classifying || draft.state !== "editing"}
+                            onChange={(event) => updateRubricEdit(entry, edit.id, { points: Number(event.target.value), points_confirmed: true })} />
+                        </label>
+                        {edit.points_conflict && <p className="warn">複数の配点記述があります。原文の配点を確認してください。
+                          <label><input type="checkbox" checked={!!edit.points_confirmed} onChange={(event) => updateRubricEdit(entry, edit.id, { points_confirmed: event.target.checked })} /> 配点を確認しました</label>
+                        </p>}
+                        {edit.confidence !== undefined && <p className="muted">グルーピング信頼度: {Math.round((edit.confidence || 0) * 100)}%</p>}
+                        {(edit.confidence ?? 1) < 0.82 && <p className={edit.grouping_confirmed ? "success" : "warn"}>
+                          {edit.grouping_confirmed ? "グルーピングを確認しました。" : "グルーピングの確認が必要です。"}
+                          <label><input type="checkbox" aria-label="グルーピングを確認しました" checked={!!edit.grouping_confirmed}
+                            onChange={(event) => updateRubricEdit(entry, edit.id, { grouping_confirmed: event.target.checked })} /> この候補のまとまりを確認しました</label>
+                        </p>}
+                        <details><summary>元segment（{sourceIds.length}件）</summary><MathPreview source={sourceText} />
+                          {sourceIds.map((sourceId) => { const segment = entry.semantic_classification!.segments.find((item) => item.id === sourceId); return segment && <p key={sourceId} className="muted">{sourceId} · {segment.text}</p>; })}
+                        </details>
+                      </div>;
+                    })}
+                    <p className="muted">登録すると採点基準の新しい未承認版を作成します。採点前に既存の承認操作が必要です。</p>
+                  </details>;
+                }
                 return <details key={category}>
                   <summary>{heading}（{groups.length}件）</summary>
                   {groups.map((group, groupIndex) => <div key={`${category}-${groupIndex}`}><MathPreview source={group.text} /></div>)}

@@ -56,11 +56,40 @@ test("unified review registers rubric candidates separately from model answers",
   const rubricEntry = draft.entries.find((entry: { semantic_classification?: { segments?: Array<{ category: string }> } }) =>
     entry.semantic_classification?.segments?.some((segment) => segment.category === "rubric"));
   expect(rubricEntry, "the managed classifier stub should identify the PDF rubric segment").toBeTruthy();
+  const rubricEntryIndex = draft.entries.indexOf(rubricEntry) + 1;
   await page.getByLabel("編集対象").selectOption(`question:${rubricEntry.question_id}`);
-  const rubricDescription = page.getByLabel(/採点基準候補 .*-/).first();
+  const rubricDescription = page.getByLabel(`採点基準候補 ${rubricEntryIndex}-1 本文`);
   await expect(rubricDescription).toBeVisible();
-  await rubricDescription.fill("過学習の説明が正しい");
-  await page.getByLabel(/採点基準候補 .* の配点/).first().fill("10");
+  await expect(page.getByText(/元segment 3件/)).toBeVisible();
+  const first = page.getByLabel(`採点基準候補 ${rubricEntryIndex}-1 を選択`);
+  const second = page.getByLabel(`採点基準候補 ${rubricEntryIndex}-2 を選択`);
+  const third = page.getByLabel(`採点基準候補 ${rubricEntryIndex}-3 を選択`);
+  await first.check(); await second.check(); await third.check();
+  await page.getByRole("button", { name: "選択した項目をマージ" }).click();
+  await expect(page.getByText(/採点基準候補（1件）/)).toBeVisible();
+  const mergedText = page.getByLabel(`採点基準候補 ${rubricEntryIndex}-1 本文`);
+  await expect(mergedText).toHaveValue(/identify overfitting\. cite evidence\. mention generalization\./);
+  await expect(page.getByText(/複数の配点記述があります/)).toBeVisible();
+  await page.getByRole("button", { name: "マージを解除（元に戻す）" }).click();
+  await expect(page.getByText(/採点基準候補（3件）/)).toBeVisible();
+  await page.getByRole("button", { name: "上とマージ" }).nth(0).click();
+  await expect(page.getByText(/採点基準候補（2件）/)).toBeVisible();
+  await page.getByRole("button", { name: "マージを解除（元に戻す）" }).click();
+  await first.check(); await second.check();
+  await page.getByRole("button", { name: "選択した項目をマージ" }).click();
+  await page.getByLabel(`採点基準候補 ${rubricEntryIndex}-1 の配点`).fill("7");
+  await page.getByLabel("配点を確認しました").check();
+  await page.getByLabel(`採点基準候補 ${rubricEntryIndex}-2 の配点`).fill("3");
+  await page.getByLabel("グルーピングを確認しました").nth(1).check();
+
+  const savedDraft = page.waitForResponse((response) => response.url().includes("/model-answer-import-drafts/")
+    && response.request().method() === "PUT");
+  await page.getByRole("button", { name: "下書き保存" }).click();
+  expect((await savedDraft).status()).toBe(200);
+  await page.reload();
+  await page.getByLabel("編集対象").selectOption(`question:${rubricEntry.question_id}`);
+  await expect(page.getByText(/採点基準候補（2件）/)).toBeVisible();
+  await expect(page.getByLabel("グルーピングを確認しました").nth(1)).toBeChecked();
 
   const rubricSaved = page.waitForResponse((response) => response.url().endsWith("/register-rubric"));
   await page.getByRole("button", { name: "採点基準として登録" }).click();
@@ -72,6 +101,8 @@ test("unified review registers rubric candidates separately from model answers",
   expect(imported.status).toBe("generated");
   expect(imported.rubric_json.provenance.kind).toBe("model_answer_import_rubric");
   expect(imported.rubric_json.questions).toHaveLength(3);
+  expect(imported.rubric_json.questions[0].criteria).toHaveLength(2);
+  expect(imported.rubric_json.provenance.questions[rubricEntry.question_id][0].grouping_method).toBe("manual_multi");
   await page.goto(`/tests/${testId}?section=answers&question=${encodeURIComponent(rubricEntry.question_id)}`);
   await expect(page.getByLabel("対象設問")).toHaveValue(rubricEntry.question_id);
   await expect(page.getByLabel("模範解答本文")).toBeVisible();

@@ -112,7 +112,8 @@ def seed(root):
         rubric_page = rubric_pdf.new_page(width=600, height=800)
         rubric_page.insert_textbox(
             pymupdf.Rect(30, 30, 570, 750),
-            "Question 1\nExplain concept 1.\nA source answer.\n5 points: identify overfitting.",
+            "Question 1\nExplain concept 1.\nA source answer.\n"
+            "5 points: identify overfitting.\n2 points: cite evidence.\n3 points: mention generalization.",
             fontsize=12, lineheight=1.5,
         )
         rubric_content = rubric_pdf.tobytes()

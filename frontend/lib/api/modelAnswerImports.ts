@@ -39,6 +39,21 @@ export interface ModelAnswerClassificationGroup {
   label?: string;
 }
 
+export interface RubricConsolidatedGroup {
+  id: string;
+  group_id: string;
+  segment_ids: string[];
+  kind: "rubric" | "note" | "question" | "other" | "uncertain";
+  description: string;
+  source_text: string;
+  points: number;
+  points_conflict: boolean;
+  confidence: number;
+  needs_teacher_review: boolean;
+  merge_type: "llm_group" | "mechanical_fallback" | string;
+  source_segments: Array<Record<string, unknown>>;
+}
+
 export interface ModelAnswerSemanticClassification {
   profile_id?: string;
   model_id?: string;
@@ -54,6 +69,8 @@ export interface ModelAnswerSemanticClassification {
   model_answers: ModelAnswerClassificationGroup[];
   alternative_answers: ModelAnswerClassificationGroup[];
   rubric_candidates: ModelAnswerClassificationGroup[];
+  rubric_groups?: RubricConsolidatedGroup[];
+  rubric_grouping_method?: string;
   notes: ModelAnswerClassificationGroup[];
   uncertain_segments: ModelAnswerClassificationGroup[];
   manual_alternative_answers?: Array<{ id: string; text: string }>;
@@ -71,7 +88,12 @@ export interface ModelAnswerDraftEntry {
   disposition?: "include" | "unassigned" | "excluded" | "ignored";
   ignore_reason?: string;
   teacher_correction?: { teacher_confirmed?: boolean; [key: string]: unknown };
-  rubric_edits?: Array<{ id: string; description: string; points: number }>;
+  rubric_edits?: Array<{ id: string; description: string; points: number; segment_ids?: string[];
+    confidence?: number | null; points_conflict?: boolean; points_confirmed?: boolean;
+    grouping_confirmed?: boolean; grouping_method?: string }>;
+  rubric_merge_history?: Array<Array<{ id: string; description: string; points: number; segment_ids?: string[];
+    confidence?: number | null; points_conflict?: boolean; points_confirmed?: boolean;
+    grouping_confirmed?: boolean; grouping_method?: string }>>;
   answer_kind?: "primary" | "alternative";
   loaded_model_answer?: { id: string; version: number; question_id: string };
   geometry?: SpatialAssignment;
@@ -101,7 +123,12 @@ export interface ModelAnswerDraftEntryUpdate {
   classification_segments?: Array<Pick<ModelAnswerClassifiedSegment, "id" | "category" | "text">>;
   classification_reviewed?: boolean;
   manual_alternative_answers?: Array<{ id: string; text: string }>;
-  rubric_edits?: Array<{ id: string; description: string; points: number }>;
+  rubric_edits?: Array<{ id: string; description: string; points: number; segment_ids?: string[];
+    confidence?: number | null; points_conflict?: boolean; points_confirmed?: boolean;
+    grouping_confirmed?: boolean; grouping_method?: string }>;
+  rubric_merge_history?: Array<Array<{ id: string; description: string; points: number; segment_ids?: string[];
+    confidence?: number | null; points_conflict?: boolean; points_confirmed?: boolean;
+    grouping_confirmed?: boolean; grouping_method?: string }>>;
 }
 
 export interface ModelAnswerQuestionChoice {

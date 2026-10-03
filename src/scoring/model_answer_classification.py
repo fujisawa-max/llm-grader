@@ -13,6 +13,7 @@ import time
 from typing import Any
 
 from .core import LocalClient, generation_payload, parse_response
+from .rubric_consolidation import validate_rubric_groups
 
 
 CATEGORIES = frozenset({
@@ -65,6 +66,22 @@ rubric（採点基準）, note（補足）, uncertain（判断できない）。
 設問への所属はgeometryで決定済みです。別の設問への割当は提案しないでください。
 位置と問題文、差分根拠を参考に内容の種類だけを判断してください。
 迷う場合はuncertainにしてください。JSON schemaに従ってください。"""
+
+RUBRIC_GROUPING_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "properties": {"groups": {"type": "array", "items": {
+        "type": "object", "additionalProperties": False,
+        "properties": {
+            "group_id": {"type": "string"}, "segment_ids": {"type": "array", "items": {"type": "string"}},
+            "kind": {"type": "string", "enum": ["rubric", "note", "question", "other", "uncertain"]},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        }, "required": ["group_id", "segment_ids", "kind", "confidence"],
+    }}}, "required": ["groups"],
+}
+RUBRIC_GROUPING_PROMPT = """同じ採点基準項目に属するsource segmentをgroup化してください。
+本文の生成、要約、言い換え、点数推定は禁止です。出力はgroup_id、segment_ids、kind、confidenceのみ。
+全segment IDを一度だけ割り当ててください。点数だけの行は前後の基準へ属するか判断してください。
+kindはrubric/note/question/other/uncertain。原文と配点はbackendがsourceから再構築します。JSON schemaに従ってください。"""
 
 
 class ClassificationOutputError(ValueError):
@@ -366,6 +383,38 @@ class ModelAnswerSemanticClassifier:
         result = build_classification(text, structured, threshold=self.threshold, source_segments=source_segments)
         return {**result, "profile_id": self.profile_id, "model_id": model_id,
                 "runtime_type": runtime_profile.get("runtime_type", "managed")}
+
+    def group_rubric_segments(self, *, segments: list[dict[str, Any]], deadline_monotonic: float | None = None):
+        """Ask the same managed profile for grouping IDs only; source text stays local."""
+        if not segments:
+            return []
+        ready = self.manager.ensure_running(self.profile_id)
+        endpoint = ready.get("endpoint") or ready.get("profile", {}).get("endpoint")
+        runtime_profile = ready.get("profile", {})
+        model_id = runtime_profile.get("model_id")
+        if not endpoint or not model_id:
+            raise RuntimeError("CLASSIFIER_RUNTIME_CONFIGURATION_MISSING")
+        client = LocalClient({"models": {"classifier": {
+            "base_url": endpoint, "model_id": model_id,
+            "request_timeout_seconds": runtime_profile.get("request_timeout_seconds", 300)}},
+            "generation": runtime_profile.get("generation", {})}, "classifier")
+        if deadline_monotonic is not None:
+            remaining = deadline_monotonic - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("RUBRIC_GROUPING_BUDGET_EXHAUSTED")
+            client.timeout = min(client.timeout, remaining)
+        payload = {"source_segments": [{key: item.get(key) for key in
+                    ("id", "text", "page_index", "bbox", "reading_order", "geometry") if key in item}
+                    for item in segments]}
+        request = {"model": model_id, "messages": [
+            {"role": "system", "content": RUBRIC_GROUPING_PROMPT},
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        ], **generation_payload(client.generation), "stream": False,
+            "response_format": {"type": "json_schema", "json_schema": {
+                "name": "rubric_segment_grouping", "strict": True, "schema": RUBRIC_GROUPING_SCHEMA}},
+            "chat_template_kwargs": {"enable_thinking": False, **runtime_profile.get("chat_template_kwargs", {})}}
+        raw = client.request(endpoint.rstrip("/") + "/chat/completions", request)
+        return validate_rubric_groups(parse_response(raw), segments)
 
 
 def apply_teacher_segment_edits(classification: dict[str, Any], edits: list[dict[str, Any]]):
