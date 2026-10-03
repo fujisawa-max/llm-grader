@@ -16,11 +16,12 @@ from scoring.api.model_answer_imports import (
     DraftEdit,
     EntryEdit,
     ImportCreate,
+    RubricRegistrationRequest,
 )
 from scoring.db import create_session_factory, init_database
-from scoring.db.models import ModelAnswer, RubricVersion
+from scoring.db.models import ModelAnswer, ModelAnswerImportDraft, RubricVersion
 from scoring.domain import DomainService
-from scoring.model_answer_classification import split_source_segments
+from scoring.model_answer_classification import is_effectively_blank, split_source_segments
 from scoring.model_answer_drafts import normalize_question_text
 
 
@@ -467,7 +468,7 @@ class ModelAnswerImportApiTests(unittest.TestCase):
                 }])
                 self.assertEqual(session.scalars(select(RubricVersion)).all(), [])
 
-    def test_low_confidence_blocks_until_teacher_explicitly_resolves_segments(self):
+    def test_low_confidence_classification_is_advisory_for_valid_registration_content(self):
         class UncertainClassifier:
             def classify(self, *, question_context, candidate_text, source_segments=None):
                 segments = source_segments if source_segments is not None else split_source_segments(candidate_text)
@@ -485,7 +486,6 @@ class ModelAnswerImportApiTests(unittest.TestCase):
                                  model_answer_classifier=UncertainClassifier())
             create = _endpoint(app, "/api/v1/tests/{test_id}/model-answer-imports")
             classify = _endpoint(app, "/api/v1/model-answer-import-drafts/{draft_id}/classify")
-            update = _endpoint(app, "/api/v1/model-answer-import-drafts/{draft_id}", "PUT")
             confirm = _endpoint(app, "/api/v1/model-answer-import-drafts/{draft_id}/confirm")
             with factory() as session:
                 draft = create(test_id, ImportCreate(material_id=material_id), session)
@@ -494,21 +494,48 @@ class ModelAnswerImportApiTests(unittest.TestCase):
                 entry = classified["entries"][0]
                 self.assertEqual(entry["semantic_classification"]["status"], "needs_teacher_review")
                 self.assertEqual(entry["answer_text"], original)
-                with self.assertRaises(HTTPException) as caught:
-                    confirm(classified["id"], ConfirmRequest(expected_revision=2), session)
-                self.assertEqual(caught.exception.detail["error"]["code"], "CLASSIFICATION_REVIEW_REQUIRED")
-                session.rollback()
-                edits = [
-                    {"id": item["id"], "category": "model_answer", "text": item["text"]}
-                    for item in entry["semantic_classification"]["segments"]
-                ]
-                reviewed = update(classified["id"], DraftEdit(expected_revision=2, entries=[EntryEdit(
-                    id=entry["id"], question_id=entry["question_id"], answer_text=original,
-                    classification_segments=edits,
-                )]), session)
-                self.assertEqual(reviewed["entries"][0]["semantic_classification"]["status"], "teacher_reviewed")
-                confirmed = confirm(reviewed["id"], ConfirmRequest(expected_revision=3), session)
+                confirmed = confirm(classified["id"], ConfirmRequest(expected_revision=2), session)
                 self.assertEqual(confirmed["draft"]["state"], "confirmed")
+                self.assertEqual(confirmed["model_answers"][0]["answer_text"], original)
+
+    def test_effectively_blank_recognizes_unicode_invisible_pdf_noise(self):
+        for value in ("", "   ", "\r\n\t", "\u00a0", "\u200b", "\ufeff", "\x00\x1f", " \u200b\ufeff\x00\n"):
+            with self.subTest(value=value):
+                self.assertTrue(is_effectively_blank(value))
+        self.assertFalse(is_effectively_blank("\u200b答案"))
+
+    def test_import_rubric_registers_generated_version_without_autoapproval(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            factory, test_id, material_id, q1_id, q21_id, q22_id = self.make_fixture(
+                root, "Question 1\nAnswer one\nQuestion 2\n(1) Answer two one\n(2) Answer two two")
+            with patch.dict("os.environ", {"LLM_GRADER_ARTIFACT_ROOT": str(root)}):
+                app = create_app(factory, question_import_root=root / "question-imports", allowed_roots=[root])
+            create = _endpoint(app, "/api/v1/tests/{test_id}/model-answer-imports")
+            update = _endpoint(app, "/api/v1/model-answer-import-drafts/{draft_id}", "PUT")
+            register = _endpoint(app, "/api/v1/model-answer-import-drafts/{draft_id}/register-rubric", "POST")
+            with factory() as session:
+                draft = create(test_id, ImportCreate(material_id=material_id), session)
+                question_ids = [q1_id, q21_id, q22_id]
+                points = [10, 5, 5]
+                edits = []
+                for index, (entry, question_id, point) in enumerate(zip(draft["entries"], question_ids, points)):
+                    segment_id = f"rubric-source-{index}"
+                    entry["semantic_classification"] = {"status": "needs_teacher_review", "segments": [
+                        {"id": segment_id, "category": "rubric", "text": f"採点観点{index + 1}（{point}点）",
+                         "source_text": f"採点観点{index + 1}（{point}点）"}],
+                    }
+                    edits.append(EntryEdit(id=entry["id"], question_id=question_id,
+                        answer_text=entry["answer_text"], rubric_edits=[{"id": segment_id,
+                            "description": f"採点観点{index + 1}", "points": point}]))
+                draft_row = session.get(ModelAnswerImportDraft, draft["id"])
+                draft_row.snapshot = {**draft_row.snapshot, "entries": draft["entries"]}
+                session.commit()
+                updated = update(draft["id"], DraftEdit(expected_revision=1, entries=edits), session)
+                result = register(draft["id"], RubricRegistrationRequest(expected_revision=updated["revision"]), session)
+                self.assertEqual(result["rubric"]["status"], "generated")
+                self.assertEqual(result["rubric"]["rubric_json"]["provenance"]["material_id"], material_id)
+                self.assertEqual(len(session.scalars(select(RubricVersion)).all()), 1)
 
     def test_teacher_text_edit_accepts_low_confidence_answer_without_classification_review(self):
         class UncertainClassifier:

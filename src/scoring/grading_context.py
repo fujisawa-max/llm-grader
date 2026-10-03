@@ -133,9 +133,9 @@ class EffectiveQuestionContextBuilder:
 MESSAGES = {
     "MISSING_MAX_POINTS": "配点が未設定です。0点として扱いません。",
     "INVALID_MAX_POINTS": "現在の採点エンジンは正の整数配点を必要とします。",
-    "MISSING_MODEL_ANSWER": "この問題に模範解答を関連付けてください。",
+    "MISSING_MODEL_ANSWER": "この問題の模範解答は未登録です。採点基準とは別に登録してください。",
     "EMPTY_MODEL_ANSWER": "模範解答の本文が空です。",
-    "MISSING_RUBRIC": "この問題を含む採点基準を作成・承認してください。",
+    "MISSING_RUBRIC": "この問題の採点基準は未登録または未承認です。模範解答の登録状態とは別です。",
     "INVALID_RUBRIC": "採点基準の観点・配点が不正です。",
     "RUBRIC_SCORE_MISMATCH": "採点基準と問題の配点が一致しません。",
     "GRADER_ASSET_UNSUPPORTED": "選択した採点adapterは問題図を扱えません。",

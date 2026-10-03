@@ -2,6 +2,10 @@ import type { ModelAnswerDraftEntry, ModelAnswerImportDraft, ModelAnswerQuestion
 
 export interface ReviewTarget { id: string; label: string; kind: "question" | "unassigned" | "excluded"; questionId?: string; entryId?: string }
 
+function effectivelyBlank(value: string | null | undefined): boolean {
+  return ![...(value || "")].some((char) => !/[\s\u00a0\u1680\u2000-\u200f\u2028\u2029\u202f\u205f\u2060\u3000\ufeff\u0000-\u001f\u007f-\u009f]/u.test(char));
+}
+
 function orderedQuestions(questions: ModelAnswerQuestionChoice[]): ModelAnswerQuestionChoice[] {
   if (questions.every((question) => Number.isInteger(question.hierarchy_order))) {
     return [...questions].sort((left, right) => left.hierarchy_order! - right.hierarchy_order!);
@@ -34,7 +38,8 @@ export function dispositionOf(entry: ModelAnswerDraftEntry): "include" | "unassi
 }
 
 export function buildReviewTargets(draft: Pick<ModelAnswerImportDraft, "questions" | "entries">): ReviewTarget[] {
-  const visibleEntries = draft.entries.filter((entry) => dispositionOf(entry) !== "ignored");
+  const visibleEntries = draft.entries.filter((entry) => dispositionOf(entry) !== "ignored"
+    && !(effectivelyBlank(entry.answer_text) && effectivelyBlank(entry.candidate_text)));
   const questions = orderedQuestions(draft.questions).map((question) => ({
     id: `question:${question.id}`, label: question.label, kind: "question" as const, questionId: question.id,
   }));

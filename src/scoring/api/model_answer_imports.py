@@ -18,6 +18,7 @@ from ..db.models import (
     CourseOffering,
     ModelAnswer,
     ModelAnswerImportDraft,
+    RubricVersion,
     Test,
     TestMaterial,
     TestQuestion,
@@ -38,6 +39,7 @@ from ..model_answer_classification import (
     CONFIDENCE_THRESHOLD,
     apply_teacher_segment_edits,
     fallback_classification,
+    is_effectively_blank,
     validate_classifier_result,
 )
 from ..pdf_native import PyMuPdfNativeExtractor, sha256_file
@@ -64,6 +66,13 @@ class AlternativeAnswerEdit(BaseModel):
     text: str = Field(max_length=100000)
 
 
+class RubricCandidateEdit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(min_length=1, max_length=200)
+    description: str = Field(max_length=100000)
+    points: int = Field(ge=0)
+
+
 class EntryEdit(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str
@@ -75,6 +84,7 @@ class EntryEdit(BaseModel):
     classification_segments: list[ClassificationSegmentEdit] | None = None
     classification_reviewed: bool = False
     manual_alternative_answers: list[AlternativeAnswerEdit] | None = None
+    rubric_edits: list[RubricCandidateEdit] | None = None
 
 
 class DraftEdit(BaseModel):
@@ -84,6 +94,11 @@ class DraftEdit(BaseModel):
 
 
 class ConfirmRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: int = Field(ge=1)
+
+
+class RubricRegistrationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expected_revision: int = Field(ge=1)
 
@@ -160,7 +175,7 @@ def router(db, artifact_root, classifier=None):
             candidate = str(entry.get("candidate_text") or
                             (entry.get("semantic_classification") or {}).get("candidate_text") or
                             entry.get("answer_text") or "")
-            if (not candidate.strip() and not entry.get("teacher_correction")
+            if (is_effectively_blank(candidate) and not entry.get("teacher_correction")
                     and entry.get("source", {}).get("kind") != "teacher_manual"):
                 # Preserve source/provenance while keeping empty extraction noise
                 # out of semantic classification and teacher registration work.
@@ -212,7 +227,7 @@ def router(db, artifact_root, classifier=None):
                     categories = {segment.get("category") for segment in classification.get("segments", [])}
                     if (classification.get("status") == "classified"
                             and not classification.get("primary_answer_text", "").strip()
-                            and categories and categories.issubset({"question", "rubric", "note"})):
+                            and categories and categories.issubset({"question", "note"})):
                         # Keep source evidence in the draft, but do not treat
                         # clearly non-answer material as a formal answer target.
                         entry["disposition"] = "excluded"
@@ -516,6 +531,19 @@ def router(db, artifact_root, classifier=None):
                 {"id": segment.get("id"), "category": segment.get("category"), "text": segment.get("text")}
                 for segment in original_segments
             ] != [segment.model_dump() for segment in edit.classification_segments]
+            original_rubric_edits = original_by_id.get(edit.id, {}).get("rubric_edits")
+            submitted_rubric_edits = ([item.model_dump() for item in edit.rubric_edits]
+                                      if edit.rubric_edits is not None else original_rubric_edits)
+            if edit.rubric_edits is not None:
+                rubric_segment_ids = {segment.get("id") for segment in
+                    (entry.get("semantic_classification") or {}).get("segments", [])
+                    if segment.get("category") == "rubric"}
+                ids = [item["id"] for item in submitted_rubric_edits]
+                if len(ids) != len(set(ids)) or any(item_id not in rubric_segment_ids for item_id in ids):
+                    fail(422, "INVALID_RUBRIC_CANDIDATE", "採点基準候補の元文章を確認してください")
+                entry["rubric_edits"] = submitted_rubric_edits
+            rubric_changed = (edit.rubric_edits is not None
+                and submitted_rubric_edits != original_rubric_edits)
             explicit_teacher_change = edit.id not in original_by_id or any((
                 edit.question_id != original_by_id[edit.id].get("question_id"),
                 edit.answer_text != original_by_id[edit.id].get("answer_text"),
@@ -523,6 +551,7 @@ def router(db, artifact_root, classifier=None):
                 answer_kind != prior_kind,
                 edit.classification_reviewed,
                 classification_changed,
+                rubric_changed,
             ))
             if explicit_teacher_change:
                 entry["teacher_correction"] = {"question_id": edit.question_id, "answer_text": edit.answer_text,
@@ -580,6 +609,99 @@ def router(db, artifact_root, classifier=None):
         session.refresh(draft)
         return view(draft, session)
 
+    @routes.post("/model-answer-import-drafts/{draft_id}/register-rubric")
+    def register_rubric(draft_id: str, body: RubricRegistrationRequest, session=Depends(db)):
+        draft = owned_draft(draft_id, session)
+        revision_check(draft, body.expected_revision)
+        material = session.get(TestMaterial, draft.material_id)
+        if not material or material.test_id != draft.test_id or material.material_type != "model_answer_source":
+            fail(409, "SOURCE_MATERIAL_CHANGED", "元の模範解答資料を確認できません")
+        source_path = resolve_material_file(material)
+        actual_sha = sha256_file(source_path)
+        if actual_sha != draft.source_sha256 or (material.sha256 and actual_sha != material.sha256):
+            fail(409, "SOURCE_MATERIAL_CHANGED", "解析後に元の模範解答資料が変更されています")
+        _, questions = choices_for(draft.test_id, session)
+        gradable = {question.id: question for question in questions if question.is_gradable}
+        entries = draft.snapshot.get("entries", [])
+        edited_by_question: dict[str, list[dict]] = {}
+        for entry in entries:
+            rubric_edits = entry.get("rubric_edits") or []
+            if not rubric_edits:
+                continue
+            if entry.get("disposition", "include") != "include" or entry.get("question_id") not in gradable:
+                fail(422, "RUBRIC_QUESTION_REQUIRED", "採点基準候補の対応先に採点対象設問を指定してください")
+            allowed_ids = {segment.get("id") for segment in
+                (entry.get("semantic_classification") or {}).get("segments", [])
+                if segment.get("category") == "rubric"}
+            if any(item.get("id") not in allowed_ids for item in rubric_edits):
+                fail(422, "INVALID_RUBRIC_CANDIDATE", "採点基準候補の元文章を確認してください")
+            edited_by_question.setdefault(entry["question_id"], []).extend(
+                [{**item, "entry": entry} for item in rubric_edits])
+        if not edited_by_question:
+            fail(422, "NO_RUBRIC_CANDIDATES", "登録する採点基準候補がありません")
+
+        latest = session.scalar(select(RubricVersion).where(
+            RubricVersion.test_id == draft.test_id).order_by(RubricVersion.version.desc()))
+        base_rows = {}
+        if latest and isinstance(latest.rubric_json, dict):
+            base_rows = {row.get("question_id"): row for row in latest.rubric_json.get("questions", [])
+                         if isinstance(row, dict) and row.get("question_id")}
+        rubric_questions = []
+        provenance = {"kind": "model_answer_import_rubric", "draft_id": draft.id,
+                      "material_id": material.id, "source_sha256": actual_sha, "questions": {}}
+        for question_id, question in gradable.items():
+            selected = edited_by_question.get(question_id)
+            if selected:
+                criteria = []
+                source_records = []
+                for index, item in enumerate(selected, 1):
+                    if not str(item.get("description") or "").strip() or int(item.get("points", 0)) <= 0:
+                        fail(422, "RUBRIC_CANDIDATE_INCOMPLETE", f"{question.display_label} の採点基準本文と配点を入力してください")
+                    entry, segment_id = item["entry"], item["id"]
+                    segment = next((value for value in
+                        (entry.get("semantic_classification") or {}).get("segments", [])
+                        if value.get("id") == segment_id and value.get("category") == "rubric"), {})
+                    source_segment = next((value for value in entry.get("source", {}).get("segments", [])
+                        if segment_id == value.get("id") or segment_id in value.get("element_ids", [])), {})
+                    criterion_id = f"import-{entry['id'][:12]}-{index}"
+                    criteria.append({"id": criterion_id, "description": item["description"].strip(),
+                                     "points": item["points"]})
+                    source_records.append({"criterion_id": criterion_id, "candidate_id": entry["id"],
+                        "segment_id": segment_id, "original_text": segment.get("source_text") or segment.get("text"),
+                        "teacher_text": item["description"], "page_index": source_segment.get("page_index"),
+                        "bbox": source_segment.get("bbox")})
+                provenance["questions"][question_id] = source_records
+            else:
+                criteria = (base_rows.get(question_id) or {}).get("criteria", [])
+            if not criteria:
+                fail(422, "RUBRIC_QUESTION_MISSING", f"{question.display_label} の採点基準がありません")
+            points = sum(float(item.get("points", 0)) for item in criteria)
+            if question.max_points is None or points != float(question.max_points):
+                fail(422, "RUBRIC_SCORE_MISMATCH", f"{question.display_label} の採点基準合計を問題の配点に合わせてください")
+            rubric_questions.append({"question_id": question_id, "max_points": question.max_points,
+                                     "criteria": criteria})
+        try:
+            created = DomainService(session).rubric(draft.test_id,
+                {"questions": rubric_questions, "provenance": provenance},
+                source_type="model_answer_import")
+            draft.snapshot = {**draft.snapshot, "rubric_registration": {
+                "rubric_version_id": created.id, "version": created.version,
+                "status": created.status, "source_sha256": actual_sha,
+            }}
+            draft.revision += 1
+            session.commit()
+            session.refresh(draft)
+            return {"draft": view(draft, session), "rubric": {
+                "id": created.id, "version": created.version, "status": created.status,
+                "rubric_json": created.rubric_json}}
+        except HTTPException:
+            session.rollback()
+            raise
+        except Exception as exc:
+            session.rollback()
+            logger.exception("Model-answer import rubric registration failed", exc_info=exc)
+            fail(422, "RUBRIC_SAVE_FAILED", "採点基準を登録できませんでした。設問と配点を確認してください")
+
     @routes.post("/model-answer-import-drafts/{draft_id}/confirm")
     def confirm(draft_id: str, body: ConfirmRequest, session=Depends(db)):
         draft = owned_draft(draft_id, session)
@@ -599,7 +721,7 @@ def router(db, artifact_root, classifier=None):
         entries = [({**entry, "disposition": "ignored", "ignore_reason": "blank_or_whitespace",
                      "semantic_classification": {**(entry.get("semantic_classification") or {}),
                                                   "status": "ignored", "reason": "blank_or_whitespace"}}
-                    if (not str(entry.get("answer_text") or entry.get("candidate_text") or "").strip()
+                    if (is_effectively_blank(entry.get("answer_text")) and is_effectively_blank(entry.get("candidate_text"))
                         and not entry.get("teacher_correction")
                         and entry.get("source", {}).get("kind") != "teacher_manual")
                     else entry) for entry in entries]
@@ -608,7 +730,11 @@ def router(db, artifact_root, classifier=None):
         confirmed_ids = set(draft.snapshot.get("confirmed_entry_ids", []))
         included = [entry for entry in entries
                     if entry.get("disposition", "include" if entry.get("question_id") else "unassigned") == "include"
-                    and entry.get("id") not in confirmed_ids]
+                    and entry.get("id") not in confirmed_ids
+                    and not ((not str(entry.get("answer_text") or "").strip())
+                             and (entry.get("semantic_classification") or {}).get("segments")
+                             and {segment.get("category") for segment in
+                                  entry["semantic_classification"]["segments"]}.issubset({"rubric", "question", "note"}))]
         mapped = [entry.get("question_id") for entry in included]
         if not included:
             fail(422, "NO_ANSWERS_TO_CONFIRM", "登録する模範解答を1件以上選んでください")
@@ -622,16 +748,11 @@ def router(db, artifact_root, classifier=None):
             fail(422, "PRIMARY_ANSWER_REQUIRED", "別解を登録する設問には主な模範解答も必要です")
         if any(question_id not in question_by_id or not question_by_id[question_id].is_gradable for question_id in mapped):
             fail(422, "INVALID_QUESTION_MAPPING", "対応先にはこの試験の採点対象設問を選択してください")
-        if any(not str(entry.get("answer_text") or "").strip() for entry in included):
-            count = sum(1 for entry in included if not str(entry.get("answer_text") or "").strip())
+        if any(is_effectively_blank(entry.get("answer_text")) for entry in included):
+            count = sum(1 for entry in included if is_effectively_blank(entry.get("answer_text")))
             fail(422, "EMPTY_ANSWER_TEXT", f"模範解答本文が空の項目が{count}件あります")
-        pending_classification = sum(1 for entry in included
-            if (entry.get("semantic_classification") or {}).get("status") == "needs_teacher_review"
-            and not entry.get("teacher_correction", {}).get("teacher_confirmed")
-            and entry.get("source", {}).get("kind") != "teacher_manual")
-        if pending_classification:
-            fail(422, "CLASSIFICATION_REVIEW_REQUIRED",
-                 f"分類結果を確認していない模範解答が{pending_classification}件あります")
+        # Classification confidence is advisory. Registration is guarded by
+        # mapped, non-empty, deduplicated formal answer content above.
 
         service = DomainService(session)
         created = []

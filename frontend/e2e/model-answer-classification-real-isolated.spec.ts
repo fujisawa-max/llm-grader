@@ -29,9 +29,8 @@ test("source-grounded semantic categories stay editable and persist with the imp
   await expect(answer).toHaveValue(/The model memorizes the training examples and generalizes poorly\.\n?/);
   await expect(page.getByText("分類済み", { exact: true })).toBeVisible();
   await expect(page.getByText("別解・複数正答候補", { exact: true })).toBeVisible();
-  const rubricDetails = page.locator("details").filter({ has: page.getByText("採点基準候補（自動登録されません）") });
-  await rubricDetails.locator("summary").click();
-  await expect(rubricDetails.getByText("5 points: identify overfitting.", { exact: false })).toBeVisible();
+  await expect(page.getByLabel(/^採点基準候補/).first()).toHaveValue("identify overfitting.");
+  await expect(page.getByLabel(/採点基準候補 .* の配点/).first()).toHaveValue("5");
 
   const questionDetails = page.locator("details").filter({ has: page.getByText(/除外された問題文/) });
   await questionDetails.locator("summary").click();

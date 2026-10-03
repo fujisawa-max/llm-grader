@@ -7,6 +7,7 @@ the model never returns answer prose.
 
 from __future__ import annotations
 
+import unicodedata
 import json
 import time
 from typing import Any
@@ -18,6 +19,13 @@ CATEGORIES = frozenset({
     "question", "model_answer", "alternative_answer", "rubric", "note", "uncertain",
 })
 CONFIDENCE_THRESHOLD = 0.82
+
+
+def is_effectively_blank(value: Any) -> bool:
+    """Treat invisible PDF/control artifacts as blank without changing source text."""
+    text = str(value or "")
+    return not any(not (char.isspace() or unicodedata.category(char) in {"Cf", "Cc", "Cs", "Zs", "Zl", "Zp"})
+                   for char in text)
 MAX_CANDIDATE_CHARS = 40000
 MAX_CANDIDATE_SEGMENTS = 300
 # Keep ID-only JSON responses within the classifier profile's 512-token budget.

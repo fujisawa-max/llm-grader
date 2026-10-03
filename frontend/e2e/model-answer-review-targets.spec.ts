@@ -12,8 +12,8 @@ test("review targets keep nested breadcrumbs and place unresolved and excluded a
       { id: "sub", parent_id: "q2", label: "問題2 > (2)" },
     ],
     entries: [
-      { id: "source-1", question_id: null, disposition: "unassigned" },
-      { id: "source-2", question_id: "q2", disposition: "excluded" },
+      { id: "source-1", question_id: null, disposition: "unassigned", candidate_text: "Answer candidate" },
+      { id: "source-2", question_id: "q2", disposition: "excluded", candidate_text: "Question text" },
     ],
   } as ModelAnswerImportDraft;
   const targets = buildReviewTargets(draft);
@@ -36,7 +36,7 @@ test("API hierarchy rank wins over interleaved source and question response orde
     entries: [
       { id: "pdf-last", question_id: "q3a" },
       { id: "pdf-first", question_id: "q1" },
-      { id: "unresolved", question_id: null },
+      { id: "unresolved", question_id: null, candidate_text: "Unresolved candidate" },
     ],
   } as ModelAnswerImportDraft;
   expect(buildReviewTargets(draft).map((target) => target.label)).toEqual([
@@ -80,12 +80,10 @@ test("registration validation is structured, candidate-addressable, and ignores 
     ],
   } as unknown as ModelAnswerImportDraft;
   const result = validateModelAnswerRegistration(blocked, labels);
-  expect(result.map((item) => item.reasonCode)).toContain("empty_answer_text");
   expect(result.map((item) => item.reasonCode)).toContain("duplicate_primary_answer");
-  expect(result.find((item) => item.candidateId === "uncertain")?.message)
-    .toContain("問題2 > (2) > 2. — 分類結果を確認してください（問題文・分類未確定）。");
-  expect(result.find((item) => item.candidateId === "unassigned")?.message)
-    .toContain("対応する設問なし (1) — 採点基準候補: 対応先の設問を選ぶ");
+  expect(result.some((item) => item.reasonCode === "classification_review_required")).toBe(false);
+  expect(result.some((item) => item.reasonCode === "empty_answer_text")).toBe(false);
+  expect(result.some((item) => item.candidateId === "unassigned")).toBe(false);
   expect(result.some((item) => item.candidateId === "excluded")).toBe(false);
   expect(result.every((item) => item.severity === "blocking")).toBe(true);
   const alternativeOnly = { ...base, entries: [{ id: "alternative", question_id: "nested", answer_text: "Other", answer_kind: "alternative", disposition: "include" }] } as unknown as ModelAnswerImportDraft;
@@ -112,9 +110,7 @@ test("registration validation ignores blank/noise and irrelevant uncertain entri
     ],
   } as unknown as ModelAnswerImportDraft;
   const result = validateModelAnswerRegistration(draft, new Map([["question:q1", "問題1"]]));
-  expect(result.map((item) => [item.candidateId, item.reasonCode])).toEqual([
-    ["accepted", "classification_review_required"],
-  ]);
+  expect(result).toEqual([]);
   const teacherAccepted = { ...draft, entries: draft.entries.map((entry) => entry.id === "accepted"
     ? { ...entry, teacher_correction: { teacher_confirmed: true } } : entry) } as ModelAnswerImportDraft;
   expect(validateModelAnswerRegistration(teacherAccepted, new Map([["question:q1", "問題1"]]))).toEqual([]);

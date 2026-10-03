@@ -19,7 +19,7 @@ import {
 import { testData, tests } from "@/lib/api/domain";
 import type { Material, Test } from "@/types/domain";
 import { buildReviewTargets, dispositionOf, resolveReviewTarget } from "@/lib/modelAnswerReviewTargets";
-import { validateModelAnswerRegistration } from "@/lib/modelAnswerRegistrationValidation";
+import { isEffectivelyBlank, isModelAnswerRegistrationEntry, validateModelAnswerRegistration } from "@/lib/modelAnswerRegistrationValidation";
 
 const categoryLabels: Record<ModelAnswerContentCategory, string> = {
   question: "問題文",
@@ -33,6 +33,14 @@ const categoryLabels: Record<ModelAnswerContentCategory, string> = {
 const categoryOrder: ModelAnswerContentCategory[] = [
   "question", "model_answer", "alternative_answer", "rubric", "note", "uncertain",
 ];
+
+function pointHint(text: string): { description: string; points: number } {
+  const prefix = text.match(/^\s*(\d+(?:\.\d+)?)\s*(?:点|points?)\s*[:：-]\s*/i);
+  if (prefix) return { description: text.slice(prefix[0].length).trim(), points: Number(prefix[1]) };
+  const match = text.match(/[（(]\s*(\d+(?:\.\d+)?)\s*(?:点|points?)\s*[）)]\s*$|\s+(\d+(?:\.\d+)?)\s*(?:点|points?)\s*$/i);
+  const points = Number(match?.[1] || match?.[2] || 0);
+  return { description: match ? text.slice(0, match.index).trim() : text.trim(), points };
+}
 
 function groupsFor(segments: ModelAnswerClassifiedSegment[], category: ModelAnswerContentCategory) {
   const groups: ModelAnswerClassifiedSegment[][] = [];
@@ -62,6 +70,7 @@ export default function ModelAnswerImportReviewPage() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [selectedTargetId, setSelectedTargetId] = useState("");
+  const [rubricRegistering, setRubricRegistering] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -151,6 +160,7 @@ export default function ModelAnswerImportReviewPage() {
     disposition: entry.disposition || (entry.question_id ? "include" : "unassigned"),
     answer_kind: entry.answer_kind || "primary",
     loaded_model_answer_id: entry.loaded_model_answer?.id || null,
+    ...(entry.rubric_edits ? { rubric_edits: entry.rubric_edits } : {}),
     ...(entry.semantic_classification ? {
       classification_segments: entry.semantic_classification.segments.map(({ id, category, text }) => ({ id, category, text })),
       classification_reviewed: entry.semantic_classification.status === "teacher_reviewed",
@@ -158,6 +168,33 @@ export default function ModelAnswerImportReviewPage() {
         ? { manual_alternative_answers: entry.semantic_classification.manual_alternative_answers } : {}),
     } : {}),
   }));
+
+  function updateRubricEdit(entry: ModelAnswerDraftEntry, id: string, patch: Partial<{description: string; points: number}>) {
+    const groups = entry.semantic_classification ? groupsFor(entry.semantic_classification.segments, "rubric") : [];
+    const existing = entry.rubric_edits || groups.flatMap((group) => group.segmentIds.map((segmentId) => {
+      const segment = entry.semantic_classification!.segments.find((item) => item.id === segmentId)!;
+      return { id: segmentId, ...pointHint(segment.text) };
+    }));
+    updateEntry(entry.id, { rubric_edits: existing.map((item) => item.id === id ? { ...item, ...patch } : item) });
+  }
+
+  async function registerRubric() {
+    if (!draft) return;
+    const hasRubric = draft.entries.some((entry) => entry.rubric_edits?.length);
+    if (!hasRubric) { setError("登録する採点基準候補がありません。"); return; }
+    setRubricRegistering(true); setError(""); setNotice("");
+    try {
+      const updated = await modelAnswerImports.update(draft.id, {
+        expected_revision: draft.revision, entries: entryPayload(draft.entries),
+      });
+      setDraft(updated);
+      const result = await modelAnswerImports.registerRubric(updated.id, updated.revision);
+      setDraft(result.draft);
+      setNotice(`採点基準 v${result.rubric.version} を登録しました。現在の状態: ${result.rubric.status === "approved" ? "承認済み" : "未承認"}。`);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "採点基準を登録できませんでした");
+    } finally { setRubricRegistering(false); }
+  }
 
   function updateClassificationSegment(
     entryId: string,
@@ -255,15 +292,15 @@ export default function ModelAnswerImportReviewPage() {
 
   async function confirm() {
     if (!draft) return;
-    const active = draft.entries.filter((entry) => (entry.disposition || (entry.question_id ? "include" : "unassigned")) === "include" && !draft.confirmed_entry_ids?.includes(entry.id));
-    const empty = active.filter((entry) => !entry.answer_text.trim()).length;
-    const pending = active.filter((entry) => entry.semantic_classification?.status === "needs_teacher_review"
-      && entry.source.kind !== "teacher_manual" && !entry.teacher_correction?.teacher_confirmed).length;
-    if (!active.length || empty || pending) {
+    const active = draft.entries.filter((entry) => (entry.disposition || (entry.question_id ? "include" : "unassigned")) === "include" && !draft.confirmed_entry_ids?.includes(entry.id)
+      && isModelAnswerRegistrationEntry(entry)
+      && (entry.source.kind === "teacher_manual"
+        || !(isEffectivelyBlank(entry.answer_text) && isEffectivelyBlank(entry.candidate_text))));
+    const empty = active.filter((entry) => isEffectivelyBlank(entry.answer_text)).length;
+    if (!active.length || empty) {
       setError([
         !active.length ? "登録する模範解答候補を選んでください。" : "",
         empty ? `模範解答本文が空の項目が${empty}件あります。` : "",
-        pending ? `分類結果を確認していない項目が${pending}件あります。` : "",
       ].filter(Boolean).join(" "));
       return;
     }
@@ -315,10 +352,10 @@ export default function ModelAnswerImportReviewPage() {
     <Breadcrumbs items={[
       { label: "試験", href: `/tests/${test.id}` },
       { label: test.name, href: `/tests/${test.id}?section=answers` },
-      { label: "模範解答の確認" },
+      { label: "解答・採点基準の確認" },
     ]} />
-    <PageHeader title="模範解答の確認" />
-    <p className="muted">登録済みPDFから読み取った内容を既存の設問へ対応付け、本文を確認して登録します。新しい設問は作成されません。</p>
+    <PageHeader title="解答・採点基準の確認" />
+    <p className="muted">登録済みPDFから読み取った模範解答と採点基準を既存の設問へ対応付け、確認したものをそれぞれ登録します。新しい設問は作成されません。</p>
     <p className="muted">PDF {material?.original_filename || "登録済み資料"}　/　{draft.page_count}ページ　/　読取方法: {draft.parser.library || "PDF文字抽出"}</p>
     {draft.extraction?.status === "used" && <p className="muted">本文抽出: 問題PDFとの差分から追加領域を特定</p>}
     {draft.pipeline && <section aria-label="解析の状態">
@@ -330,6 +367,8 @@ export default function ModelAnswerImportReviewPage() {
       <button type="button" className="button secondary" disabled={busy || classifying} onClick={() => void save()}>下書き保存</button>
       <button type="button" className="button" disabled={busy || classifying || registrationValidation.length > 0}
         onClick={() => void confirm()}>{busy ? "登録中…" : "模範解答として登録"}</button>
+      <button type="button" className="button secondary" disabled={busy || classifying || rubricRegistering || !draft.entries.some((entry) => entry.rubric_edits?.length)}
+        onClick={() => void registerRubric()}>{rubricRegistering ? "採点基準を登録中…" : "採点基準として登録"}</button>
       <button type="button" className="button secondary" disabled={busy || classifying || draft.entries.length === 0} onClick={() => void classify()}>
         {classifying ? "意味分類中…" : "意味分類を再実行"}</button>
       <Link className="button secondary" href={`/tests/${test.id}?section=answers`}>戻る</Link>
@@ -440,7 +479,7 @@ export default function ModelAnswerImportReviewPage() {
               </span>
             </header>
             {entry.semantic_classification.status === "fallback" && <p className="warn">意味分類を利用できませんでした。抽出本文を変更せず保持しています。分類機能が復旧した後に再実行するか、本文を手動で編集してください。</p>}
-            {entry.semantic_classification.status === "needs_teacher_review" && !entry.teacher_correction?.teacher_confirmed && entry.source.kind !== "teacher_manual" && <p className="warn">信頼度が低い、または判断できない文章があります。内容を確認し、必要なら分類を変更してください。</p>}
+            {entry.semantic_classification.status === "needs_teacher_review" && !entry.teacher_correction?.teacher_confirmed && entry.source.kind !== "teacher_manual" && <p className="muted">分類は参考情報です。正式登録される本文と設問の対応を確認してください。</p>}
             {entry.semantic_classification.confidence !== null && <p className="muted">分類信頼度: {Math.round(entry.semantic_classification.confidence * 100)}%</p>}
             <div className="model-answer-classification-groups">
               <div><strong>LLM取り込み結果</strong>
@@ -479,8 +518,29 @@ export default function ModelAnswerImportReviewPage() {
               {(["rubric", "question", "note", "uncertain"] as ModelAnswerContentCategory[]).map((category) => {
                 const groups = groupsFor(entry.semantic_classification!.segments, category);
                 if (!groups.length) return null;
-                const heading = category === "rubric" ? "採点基準候補（自動登録されません）"
+                const heading = category === "rubric" ? "採点基準候補"
                   : category === "question" ? "除外された問題文" : categoryLabels[category];
+                if (category === "rubric") return <details key={category} open>
+                  <summary>{heading}（{groups.length}件）</summary>
+                  {entry.semantic_classification!.segments.filter((segment) => segment.category === "rubric").map((segment, groupIndex) => {
+                    const hinted = pointHint(segment.text);
+                    const edit = entry.rubric_edits?.find((item) => item.id === segment.id) || { id: segment.id, ...hinted };
+                    return <div className="rubric-candidate-edit" key={segment.id}>
+                      <label className="field">採点基準 {groupIndex + 1}
+                        <textarea aria-label={`採点基準候補 ${index + 1}-${groupIndex + 1}`} value={edit.description}
+                          disabled={busy || classifying || draft.state !== "editing"}
+                          onChange={(event) => updateRubricEdit(entry, segment.id, { description: event.target.value })} />
+                      </label>
+                      <label className="field">配点
+                        <input type="number" min="1" step="1" aria-label={`採点基準候補 ${index + 1}-${groupIndex + 1} の配点`}
+                          value={edit.points || ""} disabled={busy || classifying || draft.state !== "editing"}
+                          onChange={(event) => updateRubricEdit(entry, segment.id, { points: Number(event.target.value) })} />
+                      </label>
+                      <MathPreview source={segment.text} />
+                    </div>;
+                  })}
+                  <p className="muted">登録すると採点基準の新しい未承認版を作成します。採点前に既存の承認操作が必要です。</p>
+                </details>;
                 return <details key={category}>
                   <summary>{heading}（{groups.length}件）</summary>
                   {groups.map((group, groupIndex) => <div key={`${category}-${groupIndex}`}><MathPreview source={group.text} /></div>)}

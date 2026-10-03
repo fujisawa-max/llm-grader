@@ -71,6 +71,7 @@ export interface ModelAnswerDraftEntry {
   disposition?: "include" | "unassigned" | "excluded" | "ignored";
   ignore_reason?: string;
   teacher_correction?: { teacher_confirmed?: boolean; [key: string]: unknown };
+  rubric_edits?: Array<{ id: string; description: string; points: number }>;
   answer_kind?: "primary" | "alternative";
   loaded_model_answer?: { id: string; version: number; question_id: string };
   geometry?: SpatialAssignment;
@@ -100,6 +101,7 @@ export interface ModelAnswerDraftEntryUpdate {
   classification_segments?: Array<Pick<ModelAnswerClassifiedSegment, "id" | "category" | "text">>;
   classification_reviewed?: boolean;
   manual_alternative_answers?: Array<{ id: string; text: string }>;
+  rubric_edits?: Array<{ id: string; description: string; points: number }>;
 }
 
 export interface ModelAnswerQuestionChoice {
@@ -186,6 +188,10 @@ export const modelAnswerImports = {
   ),
   confirm: (draftId: string, expectedRevision: number) => apiFetch<{ draft: ModelAnswerImportDraft; model_answers: ImportedModelAnswer[] }>(
     `/model-answer-import-drafts/${encodeURIComponent(draftId)}/confirm`,
+    json({ expected_revision: expectedRevision }),
+  ),
+  registerRubric: (draftId: string, expectedRevision: number) => apiFetch<{ draft: ModelAnswerImportDraft; rubric: { id: string; version: number; status: string } }>(
+    `/model-answer-import-drafts/${encodeURIComponent(draftId)}/register-rubric`,
     json({ expected_revision: expectedRevision }),
   ),
 };

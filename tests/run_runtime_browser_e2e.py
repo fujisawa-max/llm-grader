@@ -91,6 +91,11 @@ def seed(root):
                                        display_label=f"問題{number}", sort_order=number, max_points=10,
                                        is_gradable=True, question_text=f"Explain concept {number}.")
             review_ux_question_ids.append(question.id)
+        domain.rubric(review_ux_test.id, {"questions": [
+            {"question_id": question_id, "max_points": 10,
+             "criteria": [{"id": f"existing-{index}", "description": "既存の採点基準", "points": 10}]}
+            for index, question_id in enumerate(review_ux_question_ids, 1)
+        ]}, source_type="manual")
         review_pdf = pymupdf.open(stream=source.read_bytes(), filetype="pdf")
         review_pdf.new_page(width=600, height=800)
         review_content = review_pdf.tobytes()
@@ -103,9 +108,26 @@ def seed(root):
             review_ux_test.id, material_type="model_answer_source",
             storage_ref=str(review_source), original_filename="review-ux-model-answer.pdf",
             mime_type="application/pdf", sha256=review_digest)
+        rubric_pdf = pymupdf.open()
+        rubric_page = rubric_pdf.new_page(width=600, height=800)
+        rubric_page.insert_textbox(
+            pymupdf.Rect(30, 30, 570, 750),
+            "Question 1\nExplain concept 1.\nA source answer.\n5 points: identify overfitting.",
+            fontsize=12, lineheight=1.5,
+        )
+        rubric_content = rubric_pdf.tobytes()
+        rubric_pdf.close()
+        rubric_digest = hashlib.sha256(rubric_content).hexdigest()
+        rubric_source = root / "sources" / review_ux_test.id / f"{rubric_digest}.pdf"
+        rubric_source.write_bytes(rubric_content)
+        rubric_material = domain.material(
+            review_ux_test.id, material_type="model_answer_source",
+            storage_ref=str(rubric_source), original_filename="unified-rubric-model-answer.pdf",
+            mime_type="application/pdf", sha256=rubric_digest)
         geometry_env.update({"REVIEW_UX_TEST_ID": review_ux_test.id,
                              "REVIEW_UX_QUESTION_IDS": json.dumps(review_ux_question_ids),
-                             "REVIEW_UX_MATERIAL_ID": review_ux_material.id})
+                             "REVIEW_UX_MATERIAL_ID": review_ux_material.id,
+                             "REVIEW_RUBRIC_MATERIAL_ID": rubric_material.id})
         nested_test = domain.test(offering.id, name="Nested review navigation fixture", total_points=20)
         domain.question(nested_test.id, question_number="1", display_label="問題1", sort_order=1,
                         max_points=10, is_gradable=True)
@@ -189,6 +211,7 @@ def main():
                                     "e2e/model-answer-classification-real-isolated.spec.ts",
                                     "e2e/model-answer-geometry-real-isolated.spec.ts",
                                     "e2e/model-answer-review-ux-real-isolated.spec.ts",
+                                    "e2e/unified-answer-rubric-review-real.spec.ts",
                                     "e2e/model-answer-nested-navigation-real-isolated.spec.ts", "--workers=1"],
                                    cwd=REPO / "frontend", env=env, check=True)
                     assert any("POST /v1/chat/completions" in line
