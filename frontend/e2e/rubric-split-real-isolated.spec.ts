@@ -24,7 +24,7 @@ test("rubric ranges preview, split, insert, undo and registration preserve sourc
   await expect(preview).toBeVisible();
   await expect(preview.getByText("配点: 5", {exact: true})).toHaveCount(2);
   await expect(descriptions()).toHaveCount(1); // suggestion is non-destructive
-  await page.getByRole("button", {name: "この分割を適用"}).click();
+  await page.getByRole("button", {name: "この分割案を適用"}).click();
   await expect(descriptions()).toHaveCount(2);
   await expect(descriptions().nth(0)).toHaveValue("explain overfitting.");
   await expect(descriptions().nth(1)).toHaveValue("cite evidence.");
@@ -41,7 +41,7 @@ test("rubric ranges preview, split, insert, undo and registration preserve sourc
   });
   await page.getByRole("button", {name: "この位置で分割"}).click();
   await expect(preview).toBeVisible();
-  await page.getByRole("button", {name: "この分割を適用"}).click();
+  await page.getByRole("button", {name: "この分割案を適用"}).click();
   await expect(descriptions()).toHaveCount(2);
   await expect(descriptions().nth(0)).toHaveValue("First criterion.");
   await expect(descriptions().nth(1)).toHaveValue("Second criterion.");

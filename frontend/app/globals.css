@@ -122,3 +122,10 @@
 .model-answer-question-text{padding:0 0 16px;margin-bottom:20px;border-bottom:1px solid var(--line)}
 .model-answer-question-text h2{margin-bottom:8px}.model-answer-question-text h3{margin-bottom:6px}
 @media(max-width:900px){.model-answer-normal-layout{grid-template-columns:1fr}}
+
+.rubric-candidate-edit{padding:14px;margin:14px 0;border:1px solid var(--line);border-radius:8px;min-width:0;scroll-margin-top:190px}
+.rubric-candidate-edit[data-active=true]{border-color:var(--accent)}
+.rubric-candidate-edit .actions{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}
+.rubric-candidate-edit .actions .button{max-width:100%;white-space:normal}
+.rubric-split-proposal{background:#edf5fa;border:1px solid #9cc3dc;border-radius:8px;padding:14px;margin-top:12px;overflow-wrap:anywhere}
+.rubric-split-proposal{scroll-margin-top:190px}

@@ -55,6 +55,9 @@ class Handler(BaseHTTPRequestHandler):
         payload = json.loads(body["messages"][-1]["content"])
         if body.get("response_format", {}).get("json_schema", {}).get("name") == "rubric_semantic_split":
             text = payload["text"]
+            if "[split_failure]" in text:
+                self.send({"error": "synthetic split failure"}, 503)
+                return
             marks = list(re.finditer(r"\d+ points:", text))
             boundaries = [0] + [mark.start() for mark in marks[1:]] + [len(text)]
             split = len(marks) > 1

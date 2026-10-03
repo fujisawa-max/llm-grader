@@ -10,6 +10,7 @@ import http.cookiejar
 import json
 import os
 import secrets
+import socket
 import subprocess
 import tempfile
 import urllib.request
@@ -20,7 +21,7 @@ from sqlalchemy import func, select
 
 from scoring.auth import hash_password
 from scoring.db import create_session_factory, init_database
-from scoring.db.models import GradingJob
+from scoring.db.models import GradingJob, ModelAnswerImportDraft
 from scoring.domain import DomainService
 from tests.runtime_fixture import REPO, runtime_service, stop_process, unused_port, wait_http
 
@@ -186,6 +187,8 @@ def json_request(opener, url, payload=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--skip-build", action="store_true")
+    parser.add_argument("--insecure-origin", action="store_true", help="exercise non-loopback HTTP without secure-context Web Crypto")
+    parser.add_argument("--spec", action="append", help="run selected browser specifications")
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="llm-grader-runtime-e2e-") as temporary:
         root = Path(temporary)
@@ -193,6 +196,7 @@ def main():
         with runtime_service(root, hardware_backend="cuda") as (manager, manager_url, _):
             api_port, frontend_port = unused_port(), unused_port()
             api_url = f"http://127.0.0.1:{api_port}"
+            frontend_host = socket.gethostbyname(socket.gethostname()) if args.insecure_origin else "127.0.0.1"
             env = {**os.environ, **geometry_env, "PYTHONPATH": str(REPO / "src"),
                    "LLM_GRADER_DATABASE_URL": db_url,
                    "LLM_GRADER_ARTIFACT_ROOT": str(root),
@@ -203,7 +207,8 @@ def main():
                    "LLM_GRADER_MODEL_ANSWER_CLASSIFIER_PROFILE": "ornith_rubric_draft",
                    "LLM_GRADER_TRUSTED_RUNTIME_HOSTS": "127.0.0.2",
                    "API_PROXY_TARGET": api_url,
-                   "E2E_FRONTEND_URL": f"http://127.0.0.1:{frontend_port}",
+                   "E2E_FRONTEND_URL": f"http://{frontend_host}:{frontend_port}",
+                   "RUBRIC_INSECURE_ORIGIN": "1" if args.insecure_origin else "0",
                    "MODEL_ANSWER_CLASSIFICATION_TEST_ID": test_id,
                    "MODEL_ANSWER_CLASSIFICATION_MATERIAL_ID": material_id,
                    "MODEL_ANSWER_CLASSIFICATION_EMAIL": email,
@@ -216,21 +221,44 @@ def main():
                                             "--host", "127.0.0.1", "--port", str(api_port)],
                                            cwd=REPO, env=env, stdout=api_log, stderr=subprocess.STDOUT)
                     wait_http(api_url + "/api/v1/health", api)
+                    # Persist a pre-9b draft whose edit omits newly introduced optional fields.
+                    fixture_opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+                    json_request(fixture_opener, api_url + "/api/v1/auth/login", {"email": email, "password": password})
+                    split_test_id = geometry_env["RUBRIC_SPLIT_TEST_ID"]
+                    split_materials = json_request(fixture_opener, api_url + f"/api/v1/tests/{split_test_id}/materials")
+                    legacy = json_request(fixture_opener, api_url + f"/api/v1/tests/{split_test_id}/model-answer-imports",
+                                          {"material_id": split_materials[0]["id"]})
+                    with factory() as session:
+                        legacy_row = session.get(ModelAnswerImportDraft, legacy["id"])
+                        legacy_entries = json.loads(json.dumps(legacy_row.snapshot["entries"]))
+                        for entry in legacy_entries:
+                            rubric_segments = [item for item in entry.get("semantic_classification", {}).get("segments", [])
+                                               if item.get("category") == "rubric"]
+                            if rubric_segments:
+                                text = "".join(item.get("source_text", item["text"]) for item in rubric_segments)
+                                entry["rubric_edits"] = [{"id": "legacy-rubric-item", "description": text, "points": 10,
+                                    "segment_ids": [item["id"] for item in rubric_segments], "grouping_confirmed": True}]
+                        legacy_row.snapshot = {**legacy_row.snapshot, "entries": legacy_entries}
+                        session.commit()
+                    env["RUBRIC_LEGACY_DRAFT_ID"] = legacy["id"]
                     if not args.skip_build:
                         subprocess.run(["npm", "run", "build"], cwd=REPO / "frontend", env=env, check=True)
-                    frontend = subprocess.Popen(["npm", "run", "start", "--", "--hostname", "127.0.0.1",
+                    frontend = subprocess.Popen(["npm", "run", "start", "--", "--hostname", frontend_host,
                                                  "--port", str(frontend_port)], cwd=REPO / "frontend",
                                                 env=env, stdout=frontend_log, stderr=subprocess.STDOUT,
                                                 start_new_session=True)
                     wait_http(env["E2E_FRONTEND_URL"] + "/login", frontend, timeout=60)
-                    subprocess.run(["npm", "run", "e2e", "--",
-                                    "e2e/runtime-classification-real-isolated.spec.ts",
-                                    "e2e/model-answer-classification-real-isolated.spec.ts",
-                                    "e2e/model-answer-geometry-real-isolated.spec.ts",
-                                    "e2e/model-answer-review-ux-real-isolated.spec.ts",
-                                    "e2e/unified-answer-rubric-review-real.spec.ts",
-                                    "e2e/rubric-split-real-isolated.spec.ts",
-                                    "e2e/model-answer-nested-navigation-real-isolated.spec.ts", "--workers=1"],
+                    specs = args.spec or [
+                        "e2e/runtime-classification-real-isolated.spec.ts",
+                        "e2e/model-answer-classification-real-isolated.spec.ts",
+                        "e2e/model-answer-geometry-real-isolated.spec.ts",
+                        "e2e/model-answer-review-ux-real-isolated.spec.ts",
+                        "e2e/unified-answer-rubric-review-real.spec.ts",
+                        "e2e/rubric-split-real-isolated.spec.ts",
+                        "e2e/rubric-edit-reliability-real.spec.ts",
+                        "e2e/model-answer-nested-navigation-real-isolated.spec.ts",
+                    ]
+                    subprocess.run(["npm", "run", "e2e", "--", *specs, "--workers=1"],
                                    cwd=REPO / "frontend", env=env, check=True)
                     assert any("POST /v1/chat/completions" in line
                                for line in manager.logs("ornith_rubric_draft")["lines"])
