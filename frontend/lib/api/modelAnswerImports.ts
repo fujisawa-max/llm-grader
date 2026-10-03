@@ -77,6 +77,17 @@ export interface ModelAnswerSemanticClassification {
   primary_answer_text: string;
 }
 
+export interface RubricCandidateEdit {
+  id: string; description: string; points: number; segment_ids?: string[];
+  confidence?: number | null; points_conflict?: boolean; points_confirmed?: boolean;
+  grouping_confirmed?: boolean; grouping_method?: string; source_text?: string | null;
+  excluded?: boolean; provenance?: Record<string, unknown>;
+}
+export interface RubricSplitProposal {
+  candidate_id: string; split: boolean; confidence: number; reason: string; source_sha256: string;
+  parts: Array<{start: number; end: number; source_text: string; description: string; points: number; points_conflict: boolean}>;
+}
+
 export interface ModelAnswerDraftEntry {
   id: string;
   question_id: string | null;
@@ -88,12 +99,8 @@ export interface ModelAnswerDraftEntry {
   disposition?: "include" | "unassigned" | "excluded" | "ignored";
   ignore_reason?: string;
   teacher_correction?: { teacher_confirmed?: boolean; [key: string]: unknown };
-  rubric_edits?: Array<{ id: string; description: string; points: number; segment_ids?: string[];
-    confidence?: number | null; points_conflict?: boolean; points_confirmed?: boolean;
-    grouping_confirmed?: boolean; grouping_method?: string }>;
-  rubric_merge_history?: Array<Array<{ id: string; description: string; points: number; segment_ids?: string[];
-    confidence?: number | null; points_conflict?: boolean; points_confirmed?: boolean;
-    grouping_confirmed?: boolean; grouping_method?: string }>>;
+  rubric_edits?: RubricCandidateEdit[];
+  rubric_merge_history?: RubricCandidateEdit[][];
   answer_kind?: "primary" | "alternative";
   loaded_model_answer?: { id: string; version: number; question_id: string };
   geometry?: SpatialAssignment;
@@ -123,12 +130,8 @@ export interface ModelAnswerDraftEntryUpdate {
   classification_segments?: Array<Pick<ModelAnswerClassifiedSegment, "id" | "category" | "text">>;
   classification_reviewed?: boolean;
   manual_alternative_answers?: Array<{ id: string; text: string }>;
-  rubric_edits?: Array<{ id: string; description: string; points: number; segment_ids?: string[];
-    confidence?: number | null; points_conflict?: boolean; points_confirmed?: boolean;
-    grouping_confirmed?: boolean; grouping_method?: string }>;
-  rubric_merge_history?: Array<Array<{ id: string; description: string; points: number; segment_ids?: string[];
-    confidence?: number | null; points_conflict?: boolean; points_confirmed?: boolean;
-    grouping_confirmed?: boolean; grouping_method?: string }>>;
+  rubric_edits?: RubricCandidateEdit[];
+  rubric_merge_history?: RubricCandidateEdit[][];
 }
 
 export interface ModelAnswerQuestionChoice {
@@ -204,6 +207,10 @@ export const modelAnswerImports = {
   ),
   get: (draftId: string) => apiFetch<ModelAnswerImportDraft>(
     `/model-answer-import-drafts/${encodeURIComponent(draftId)}`,
+  ),
+  suggestRubricSplit: (draftId: string, candidateId: string, expectedRevision: number) => apiFetch<RubricSplitProposal>(
+    `/model-answer-import-drafts/${encodeURIComponent(draftId)}/rubric-candidates/${encodeURIComponent(candidateId)}/split-suggest`,
+    json({ expected_revision: expectedRevision }),
   ),
   classify: (draftId: string, expectedRevision: number) => apiFetch<ModelAnswerImportDraft>(
     `/model-answer-import-drafts/${encodeURIComponent(draftId)}/classify`,

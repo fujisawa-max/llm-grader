@@ -4,6 +4,7 @@
 import argparse
 import json
 import os
+import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 parser = argparse.ArgumentParser()
@@ -52,6 +53,16 @@ class Handler(BaseHTTPRequestHandler):
             self.send({"error": "invalid endpoint or model"}, 400)
             return
         payload = json.loads(body["messages"][-1]["content"])
+        if body.get("response_format", {}).get("json_schema", {}).get("name") == "rubric_semantic_split":
+            text = payload["text"]
+            marks = list(re.finditer(r"\d+ points:", text))
+            boundaries = [0] + [mark.start() for mark in marks[1:]] + [len(text)]
+            split = len(marks) > 1
+            result = {"candidate_id": payload["candidate_id"], "split": split, "confidence": .96,
+                      "reason": "independent_criteria" if split else "single_criterion",
+                      "parts": [{"start": a, "end": b} for a, b in zip(boundaries, boundaries[1:])] if split else []}
+            self.send({"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(result)}}]})
+            return
         assignments = []
         for segment in payload["source_segments"]:
             text = segment["text"]

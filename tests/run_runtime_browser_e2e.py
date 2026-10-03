@@ -129,6 +129,22 @@ def seed(root):
                              "REVIEW_UX_QUESTION_IDS": json.dumps(review_ux_question_ids),
                              "REVIEW_UX_MATERIAL_ID": review_ux_material.id,
                              "REVIEW_RUBRIC_MATERIAL_ID": rubric_material.id})
+        split_test = domain.test(offering.id, name="Rubric split fixture", total_points=10)
+        split_question = domain.question(split_test.id, question_number="1", display_label="問題1", sort_order=1,
+                                          max_points=10, is_gradable=True, question_text="Explain overfitting.")
+        split_pdf = pymupdf.open()
+        split_page = split_pdf.new_page(width=600, height=800)
+        split_page.insert_textbox(pymupdf.Rect(30, 30, 570, 750),
+            "Question 1\nA source answer.\n5 points: explain overfitting. 5 points: cite evidence.", fontsize=10, lineheight=1.5)
+        split_content = split_pdf.tobytes()
+        split_pdf.close()
+        split_digest = hashlib.sha256(split_content).hexdigest()
+        split_source = root / "sources" / split_test.id / f"{split_digest}.pdf"
+        split_source.parent.mkdir(parents=True, exist_ok=True)
+        split_source.write_bytes(split_content)
+        domain.material(split_test.id, material_type="model_answer_source", storage_ref=str(split_source),
+                        original_filename="split-rubric-model-answer.pdf", mime_type="application/pdf", sha256=split_digest)
+        geometry_env.update({"RUBRIC_SPLIT_TEST_ID": split_test.id, "RUBRIC_SPLIT_QUESTION_ID": split_question.id})
         nested_test = domain.test(offering.id, name="Nested review navigation fixture", total_points=20)
         domain.question(nested_test.id, question_number="1", display_label="問題1", sort_order=1,
                         max_points=10, is_gradable=True)
@@ -213,6 +229,7 @@ def main():
                                     "e2e/model-answer-geometry-real-isolated.spec.ts",
                                     "e2e/model-answer-review-ux-real-isolated.spec.ts",
                                     "e2e/unified-answer-rubric-review-real.spec.ts",
+                                    "e2e/rubric-split-real-isolated.spec.ts",
                                     "e2e/model-answer-nested-navigation-real-isolated.spec.ts", "--workers=1"],
                                    cwd=REPO / "frontend", env=env, check=True)
                     assert any("POST /v1/chat/completions" in line

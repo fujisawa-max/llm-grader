@@ -18,7 +18,7 @@ class RubricGroupingError(ValueError):
 def explicit_points(text: str) -> tuple[str, int | None, bool]:
     """Extract only explicit point marks; multiple marks are a conflict."""
     matches = list(re.finditer(
-        r"[（(]\s*(\d+)\s*点\s*[）)]|(?<!\w)(\d+)\s*(?:点|points?)\s*[:：-]\s*|(?<!\w)(\d+)\s*点",
+        r"[（(【]\s*(\d+)\s*点\s*[）)】]|(?<!\w)(\d+)\s*(?:点|points?)\s*[:：-]\s*|(\d+)\s*点",
         text, flags=re.IGNORECASE))
     values = [int(next(value for value in match.groups() if value is not None)) for match in matches]
     cleaned = text

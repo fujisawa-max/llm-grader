@@ -83,6 +83,9 @@ class RubricCandidateEdit(BaseModel):
     points_confirmed: bool = False
     grouping_confirmed: bool = False
     grouping_method: str = "legacy"
+    source_text: str | None = Field(default=None, max_length=100000)
+    excluded: bool = False
+    provenance: dict = Field(default_factory=dict)
 
 
 class EntryEdit(BaseModel):
@@ -119,6 +122,70 @@ class RubricRegistrationRequest(BaseModel):
 class ClassificationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expected_revision: int = Field(ge=1)
+
+
+def rubric_source_ids(item):
+    if item.get("segment_ids"):
+        return item["segment_ids"]
+    if item.get("grouping_method") == "teacher_manual" or item.get("provenance", {}).get("source") == "teacher_manual":
+        return []
+    return [item["id"]]
+
+
+def split_claim(provenance):
+    """Project nested splits into the original snapshot for overlap checks."""
+    if not provenance.get("split_from_candidate_id"):
+        return None
+    start, end = provenance["start"], provenance["end"]
+    root_id, original = provenance["split_from_candidate_id"], provenance["original_text"]
+    previous = provenance.get("previous_operation") or {}
+    for _ in range(50):
+        if not isinstance(previous, dict):
+            raise ValueError("invalid split ancestor")
+        if not previous.get("split_from_candidate_id"):
+            break
+        if (type(previous.get("start")) is not int or type(previous.get("end")) is not int
+                or not isinstance(previous.get("original_text"), str)
+                or not 0 <= previous["start"] < previous["end"] <= len(previous["original_text"])):
+            raise ValueError("invalid split ancestor")
+        start += previous["start"]
+        end += previous["start"]
+        root_id, original = previous["split_from_candidate_id"], previous["original_text"]
+        previous = previous.get("previous_operation") or {}
+    return root_id, original, start, end
+
+
+def validate_rubric_edits(items, classification):
+    """Source ownership remains per entry; splits may share IDs with disjoint ranges."""
+    allowed = {s.get("id") for s in classification.get("segments", []) if s.get("category") == "rubric"}
+    ids = set()
+    covered = {}
+    for item in items:
+        if item["id"] in ids:
+            raise ValueError("duplicate candidate ID")
+        ids.add(item["id"])
+        source_ids = rubric_source_ids(item)
+        if len(source_ids) != len(set(source_ids)) or any(value not in allowed for value in source_ids):
+            raise ValueError("invalid rubric source IDs")
+        provenance = item.get("provenance") or {}
+        if provenance.get("split_from_candidate_id"):
+            start, end = provenance.get("start"), provenance.get("end")
+            snapshot = provenance.get("original_text")
+            if (type(start) is not int or type(end) is not int or not isinstance(snapshot, str)
+                    or not 0 <= start < end <= len(snapshot) or not snapshot[start:end].strip()):
+                raise ValueError("invalid split source range")
+        if item.get("excluded"):
+            continue
+        for source_id in source_ids:
+            for previous in covered.get(source_id, []):
+                prior = previous.get("provenance") or {}
+                explicit_duplicate = (provenance.get("manual_duplicate_from") or prior.get("manual_duplicate_from"))
+                claim, prior_claim = split_claim(provenance), split_claim(prior)
+                disjoint = (claim and prior_claim and claim[:2] == prior_claim[:2]
+                            and (claim[3] <= prior_claim[2] or prior_claim[3] <= claim[2]))
+                if not explicit_duplicate and not disjoint:
+                    raise ValueError("overlapping rubric sources")
+            covered.setdefault(source_id, []).append(item)
 
 
 def router(db, artifact_root, classifier=None):
@@ -578,15 +645,10 @@ def router(db, artifact_root, classifier=None):
             submitted_rubric_edits = ([item.model_dump() for item in edit.rubric_edits]
                                       if edit.rubric_edits is not None else original_rubric_edits)
             if edit.rubric_edits is not None:
-                rubric_segment_ids = {segment.get("id") for segment in
-                    (entry.get("semantic_classification") or {}).get("segments", [])
-                    if segment.get("category") == "rubric"}
-                ids = [item["id"] for item in submitted_rubric_edits]
-                covered = [segment_id for item in submitted_rubric_edits
-                           for segment_id in (item.get("segment_ids") or [item["id"]])]
-                if (len(ids) != len(set(ids)) or len(covered) != len(set(covered))
-                        or any(item_id not in rubric_segment_ids for item_id in covered)):
-                    fail(422, "INVALID_RUBRIC_CANDIDATE", "採点基準候補の元文章を確認してください")
+                try:
+                    validate_rubric_edits(submitted_rubric_edits, entry.get("semantic_classification") or {})
+                except ValueError:
+                    fail(422, "INVALID_RUBRIC_CANDIDATE", "採点基準候補の元文章と分割範囲を確認してください")
                 entry["rubric_edits"] = submitted_rubric_edits
             rubric_changed = (edit.rubric_edits is not None
                 and submitted_rubric_edits != original_rubric_edits)
@@ -663,6 +725,34 @@ def router(db, artifact_root, classifier=None):
         session.refresh(draft)
         return view(draft, session)
 
+    @routes.post("/model-answer-import-drafts/{draft_id}/rubric-candidates/{candidate_id}/split-suggest")
+    def suggest_rubric_split(draft_id: str, candidate_id: str, body: ClassificationRequest, session=Depends(db)):
+        draft = owned_draft(draft_id, session)
+        revision_check(draft, body.expected_revision)
+        matches = [(entry, item) for entry in draft.snapshot.get("entries", [])
+                   for item in entry.get("rubric_edits", []) if item["id"] == candidate_id and not item.get("excluded")]
+        if len(matches) != 1:
+            fail(404, "RUBRIC_CANDIDATE_NOT_FOUND", "分割する採点基準候補が見つかりません")
+        entry, item = matches[0]
+        text = item.get("source_text") if item.get("source_text") is not None else item["description"]
+        if not str(text).strip():
+            fail(422, "EMPTY_RUBRIC_CANDIDATE", "分割する本文を入力してください")
+        if classifier is None or not hasattr(classifier, "suggest_rubric_split"):
+            fail(503, "RUBRIC_SPLIT_UNAVAILABLE", "分割提案を利用できません。手動分割をご利用ください")
+        question = session.get(TestQuestion, entry.get("question_id"))
+        try:
+            result = classifier.suggest_rubric_split(candidate_id=candidate_id, text=text,
+                question_label=entry.get("mapped_question_label") or (question.display_label if question else "未割当"),
+                segment_ids=item.get("segment_ids") or [])
+            from ..rubric_split import reconstruct_split
+            # Revalidate ranges at the HTTP boundary even for injected classifier implementations.
+            contract = {key: result[key] for key in ("candidate_id", "split", "confidence", "reason")}
+            contract["parts"] = [{"start": part["start"], "end": part["end"]} for part in result["parts"]]
+            return reconstruct_split(contract, candidate_id, text)
+        except Exception:
+            logger.warning("Rubric split proposal unavailable or invalid", exc_info=True)
+            fail(503, "RUBRIC_SPLIT_UNAVAILABLE", "分割提案を利用できませんでした。元の候補を保持しています。手動分割をご利用ください")
+
     @routes.post("/model-answer-import-drafts/{draft_id}/register-rubric")
     def register_rubric(draft_id: str, body: RubricRegistrationRequest, session=Depends(db)):
         draft = owned_draft(draft_id, session)
@@ -680,19 +770,16 @@ def router(db, artifact_root, classifier=None):
         edited_by_question: dict[str, list[dict]] = {}
         for entry in entries:
             rubric_edits = entry.get("rubric_edits") or []
-            if not rubric_edits:
+            if not any(not item.get("excluded") for item in rubric_edits):
                 continue
             if entry.get("disposition", "include") != "include" or entry.get("question_id") not in gradable:
                 fail(422, "RUBRIC_QUESTION_REQUIRED", "採点基準候補の対応先に採点対象設問を指定してください")
-            allowed_ids = {segment.get("id") for segment in
-                (entry.get("semantic_classification") or {}).get("segments", [])
-                if segment.get("category") == "rubric"}
-            covered_ids = [segment_id for item in rubric_edits
-                           for segment_id in (item.get("segment_ids") or [item["id"]])]
-            if len(covered_ids) != len(set(covered_ids)) or any(item_id not in allowed_ids for item_id in covered_ids):
-                fail(422, "INVALID_RUBRIC_CANDIDATE", "採点基準候補の元文章を確認してください")
+            try:
+                validate_rubric_edits(rubric_edits, entry.get("semantic_classification") or {})
+            except ValueError:
+                fail(422, "INVALID_RUBRIC_CANDIDATE", "採点基準候補の元文章と分割範囲を確認してください")
             edited_by_question.setdefault(entry["question_id"], []).extend(
-                [{**item, "entry": entry} for item in rubric_edits])
+                [{**item, "entry": entry} for item in rubric_edits if not item.get("excluded")])
         if not edited_by_question:
             fail(422, "NO_RUBRIC_CANDIDATES", "登録する採点基準候補がありません")
 
@@ -720,7 +807,7 @@ def router(db, artifact_root, classifier=None):
                             and not item.get("grouping_confirmed")):
                         fail(422, "RUBRIC_GROUPING_UNCONFIRMED", f"{question.display_label} の採点基準候補のグルーピングを確認してください")
                     entry = item["entry"]
-                    segment_ids = item.get("segment_ids") or [item["id"]]
+                    segment_ids = rubric_source_ids(item)
                     segments_by_id = {value.get("id"): value for value in
                         (entry.get("semantic_classification") or {}).get("segments", [])}
                     source_by_id = {value.get("id"): value for value in entry.get("source", {}).get("segments", [])}
@@ -733,6 +820,7 @@ def router(db, artifact_root, classifier=None):
                         "original_text": "".join(value.get("source_text", value.get("text", ""))
                                                    for value in original_segments),
                         "teacher_text": item["description"], "confidence": item.get("confidence"),
+                        "operation_provenance": item.get("provenance", {}), "source_text": item.get("source_text"),
                         "points_conflict": item.get("points_conflict", False),
                         "grouping_method": item.get("grouping_method", "legacy"),
                         "source_segments": [{"page_index": source_by_id.get(segment_id, {}).get("page_index"),
