@@ -256,6 +256,7 @@ def main():
                         "e2e/unified-answer-rubric-review-real.spec.ts",
                         "e2e/rubric-split-real-isolated.spec.ts",
                         "e2e/rubric-edit-reliability-real.spec.ts",
+                        "e2e/latex-normalization-real.spec.ts",
                         "e2e/model-answer-nested-navigation-real-isolated.spec.ts",
                     ]
                     subprocess.run(["npm", "run", "e2e", "--", *specs, "--workers=1"],

@@ -60,20 +60,20 @@ test("rubric buttons update IDs, order, points and persisted state on non-loopba
   await descriptions(page).first().fill("First criterion. Second criterion.");
   const before = await snapshot(page);
   for (const offset of [0, before[0].text.length]) {
-    await cursor(page, offset); await page.getByRole("button", {name: "この位置で分割"}).click();
+    await cursor(page, offset); await page.getByRole("button", {name: "カーソルの位置で分割"}).click();
     await expect(cards(page).first().getByRole("alert")).toContainText("先頭・末尾");
     await expect(preview).toHaveCount(0); expect(await snapshot(page)).toEqual(before);
   }
   await descriptions(page).first().fill("   Meaningful text.");
-  await cursor(page, 3); await page.getByRole("button", {name: "この位置で分割"}).click();
+  await cursor(page, 3); await page.getByRole("button", {name: "カーソルの位置で分割"}).click();
   await expect(preview).toHaveCount(0);
   await descriptions(page).first().fill(before[0].text);
-  await cursor(page, 17); await page.getByRole("button", {name: "この位置で分割"}).click();
+  await cursor(page, 17); await page.getByRole("button", {name: "カーソルの位置で分割"}).click();
   await expect(cards(page).first().getByRole("region", {name: "採点基準の分割案"})).toBeVisible();
   await expect(preview).toHaveCount(1);
   await page.getByRole("button", {name: "キャンセル", exact: true}).click();
   expect(await snapshot(page)).toEqual(before);
-  await cursor(page, 17); await page.getByRole("button", {name: "この位置で分割"}).click();
+  await cursor(page, 17); await page.getByRole("button", {name: "カーソルの位置で分割"}).click();
   await page.getByRole("button", {name: "この分割案を適用"}).click();
   expect(errors).toEqual([]); await expect(descriptions(page)).toHaveCount(2);
   const split = await snapshot(page);

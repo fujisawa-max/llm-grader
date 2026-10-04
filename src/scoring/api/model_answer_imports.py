@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import time
 import logging
@@ -98,6 +99,7 @@ class EntryEdit(BaseModel):
     loaded_model_answer_id: str | None = None
     classification_segments: list[ClassificationSegmentEdit] | None = None
     classification_reviewed: bool = False
+    latex_normalization: dict | None = None
     manual_alternative_answers: list[AlternativeAnswerEdit] | None = None
     rubric_edits: list[RubricCandidateEdit] | None = None
     rubric_merge_history: list[list[RubricCandidateEdit]] | None = None
@@ -670,10 +672,14 @@ def router(db, artifact_root, classifier=None):
                 history_changed,
             ))
             if explicit_teacher_change:
-                entry["teacher_correction"] = {"question_id": edit.question_id, "answer_text": edit.answer_text,
+                entry["teacher_correction"] = {**entry.get("teacher_correction", {}),"question_id": edit.question_id, "answer_text": edit.answer_text,
                                                 "disposition": disposition, "answer_kind": answer_kind,
                                                 "revision": draft.revision + 1,
                                                 "teacher_confirmed": True}
+            if edit.latex_normalization is not None:
+                if len(json.dumps(edit.latex_normalization, ensure_ascii=False)) > 100000:
+                    fail(422, "INVALID_TRANSFORMATION_METADATA", "変換情報が大きすぎます")
+                entry.setdefault("teacher_correction", {})["latex_normalization"] = edit.latex_normalization
             classification = entry.get("semantic_classification")
             if classification and edit.classification_segments is not None:
                 try:

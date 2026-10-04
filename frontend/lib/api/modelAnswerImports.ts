@@ -121,6 +121,7 @@ export interface ModelAnswerDraftEntry {
 }
 
 export interface ModelAnswerDraftEntryUpdate {
+  latex_normalization?: Record<string, unknown>;
   id: string;
   question_id: string | null;
   answer_text: string;

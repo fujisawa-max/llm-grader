@@ -1,4 +1,5 @@
 "use client";
+import { LatexNormalizationControl } from "@/components/LatexNormalizationControl";
 
 import Link from "next/link";
 import { reviewCandidateId } from "@/lib/reviewCandidateId";
@@ -221,6 +222,7 @@ export default function ModelAnswerImportReviewPage() {
     disposition: entry.disposition || (entry.question_id ? "include" : "unassigned"),
     answer_kind: entry.answer_kind || "primary",
     loaded_model_answer_id: entry.loaded_model_answer?.id || null,
+    ...(entry.teacher_correction?.latex_normalization ? {latex_normalization: entry.teacher_correction.latex_normalization as Record<string, unknown>} : {}),
     ...(entry.rubric_edits ? { rubric_edits: entry.rubric_edits } : {}),
     ...(entry.rubric_merge_history ? { rubric_merge_history: entry.rubric_merge_history } : {}),
     ...(entry.semantic_classification ? {
@@ -667,6 +669,11 @@ export default function ModelAnswerImportReviewPage() {
               disabled={busy || classifying || draft.state !== "editing" || draft.confirmed_entry_ids?.includes(entry.id)}
               onChange={(event) => updateEntry(entry.id, { answer_text: event.target.value })} />
           </label>
+          <LatexNormalizationControl text={entry.answer_text} contextType="model_answer" contextLabel={questionLabels.get(entry.question_id || "") || ""}
+            disabled={busy || classifying || draft.state !== "editing" || draft.confirmed_entry_ids?.includes(entry.id)}
+            onApply={(text, proposal) => updateEntry(entry.id, { answer_text: text, teacher_correction: {
+              ...entry.teacher_correction, teacher_confirmed: true, latex_normalization: {...proposal, timestamp: new Date().toISOString()}
+            } })} />
           {entry.semantic_classification && <section className="model-answer-classification" aria-label={`模範解答 ${index + 1} の意味分類`}>
             <header className="model-answer-entry-heading">
               <h4>意味分類</h4>
@@ -744,7 +751,7 @@ export default function ModelAnswerImportReviewPage() {
                           <button type="button" className="button secondary" disabled={busy || splitting || classifying || draft.state !== "editing"}
                             onClick={() => suggestSplit(entry, edit)}>LLMで分割を試す</button>
                           <button type="button" className="button secondary" disabled={busy || splitting || draft.state !== "editing"}
-                            onClick={() => manualSplit(entry, edit)}>この位置で分割</button>
+                            onClick={() => manualSplit(entry, edit)}>カーソルの位置で分割</button>
                           <button type="button" className="button secondary" disabled={busy || splitting || draft.state !== "editing"}
                             onClick={() => insertRubric(entry, edit, false)}>下に採点基準を追加</button>
                           <button type="button" className="button secondary" disabled={busy || splitting || draft.state !== "editing"}
@@ -760,6 +767,9 @@ export default function ModelAnswerImportReviewPage() {
                             onBlur={(event) => { const control = event.currentTarget; splitCursors.current[edit.id] = Array.from(control.value.slice(0, control.selectionStart)).length; }}
                             disabled={busy || classifying || draft.state !== "editing"}
                             onChange={(event) => updateRubricEdit(entry, edit.id, { description: event.target.value, source_text: event.target.value, grouping_confirmed: true, grouping_method: edit.grouping_method || "teacher_edit" })} />
+                          <LatexNormalizationControl text={edit.description} contextType="rubric" contextLabel={questionLabels.get(entry.question_id || "") || ""} disabled={busy || classifying || splitting || draft.state !== "editing"}
+                            onApply={(text, proposal) => updateRubricEdit(entry, edit.id, {description: text, source_text: text, grouping_confirmed: true,
+                              provenance: {...edit.provenance, teacher_confirmed: true, latex_normalization: {...proposal, timestamp: new Date().toISOString()}}})} />
                         </label>
                         <label className="field">配点
                           <input type="number" min="1" step="1" aria-label={`採点基準候補 ${index + 1}-${groupIndex + 1} の配点`}

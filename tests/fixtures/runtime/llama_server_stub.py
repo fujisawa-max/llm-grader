@@ -53,6 +53,26 @@ class Handler(BaseHTTPRequestHandler):
             self.send({"error": "invalid endpoint or model"}, 400)
             return
         payload = json.loads(body["messages"][-1]["content"])
+        if body.get("response_format", {}).get("json_schema", {}).get("name") == "latex_normalization":
+            text = payload["text"]
+            if "[latex_failure]" in text:
+                self.send({"error": "synthetic normalization failure"}, 503)
+                return
+            normalized = text.replace("TP / (TP + FP)", r"$\frac{TP}{TP+FP}$")
+            status = "safe" if normalized != text else "no_change"
+            if text == "Accuracy = TP+TN / TP+FP+FN+TN":
+                normalized = r"$Accuracy=\frac{TP+TN}{TP+FP+FN+TN}$"
+                status = "ambiguous"
+            if "[latex_numeric_change]" in text:
+                normalized = text.replace("0.800", "0.8")
+                status = "safe"
+            if "[latex_bad_math]" in text:
+                normalized = text.replace("TP / FP", r"$\frac{TP}{FP$")
+                status = "safe"
+            result = {"status": status, "normalized_text": normalized, "confidence": 0.95,
+                      "warnings": [], "changes": []}
+            self.send({"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(result)}}]})
+            return
         if body.get("response_format", {}).get("json_schema", {}).get("name") == "rubric_semantic_split":
             text = payload["text"]
             if "[split_failure]" in text:

@@ -39,7 +39,7 @@ test("rubric ranges preview, split, insert, undo and registration preserve sourc
     const control = element as HTMLTextAreaElement;
     control.focus(); control.setSelectionRange(17, 17); control.dispatchEvent(new Event("select", {bubbles: true}));
   });
-  await page.getByRole("button", {name: "この位置で分割"}).click();
+  await page.getByRole("button", {name: "カーソルの位置で分割"}).click();
   await expect(preview).toBeVisible();
   await page.getByRole("button", {name: "この分割案を適用"}).click();
   await expect(descriptions()).toHaveCount(2);

@@ -801,6 +801,8 @@ def create_app(session_factory=None, *, allowed_roots=None, runtime_client=None,
                        dependencies=[Depends(staff_dependency)])
     app.include_router(model_answer_import_router(db, action_root, classifier=model_answer_classifier),
                        dependencies=[Depends(staff_dependency)])
+    from .text_tools import router as text_tools_router
+    app.include_router(text_tools_router(model_answer_classifier), dependencies=[Depends(staff_dependency)])
     app.include_router(student_answer_router(db, action_root),
                        dependencies=[Depends(domain_authorized)])
     app.include_router(grading_review_router(
