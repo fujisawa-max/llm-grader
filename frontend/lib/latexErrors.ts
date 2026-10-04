@@ -3,6 +3,15 @@ export function latexErrorMessage(error: unknown): string {
   const retained = "元の本文は保持されています。再試行してください。";
   if (error instanceof ApiRequestError) {
     const messages: Record<string, string> = {
+      math_ocr_numeric_mismatch: "数式OCRの数値が抽出原文と一致しません。PDFを確認してください。",
+      math_runtime_start_failed: "数式OCRを起動できませんでした。",
+      math_runtime_start_timeout: "数式OCRの起動に時間がかかりすぎています。",
+      math_inference_timeout: "数式の認識に時間がかかりすぎています。",
+      math_inference_failed: "数式OCRから認識結果を取得できませんでした。",
+      math_runtime_unavailable: "数式OCRを起動・実行できませんでした。",
+      math_ocr_invalid_response: "数式OCRから有効な数式を取得できませんでした。",
+      math_source_invalid: "PDFの数式位置を確認できませんでした。",
+      math_crop_too_large: "数式領域が広すぎます。局所的な候補を選んでください。",
       RESOURCE_NOT_FOUND: "対象リソースが見つかりません。",
       COURSE_ACCESS_DENIED: "対象リソースへのアクセス権がありません。",
       latex_runtime_unavailable: "LLMのprofileまたは接続設定を利用できません。",

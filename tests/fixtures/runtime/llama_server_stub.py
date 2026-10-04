@@ -12,6 +12,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--version", action="store_true")
 parser.add_argument("--list-devices", action="store_true")
 parser.add_argument("-m")
+parser.add_argument("--mmproj")
 parser.add_argument("--alias", default="synthetic-text-model")
 parser.add_argument("--host", default="127.0.0.1")
 parser.add_argument("--port", type=int, default=8080)
@@ -44,7 +45,7 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/v1/models":
             self.send({"data": [{"id": args.alias}]})
         elif self.path == "/props":
-            self.send({"modalities": {"vision": False}})
+            self.send({"modalities": {"vision": bool(args.mmproj)}})
         else:
             self.send({"error": "not found"}, 404)
 
@@ -53,7 +54,13 @@ class Handler(BaseHTTPRequestHandler):
         if self.path != "/v1/chat/completions" or body.get("model") != args.alias:
             self.send({"error": "invalid endpoint or model"}, 400)
             return
-        payload = json.loads(body["messages"][-1]["content"])
+        content = body["messages"][-1]["content"]
+        if isinstance(content, list):
+            assert any(item.get("type") == "image_url" for item in content)
+            time.sleep(1)
+            self.send({"choices": [{"message": {"content": r"Precision=\frac{TP}{TP+FP}=\frac{24}{24+6}=\frac{24}{30}=0.800"}}]})
+            return
+        payload = json.loads(content)
         if body.get("response_format", {}).get("json_schema", {}).get("name") == "latex_normalization":
             text = payload["text"]
             if "[latex_failure]" in text:

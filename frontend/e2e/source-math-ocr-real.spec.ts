@@ -1,0 +1,94 @@
+import {test, expect} from "@playwright/test";
+test.skip(!process.env.SOURCE_MATH_DRAFT_ID, "isolated source PDF required");
+test("source fractions: spinner, explicit apply, saved/formal isolation and warm PID reuse", async ({page}) => {
+  const errors: string[] = [];
+  await page.goto("/login");
+  await page.getByLabel("メールアドレス").fill(process.env.TEXT_TOOL_TEACHER_EMAIL!);
+  await page.getByLabel("パスワード").fill(process.env.MODEL_ANSWER_CLASSIFICATION_PASSWORD!);
+  await page.getByRole("button", {name:"ログイン"}).click();
+  await expect(page).not.toHaveURL(/login/);
+  page.on("pageerror", e => errors.push(e.message));
+  page.on("console", m => {if (m.type() === "error") errors.push(m.text());});
+  const id = process.env.SOURCE_MATH_DRAFT_ID!;
+  const manager = process.env.LLM_GRADER_RUNTIME_MANAGER_URL!;
+  await page.request.post(`${manager}/runtimes/math_ocr/stop`);
+  await page.goto(`/model-answer-import-reviews/${id}`);
+  const editor = page.getByLabel(/^模範解答本文 /).first();
+  const original = await editor.inputValue();
+  const control = page.getByRole("region", {name:"LaTeX変換", exact:true}).first();
+  let requests = 0;
+  page.on("request", r => {if (r.url().endsWith("/math-ocr")) requests++;});
+  const response = page.waitForResponse(r => r.url().endsWith("/math-ocr"));
+  await control.getByRole("button", {name:"数式をLaTeX化"}).click();
+  await expect(control.locator(".processing-spinner")).toBeVisible();
+  await expect(control.getByRole("button", {name:"数式をLaTeX化"})).toBeDisabled();
+  expect((await response).status()).toBe(200);
+  await expect(control).toContainText("\\frac{24}{30}");
+  await expect(editor).toHaveValue(original);
+  const cold = await (await page.request.get(`${manager}/runtimes/math_ocr/status`)).json();
+  expect(cold.state).toBe("ready");
+  await control.getByRole("button", {name:"キャンセル"}).click();
+  await expect(editor).toHaveValue(original);
+  await control.getByRole("button", {name:"数式をLaTeX化"}).click();
+  await control.getByRole("checkbox").check();
+  await control.getByRole("button", {name:"この変換を適用"}).click();
+  await expect(editor).toHaveValue(/\\frac\{TP\}\{TP\+FP\}/);
+  const normalized = await editor.inputValue();
+  expect(normalized).toContain("Answer: 0.800 (80%)");
+  let server = await (await page.request.get(`/api/v1/model-answer-import-drafts/${id}`)).json();
+  expect(server.entries[0].answer_text).toBe(original);
+  expect(server.saved_answers[0].answer_text).toBe("Formal answer A.");
+  const saved = page.waitForResponse(r => r.url().endsWith(id) && r.request().method()==="PUT");
+  await page.getByRole("button", {name:"下書き保存"}).click(); expect((await saved).status()).toBe(200);
+  await page.reload(); await expect(editor).toHaveValue(normalized);
+  server = await (await page.request.get(`/api/v1/model-answer-import-drafts/${id}`)).json();
+  expect(server.entries[0].answer_text).toBe(normalized);
+  expect(server.saved_answers[0].answer_text).toBe("Formal answer A.");
+  const warm = await (await page.request.get(`${manager}/runtimes/math_ocr/status`)).json();
+  expect(warm.pid).toBe(cold.pid); expect(warm.started_at).toBe(cold.started_at);
+  expect(requests).toBe(2);
+  await page.getByRole("button", {name:"模範解答として登録", exact:true}).click();
+  await expect(page).toHaveURL(/section=answers/);
+  await expect(page.getByLabel("模範解答本文", {exact:true})).toHaveValue(normalized);
+  await page.reload();
+  await expect(page.getByLabel("模範解答本文", {exact:true})).toHaveValue(normalized);
+  server = await (await page.request.get(`/api/v1/model-answer-import-drafts/${id}`)).json();
+  expect(server.saved_answers[0].answer_text).toBe(normalized);
+  expect(errors).toEqual([]);
+});
+
+test("no aligned math starts no runtime; OCR failure preserves text and retries", async ({page}) => {
+  await page.goto("/login");
+  await page.getByLabel("メールアドレス").fill(process.env.TEXT_TOOL_TEACHER_EMAIL!);
+  await page.getByLabel("パスワード").fill(process.env.MODEL_ANSWER_CLASSIFICATION_PASSWORD!);
+  await page.getByRole("button", {name:"ログイン"}).click();
+  await expect(page).not.toHaveURL(/login/);
+  const id = process.env.SOURCE_MATH_DRAFT_ID!;
+  // The previous scenario registered the source draft; create an editable derived copy through resume.
+  const current = await (await page.request.get(`/api/v1/model-answer-import-drafts/${id}`)).json();
+  const created = await page.request.post(`/api/v1/tests/${current.test_id}/model-answer-imports`, {data: {material_id: current.material_id}});
+  expect(created.status()).toBe(201);
+  const draft = await created.json();
+  const entry = draft.entries.find((e: {source?: {segments?: unknown[]}}) => e.source?.segments?.length);
+  expect(entry).toBeTruthy();
+  const noMath = await page.request.post(`/api/v1/model-answer-import-drafts/${draft.id}/entries/${entry.id}/math-ocr`,
+    {data: {text:"Prose without source formulas.", expected_revision:draft.revision}});
+  expect(noMath.status()).toBe(200); expect((await noMath.json()).status).toBe("no_change");
+  const qid = draft.questions[0].id;
+  const patched = await page.request.put(`/api/v1/model-answer-import-drafts/${draft.id}`, {data: {
+    expected_revision: draft.revision, entries: draft.entries.map((e: {id: string; answer_text: string}) => ({
+      id:e.id, question_id:qid, answer_text:e.id === entry.id ? "TP / (TP + FP)" : e.answer_text,
+      disposition:e.id === entry.id ? "include" : "excluded"}))}});
+  expect(patched.status()).toBe(200);
+  await page.goto(`/model-answer-import-reviews/${draft.id}`);
+  const editor = page.getByLabel(/^模範解答本文 /).first();
+  const before = await editor.inputValue();
+  const control = page.getByRole("region", {name:"LaTeX変換", exact:true}).first();
+  await page.route("**/math-ocr", r => r.fulfill({status:503, json:{error:{code:"math_runtime_unavailable"}}}));
+  await page.route("**/text-tools/latex-normalize", r => r.fulfill({status:503, json:{error:{code:"latex_runtime_unavailable"}}}));
+  await control.getByRole("button", {name:"数式をLaTeX化"}).click();
+  await expect(control.getByRole("alert")).toBeVisible();
+  await expect(editor).toHaveValue(before);
+  await expect(control.getByRole("button", {name:"数式をLaTeX化"})).toBeEnabled();
+  await expect(control.locator(".processing-spinner")).toHaveCount(0);
+});

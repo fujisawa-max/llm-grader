@@ -238,3 +238,28 @@ real model rather than assuming every quantization honors it.
 
 A disconnected health client no longer triggers a second 500 write after a
 BrokenPipe/connection reset. Actual Manager errors still produce error responses.
+
+### Source-aware数式変換（J.UI.9d）
+
+ModelAnswer Reviewの「数式をLaTeX化」は、原文segmentと現在の本文を一意に
+照合できる数式候補について、保存済みPDFの局所bboxを6pt拡張し、2倍解像度の
+PNGとして `math_ocr` profileへ渡します。ページ全体は送信せず、1要求8領域まで、
+各cropはページ面積の35%以下に制限します。原文と対応しない教師編集本文は
+既存のtext-only normalizationを利用します。変換は自動適用されません。
+
+通常runtime設定には既存Uni-MuMER用の `math_ocr` purposeを定義しています。
+既存モデルと対応mmprojをmodel storageへ配置し、必要に応じて以下を設定します。
+モデルのdownloadや別モデルの追加は行いません。
+
+- `LLM_GRADER_MATH_MODEL_ID`（既定 `unimumer-q4`）
+- `LLM_GRADER_MATH_MODEL_PATH`（既定 `/models/math-ocr.gguf`）
+- `LLM_GRADER_MATH_MMPROJ_PATH`（既定 `/models/math-ocr-mmproj.gguf`）
+
+初回はlazy起動、以降はPIDを再利用します。要求後に停止しません。
+モデルが未配置でも他サービスは起動し、数式変換要求だけがエラーになります。
+OCR結果は必ずcrop画像と照合してください。数値の訂正・式の補完は行いません。
+適用は編集中の下書きだけを更新し、下書き保存と正式登録は別操作です。
+
+実NVIDIA環境では、停止状態から変換→crop/KaTeX preview→適用→下書き保存→
+reload→正式登録を確認し、2回目の変換でsystem runtime APIのPIDとstarted_atが
+変わらないことを確認してください。正式Q5ではなく合成PDFを使用します。

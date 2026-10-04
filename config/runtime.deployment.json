@@ -9,6 +9,16 @@
         "text",
         "structured_output"
       ]
+    },
+    "unimumer": {
+      "model_id": "${LLM_GRADER_MATH_MODEL_ID:-unimumer-q4}",
+      "model_path": "${LLM_GRADER_MATH_MODEL_PATH:-/models/math-ocr.gguf}",
+      "mmproj_path": "${LLM_GRADER_MATH_MMPROJ_PATH:-/models/math-ocr-mmproj.gguf}",
+      "vision": true,
+      "capabilities": [
+        "vision",
+        "math_ocr"
+      ]
     }
   },
   "runtime_defaults": {
@@ -37,6 +47,17 @@
       },
       "chat_template_kwargs": {
         "enable_thinking": false
+      }
+    },
+    "math_ocr": {
+      "model_ref": "unimumer",
+      "purpose": "math_ocr",
+      "port": 8082,
+      "log_path": "/runtime-state/math-ocr.log",
+      "request_timeout_seconds": 300,
+      "generation": {
+        "temperature": 0,
+        "max_output_tokens": 2048
       }
     }
   },

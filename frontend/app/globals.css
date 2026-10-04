@@ -129,3 +129,7 @@
 .rubric-candidate-edit .actions .button{max-width:100%;white-space:normal}
 .rubric-split-proposal{background:#edf5fa;border:1px solid #9cc3dc;border-radius:8px;padding:14px;margin-top:12px;overflow-wrap:anywhere}
 .rubric-split-proposal{scroll-margin-top:190px}
+
+.processing-spinner { display: inline-block; width: 1em; height: 1em; margin-right: .5em; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: math-processing-spin 1s linear infinite; }
+@keyframes math-processing-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .processing-spinner { animation: none; } }

@@ -55,6 +55,12 @@ logger = logging.getLogger(__name__)
 AUTOMATIC_CLASSIFICATION_BUDGET_SECONDS = 600
 
 
+class MathOCRRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: int = Field(ge=1)
+    text: str = Field(min_length=1, max_length=12000)
+
+
 class ImportCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     material_id: str
@@ -556,6 +562,36 @@ def router(db, artifact_root, classifier=None):
     @routes.get("/model-answer-import-drafts/{draft_id}")
     def get_draft(draft_id: str, session=Depends(db)):
         return view(owned_draft(draft_id, session), session)
+
+    @routes.post("/model-answer-import-drafts/{draft_id}/entries/{entry_id}/math-ocr")
+    def math_ocr(draft_id: str, entry_id: str, body: MathOCRRequest, session=Depends(db)):
+        from ..source_math_ocr import MathOCRError, SourceMathOCR
+        draft = owned_draft(draft_id, session)
+        revision_check(draft, body.expected_revision)
+        entry = next((item for item in draft.snapshot.get("entries", []) if item.get("id") == entry_id), None)
+        if not entry:
+            fail(404, "ENTRY_NOT_FOUND", "候補が見つかりません")
+        material = session.get(TestMaterial, draft.material_id)
+        if not material or material.test_id != draft.test_id:
+            fail(404, "MATERIAL_FILE_NOT_FOUND", "登録済みPDFを取得できません")
+        path = resolve_material_file(material)
+        if sha256_file(path) != draft.source_sha256:
+            fail(409, "MATERIAL_INTEGRITY_ERROR", "解析時のPDFと一致しません")
+        logger.info("math OCR requested draft=%s entry=%s", draft_id, entry_id)
+        if classifier is None or classifier.manager is None:
+            fail(503, "math_runtime_unavailable", "数式OCRを利用できません")
+        try:
+            result = SourceMathOCR(classifier.manager).propose(path, entry.get("source", {}).get("segments", []), body.text)
+        except MathOCRError as exc:
+            fail(504 if "timeout" in exc.code else 503, exc.code, "数式OCRを起動・実行できません。再試行してください")
+        except ValueError as exc:
+            fail(422, str(exc), "数式の原文位置またはOCR結果を確認できません")
+        except Exception as exc:
+            logger.warning("math OCR failed draft=%s entry=%s error_type=%s", draft_id, entry_id, type(exc).__name__)
+            fail(503, "math_runtime_unavailable", "数式OCRを起動・実行できません。再試行してください")
+        result["source"] = {"material_id": material.id, "source_sha256": draft.source_sha256,
+                            "draft_id": draft.id, "entry_id": entry_id, "revision": draft.revision}
+        return result
 
     @routes.post("/model-answer-import-drafts/{draft_id}/classify")
     def classify_draft(draft_id: str, body: ClassificationRequest, session=Depends(db)):

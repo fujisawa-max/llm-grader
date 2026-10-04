@@ -674,7 +674,7 @@ export default function ModelAnswerImportReviewPage() {
               disabled={busy || classifying || draft.state !== "editing" || draft.confirmed_entry_ids?.includes(entry.id)}
               onChange={(event) => updateEntry(entry.id, { answer_text: event.target.value })} />
           </label>
-          <LatexNormalizationControl text={entry.answer_text} contextType="model_answer" contextLabel={questionLabels.get(entry.question_id || "") || ""}
+          <LatexNormalizationControl source={entry.source?.segments?.some(segment => !!segment.original_text && entry.answer_text.split("\n").includes(segment.original_text) && /[=+^_]|\b(TP|FP|TN|FN)\b/.test(segment.original_text)) ? {draftId: draft.id, entryId: entry.id, revision: draft.revision} : undefined} text={entry.answer_text} contextType="model_answer" contextLabel={questionLabels.get(entry.question_id || "") || ""}
             disabled={busy || classifying || draft.state !== "editing" || draft.confirmed_entry_ids?.includes(entry.id)}
             onApply={(text, proposal) => updateEntry(entry.id, { answer_text: text, teacher_correction: {
               ...entry.teacher_correction, teacher_confirmed: true, latex_normalization: {...proposal, timestamp: new Date().toISOString()}

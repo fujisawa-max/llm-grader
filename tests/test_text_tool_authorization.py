@@ -92,3 +92,25 @@ def test_teacher_session_reaches_real_app_route(context):
         response = client.post("/api/v1/text-tools/latex-normalize", json={"text": "TP"})
     assert response.status_code == 200, response.json()
     normalize.assert_called_once()
+
+
+@pytest.mark.parametrize("role,status", [("student", 403), (None, 401)])
+def test_source_math_tool_requires_staff(context, role, status):
+    app, _, tokens, _, _ = context
+    client = TestClient(app)
+    if role:
+        client.cookies.set(SESSION_COOKIE, tokens[role])
+    with patch("scoring.source_math_ocr.SourceMathOCR.propose") as propose:
+        response = client.post("/api/v1/model-answer-import-drafts/missing/entries/missing/math-ocr",
+                               json={"text": "x=1", "expected_revision": 1})
+    assert response.status_code == status
+    propose.assert_not_called()
+
+
+def test_source_math_tool_rejects_arbitrary_path(context):
+    app, _, tokens, _, _ = context
+    client = TestClient(app)
+    client.cookies.set(SESSION_COOKIE, tokens["admin"])
+    response = client.post("/api/v1/model-answer-import-drafts/missing/entries/missing/math-ocr",
+                           json={"text": "x=1", "expected_revision": 1, "path": "/etc/passwd"})
+    assert response.status_code == 422

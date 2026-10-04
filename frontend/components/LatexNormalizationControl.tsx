@@ -3,10 +3,11 @@ import { latexErrorMessage } from "@/lib/latexErrors";
 import { useState } from "react";
 import katex from "katex";
 import { MarkdownMathText } from "./MarkdownMathText";
-import { normalizeLatex, type LatexProposal, type TextContext } from "@/lib/api/textTools";
+import { mathOCR, normalizeLatex, type LatexProposal, type TextContext } from "@/lib/api/textTools";
 import { parseMathText } from "@/lib/mathText";
 
-export function LatexNormalizationControl({text, contextType, contextLabel = "", disabled = false, onApply}: {
+export function LatexNormalizationControl({text, contextType, contextLabel = "", disabled = false, source, onApply}: {
+  source?: {draftId: string; entryId: string; revision: number};
   text: string; contextType: TextContext; contextLabel?: string; disabled?: boolean;
   onApply: (text: string, proposal: LatexProposal) => void;
 }) {
@@ -17,7 +18,7 @@ export function LatexNormalizationControl({text, contextType, contextLabel = "",
   async function suggest() {
     if (text.length > 12000) {setError("LaTeX変換の本文は12,000文字以内にしてください。元の本文は保持されています。"); return;}
     setBusy(true); setProposal(null); setError(""); setConfirmed(false);
-    try { setProposal(await normalizeLatex(text, contextType, contextLabel)); }
+    try { setProposal(source ? await mathOCR(source, text) : await normalizeLatex(text, contextType, contextLabel)); }
     catch (cause) { setError(latexErrorMessage(cause)); }
     finally { setBusy(false); }
   }
@@ -29,20 +30,21 @@ export function LatexNormalizationControl({text, contextType, contextLabel = "",
   }
   const stale = proposal && proposal.original_text !== text;
   return <section className="latex-normalization" aria-label="LaTeX変換" aria-busy={busy}>
-    <button type="button" className="button secondary" disabled={disabled || busy || !text.trim()} onClick={suggest}>LLMでLaTeX化</button>
-    {busy && <p role="status">LaTeX変換案を作成しています… 必要に応じてLLMを起動します。初回は時間がかかる場合があります。</p>}
+    <button type="button" className="button secondary" disabled={disabled || busy || !text.trim()} onClick={suggest}>数式をLaTeX化</button>
+    {busy && <p role="status"><span className="processing-spinner" aria-hidden="true" />数式を解析中… 必要に応じてLLMを起動します。初回は時間がかかる場合があります。</p>}
     {error && <p role="alert">{error}</p>}
     {proposal && <section aria-label="LLMによるLaTeX変換案">
-      <h4>LLMによるLaTeX変換案</h4>
+      <h4>LaTeX変換案</h4>
       <h5>元の文章</h5><pre style={{whiteSpace: "pre-wrap"}}>{proposal.original_text}</pre>
       <h5>変換案</h5><pre style={{whiteSpace: "pre-wrap"}}>{proposal.normalized_text}</pre>
       <MarkdownMathText source={proposal.normalized_text} />
-      {proposal.status === "no_change" && <p role="status">LaTeX化できる数式表現は見つかりませんでした。</p>}
+      {proposal.status === "no_change" && <p role="status">{source ? "LaTeX化できる数式領域は見つかりませんでした。" : "LaTeX化できる数式表現は見つかりませんでした。"}</p>}
+      {proposal.math_regions?.map((region, i) => <details key={i}><summary>数式の原文: ページ {region.page_index + 1}</summary><img src={region.crop_image} alt={`数式OCR対象 ${i + 1}`} style={{maxWidth: "100%"}} /><pre>{region.raw_latex}</pre></details>)}
       {proposal.warnings.map((warning, i) => <p role="alert" key={i}>{warning}</p>)}
       {proposal.status === "ambiguous" && <label><input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} />数式構造に曖昧さがあります。変換案を確認しました。</label>}
       {mathError && <p role="alert">数式を表示できません。構文を確認してください。</p>}
       {stale && <p role="alert">本文が変更されています。変換案を作り直してください。</p>}
-      <div className="actions"><button type="button" className="button" disabled={disabled || !!stale || mathError || proposal.status === "rejected" || proposal.status === "no_change" || (proposal.status === "ambiguous" && !confirmed)} onClick={() => {onApply(proposal.normalized_text, proposal); setProposal(null);}}>この変換を適用</button>
+      <div className="actions"><button type="button" className="button" disabled={disabled || !!stale || mathError || proposal.status === "rejected" || proposal.status === "no_change" || (proposal.status === "ambiguous" && !confirmed)} onClick={() => {onApply(proposal.normalized_text, {...proposal, math_regions: proposal.math_regions?.map(({crop_image: _image, ...region}) => region)}); setProposal(null);}}>この変換を適用</button>
         <button type="button" className="button secondary" onClick={() => setProposal(null)}>キャンセル</button></div>
     </section>}
   </section>;

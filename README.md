@@ -38,7 +38,7 @@ llm-grader is a web application for human-in-the-loop, LLM-assisted grading of u
 - Grading, review queue, regrade, finalization, results, CSV, and PDF views
 - Persistent artifact storage, Alembic migrations, and Docker Compose deployment
 
-Model/runtime catalog and download management are not part of the current web administration surface. Normal Compose includes a lazy-starting RuntimeManager and managed llama-server. Model files must be provisioned separately; Ricoh and Uni-MuMER still require their own runtime configuration. See [runtime deployment](docs/operations/runtime-deployment.md).
+Model/runtime catalog and download management are not part of the current web administration surface. Normal Compose includes a lazy-starting RuntimeManager and managed llama-server. Model files must be provisioned separately; Ricoh requires its own runtime configuration; Uni-MuMER math OCR has a configurable `math_ocr` profile and requires model/mmproj files. See [runtime deployment](docs/operations/runtime-deployment.md).
 
 ## Screenshots
 
@@ -126,3 +126,5 @@ Model catalog, model download/install, and runtime switching UI are not yet impl
 ## Security Notes
 
 Never commit `.env`, credentials, database dumps, or model files. Replace the example PostgreSQL password before deployment. Header authentication is disabled by default. Use HTTPS at the reverse proxy in production. Passwords are hashed; plaintext passwords and session tokens must not be logged or placed in documentation or screenshots.
+
+Model Answer Review offers on-demand “数式をLaTeX化”. Source-backed formulas use bounded PDF crops and Uni-MuMER, then show a proposal and source preview for teacher confirmation. Apply changes only the editing draft; draft save and formal registration remain separate. See [runtime deployment](docs/operations/runtime-deployment.md) for math model storage settings.

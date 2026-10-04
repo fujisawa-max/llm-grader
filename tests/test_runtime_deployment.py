@@ -18,7 +18,7 @@ from tests.runtime_fixture import runtime_service
 def test_real_manager_managed_process_classifier_and_restart(tmp_path, monkeypatch):
     monkeypatch.setenv("LLM_GRADER_TRUSTED_RUNTIME_HOSTS", "127.0.0.2")
     with runtime_service(tmp_path) as (client, url, process):
-        assert len(client.profiles()) == 2
+        assert len(client.profiles()) == 3
         assert client.models()["default_text"]["model_id"] == "synthetic-text-model"
         before = client.status("ornith_rubric_draft")
         assert before["pid"] is None and before["state"] == "stopped"
@@ -67,8 +67,10 @@ def test_model_missing_does_not_fail_manager_health(tmp_path):
 def test_config_assignments_and_legacy_compatibility(tmp_path):
     root = Path(__file__).resolve().parents[1]
     profiles, models = load_runtime_config(root / "config/runtime.deployment.json")
-    assert set(profiles) == {"grader", "ornith_rubric_draft"}
-    assert all(profile.model_ref == "default_text" for profile in profiles.values())
+    assert set(profiles) == {"grader", "ornith_rubric_draft", "math_ocr"}
+    assert all(profiles[name].model_ref == "default_text" for name in ("grader", "ornith_rubric_draft"))
+    assert profiles["math_ocr"].model_ref == "unimumer"
+    assert profiles["math_ocr"].vision
     assert models["default_text"]["vision"] is False
     legacy, _ = load_runtime_config(root / "config/runtime.example.json")
     assert all(profile.runtime_type == "external" for profile in legacy.values())

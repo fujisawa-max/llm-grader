@@ -61,6 +61,7 @@ def runtime_service(root, *, model_present=True, hardware_backend=None):
         model_path.write_text("Test artifact only: not real model weights.")
     config["model_definitions"]["default_text"].update(
         model_id="synthetic-text-model", model_path=str(model_path))
+    config["model_definitions"]["unimumer"].update(model_id="synthetic-math-model", model_path=str(model_path), mmproj_path=str(model_path))
     config["runtime_defaults"].update(
         server_binary=str(REPO / "tests/fixtures/runtime/llama_server_stub.py"),
         advertise_host="127.0.0.2", startup_timeout_seconds=5)

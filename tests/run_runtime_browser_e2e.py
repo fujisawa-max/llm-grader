@@ -162,6 +162,39 @@ def seed(root):
         domain.model_answer(state_test.id, question_id=state_question.id, answer_text="Formal answer A.")
         geometry_env.update({"LATEX_STATE_TEST_ID": state_test.id, "LATEX_STATE_QUESTION_ID": state_question.id,
                              "LATEX_STATE_MATERIAL_ID": state_material.id})
+        from uuid import uuid4
+        math_pdf = pymupdf.open()
+        math_page = math_pdf.new_page()
+        math_page.insert_text((50, 55), "Precision=")
+        for x, numerator, denominator in [(130, "TP", "TP+FP"), (210, "24", "24+6"), (280, "24", "30")]:
+            math_page.insert_text((x, 45), numerator)
+            math_page.draw_line((x-2, 50), (x+35, 50))
+            math_page.insert_text((x, 65), denominator)
+        math_page.insert_text((330, 55), "=0.800")
+        math_page.insert_text((50, 165), "Answer: 0.800 (80%)")
+        math_source = root / "sources" / "math.pdf"
+        math_source.write_bytes(math_pdf.tobytes())
+        math_pdf.close()
+        math_digest = hashlib.sha256(math_source.read_bytes()).hexdigest()
+        math_test = domain.test(teacher_offering.id, name="Source math fixture", total_points=10)
+        math_question = domain.question(math_test.id, question_number="1", display_label="問題1", sort_order=1,
+                                        max_points=10, is_gradable=True, question_text="Explain precision.")
+        domain.model_answer(math_test.id, question_id=math_question.id, answer_text="Formal answer A.")
+        math_material = domain.material(math_test.id, material_type="model_answer_source", storage_ref=str(math_source),
+                                       original_filename="fractions.pdf", mime_type="application/pdf", sha256=math_digest)
+        source_lines = ["Precision=", "TP", "TP+FP=", "24", "24+6 =", "30 = 0.800"]
+        math_text = "\n".join(source_lines) + "\nAnswer: 0.800 (80%)"
+        math_segments = [{"id": f"math-{i}", "original_text": t, "text": t, "page_index": 0,
+                          "bbox": [48, 35+i*15, 390, 47+i*15], "reading_order": i}
+                         for i, t in enumerate(source_lines)]
+        math_draft = ModelAnswerImportDraft(id=str(uuid4()), test_id=math_test.id, material_id=math_material.id,
+            source_sha256=math_digest, artifact_ref="math-ir.json", state="editing", revision=1,
+            snapshot={"schema": "model-answer-review.v1", "page_count": 1, "entries": [{"id": str(uuid4()),
+                "question_id": math_question.id, "answer_text": math_text, "disposition": "include",
+                "answer_kind": "primary", "classification_reviewed": True,
+                "source": {"kind": "native_pdf", "material_id": math_material.id, "segments": math_segments}}]})
+        session.add(math_draft)
+        geometry_env["SOURCE_MATH_DRAFT_ID"] = math_draft.id
         nested_test = domain.test(offering.id, name="Nested review navigation fixture", total_points=20)
         domain.question(nested_test.id, question_number="1", display_label="問題1", sort_order=1,
                         max_points=10, is_gradable=True)
@@ -275,6 +308,7 @@ def main():
                         "e2e/latex-normalization-real.spec.ts",
                         "e2e/latex-runtime-state-real.spec.ts",
                         "e2e/latex-error-mapping.spec.ts",
+                        "e2e/source-math-ocr-real.spec.ts",
                         "e2e/model-answer-nested-navigation-real-isolated.spec.ts",
                     ]
                     subprocess.run(["npm", "run", "e2e", "--", *specs, "--workers=1"],
