@@ -794,6 +794,15 @@ def create_app(session_factory=None, *, allowed_roots=None, runtime_client=None,
         if user.role not in STAFF_ROLES:
             raise HTTPException(403, {"error": {"code": "TEACHER_ROLE_REQUIRED", "message": "TEACHER_ROLE_REQUIRED"}})
         return authorize_domain_path(request, s, user)
+    def staff_only_dependency(request: Request, s=Depends(db)):
+        """Generic tools authenticate staff without resolving a domain URL resource."""
+        user = authenticated(request, s)
+        if user.role not in STAFF_ROLES:
+            raise HTTPException(403, {"error": {"code": "TEACHER_ROLE_REQUIRED", "message": "TEACHER_ROLE_REQUIRED"}})
+        request.state.teacher_user_id = user.id
+        s.info["teacher_user_id"] = user.id
+        return user
+
     app.include_router(domain_router(db, import_root, roots, visual_options,
                                      storage_root=action_root),
                        dependencies=[Depends(domain_authorized)])
@@ -804,7 +813,7 @@ def create_app(session_factory=None, *, allowed_roots=None, runtime_client=None,
     app.include_router(model_answer_import_router(db, action_root, classifier=model_answer_classifier),
                        dependencies=[Depends(staff_dependency)])
     from .text_tools import router as text_tools_router
-    app.include_router(text_tools_router(model_answer_classifier), dependencies=[Depends(staff_dependency)])
+    app.include_router(text_tools_router(model_answer_classifier), dependencies=[Depends(staff_only_dependency)])
     app.include_router(student_answer_router(db, action_root),
                        dependencies=[Depends(domain_authorized)])
     app.include_router(grading_review_router(

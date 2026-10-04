@@ -73,3 +73,23 @@ limit, Next proxy 900 seconds, API manager ensure 330 seconds, managed profile
 startup 300 seconds, and inference 300 seconds. `scoring.api.server` uses
 `LLM_GRADER_RUNTIME_START_TIMEOUT_SECONDS` for ensure; the profile controls model
 startup and inference limits. API-to-manager ordinary calls use 120 seconds.
+
+## Generic text-tool authorization
+
+Text tools require an authenticated `teacher` or `admin` session (the existing
+`STAFF_ROLES`). They do not resolve Test/Question/Course ownership from the URL:
+the endpoint formats supplied text and does not load or mutate domain resources.
+Their dedicated staff-only dependency retains the standard authenticated user
+context. Student and anonymous requests are rejected before the handler/runtime.
+Question review/import and other resource APIs retain domain-path authorization.
+
+A prior deployment passed the text-tool URL through `authorize_domain_path`,
+which rejects an unrecognized resource path with `RESOURCE_NOT_FOUND` for
+teachers. Admin bypasses that resource guard, so admin-only runtime/browser
+fixtures failed to detect the problem. Tests now cover actual teacher-owned
+review data and student sessions in addition to admin sessions.
+
+The UI prioritizes structured error codes: `RESOURCE_NOT_FOUND` means a missing
+resource, not a missing API route. Only a standard `Not Found` response (or the
+API's equivalent `http_error`/`Not Found`) is labeled as an absent API. Unexplained
+404 responses do not assert that the route is missing.

@@ -146,7 +146,15 @@ def seed(root):
         domain.material(split_test.id, material_type="model_answer_source", storage_ref=str(split_source),
                         original_filename="split-rubric-model-answer.pdf", mime_type="application/pdf", sha256=split_digest)
         geometry_env.update({"RUBRIC_SPLIT_TEST_ID": split_test.id, "RUBRIC_SPLIT_QUESTION_ID": split_question.id})
-        state_test = domain.test(offering.id, name="LaTeX state semantics fixture", total_points=10)
+        teacher_email, student_email = "text-teacher@example.invalid", "text-student@example.invalid"
+        teacher = domain.user(display_name="Text tool teacher", email=teacher_email, role="teacher",
+                              password_hash=hash_password(password), is_active=True)
+        domain.user(display_name="Text tool non-staff", email=student_email, role="student",
+                    password_hash=hash_password(password), is_active=True)
+        teacher_course = domain.course(teacher.id, name="Teacher-owned text tool fixture")
+        teacher_offering = domain.offering(teacher_course.id, academic_year=2026, term="fall")
+        geometry_env.update({"TEXT_TOOL_TEACHER_EMAIL": teacher_email, "TEXT_TOOL_STUDENT_EMAIL": student_email})
+        state_test = domain.test(teacher_offering.id, name="LaTeX state semantics fixture", total_points=10)
         state_question = domain.question(state_test.id, question_number="1", display_label="問題1", sort_order=1,
                                          max_points=10, is_gradable=True, question_text="Explain precision.")
         state_material = domain.material(state_test.id, material_type="model_answer_source", storage_ref=str(split_source),

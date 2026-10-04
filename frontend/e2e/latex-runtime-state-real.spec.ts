@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 test.skip(!process.env.LATEX_STATE_TEST_ID, "isolated runtime and state fixture required");
 test("formal, saved and local content remain independent; cold LaTeX starts runtime and warm reuses PID", async ({page, playwright}) => {
   await page.goto("/login");
-  await page.getByLabel("メールアドレス").fill(process.env.MODEL_ANSWER_CLASSIFICATION_EMAIL!);
+  await page.getByLabel("メールアドレス").fill(process.env.TEXT_TOOL_TEACHER_EMAIL!);
   await page.getByLabel("パスワード").fill(process.env.MODEL_ANSWER_CLASSIFICATION_PASSWORD!);
   await page.getByRole("button", {name: "ログイン"}).click();
   await expect(page).not.toHaveURL(/\/login/);
@@ -12,6 +12,16 @@ test("formal, saved and local content remain independent; cold LaTeX starts runt
   const anonymous = await playwright.request.newContext({baseURL: process.env.E2E_FRONTEND_URL});
   const unauth = await anonymous.post("/api/v1/text-tools/latex-normalize", {data: {text: "TP / FP"}});
   expect(unauth.status()).toBe(401); await anonymous.dispose();
+  const managerUrl = process.env.LLM_GRADER_RUNTIME_MANAGER_URL!;
+  await page.request.post(`${managerUrl}/runtimes/ornith_rubric_draft/stop`);
+  const student = await playwright.request.newContext({baseURL: process.env.E2E_FRONTEND_URL});
+  expect((await student.post("/api/v1/auth/login", {data: {email: process.env.TEXT_TOOL_STUDENT_EMAIL,
+    password: process.env.MODEL_ANSWER_CLASSIFICATION_PASSWORD}})).status()).toBe(200);
+  const forbidden = await student.post("/api/v1/text-tools/latex-normalize", {data: {text: "TP / (TP + FP)"}});
+  expect(forbidden.status()).toBe(403); expect((await forbidden.json()).error.code).toBe("TEACHER_ROLE_REQUIRED");
+  await student.dispose();
+  const afterDenied = await (await page.request.get(`${managerUrl}/runtimes/ornith_rubric_draft/status`)).json();
+  expect(afterDenied.state).toBe("stopped"); expect(afterDenied.pid).toBeNull();
   const invalid = await page.request.post("/api/v1/text-tools/latex-normalize", {data: {text: "TP / FP", context_type: "invalid"}});
   expect(invalid.status()).toBe(422); expect((await invalid.json()).error.code).toBe("validation_error");
   const tid = process.env.LATEX_STATE_TEST_ID!, qid = process.env.LATEX_STATE_QUESTION_ID!;
@@ -74,4 +84,34 @@ test("formal, saved and local content remain independent; cold LaTeX starts runt
   expect(persisted.confirmed_entry_ids).toContain(entry.id);
   const finalRuntime = await (await page.request.get(`${manager}/runtimes/ornith_rubric_draft/status`)).json();
   expect(finalRuntime.pid).toBe(running.pid); expect(errors).toEqual([]);
+});
+
+test("structured resource 404 is not diagnosed as a missing text API", async ({page}) => {
+  await page.goto("/login");
+  await page.getByLabel("メールアドレス").fill(process.env.TEXT_TOOL_TEACHER_EMAIL!);
+  await page.getByLabel("パスワード").fill(process.env.MODEL_ANSWER_CLASSIFICATION_PASSWORD!);
+  await page.getByRole("button", {name: "ログイン"}).click();
+  await expect(page).not.toHaveURL(/\/login/);
+  const errors: string[] = [];
+  page.on("pageerror", error => errors.push(error.message));
+  page.on("console", message => {if (message.type() === "error" && !message.text().includes("404")) errors.push(message.text());});
+  const tid = process.env.LATEX_STATE_TEST_ID!;
+  const response = await page.request.post(`/api/v1/tests/${tid}/model-answer-imports`, {data: {material_id: process.env.LATEX_STATE_MATERIAL_ID}});
+  expect(response.status()).toBe(201); const draft = await response.json();
+  await page.goto(`/model-answer-import-reviews/${draft.id}`);
+  await page.getByLabel("編集対象").selectOption(`question:${process.env.LATEX_STATE_QUESTION_ID}`);
+  const editor = page.getByLabel(/^模範解答本文 /).first();
+  await editor.fill("TP / (TP + FP)");
+  const control = page.getByRole("region", {name: "LaTeX変換", exact: true}).first();
+  let body: unknown = {error: {code: "RESOURCE_NOT_FOUND", message: "RESOURCE_NOT_FOUND"}};
+  await page.route("**/api/v1/text-tools/latex-normalize", route => route.fulfill({status: 404, contentType: "application/json", body: JSON.stringify(body)}));
+  await control.getByRole("button", {name: "LLMでLaTeX化"}).click();
+  await expect(control.getByRole("alert")).toContainText("対象リソースが見つかりません");
+  await expect(control.getByRole("alert")).not.toContainText("APIが見つかりません");
+  await expect(editor).toHaveValue("TP / (TP + FP)");
+  body = {detail: "Not Found"};
+  await control.getByRole("button", {name: "LLMでLaTeX化"}).click();
+  await expect(control.getByRole("alert")).toContainText("LaTeX変換APIが見つかりません");
+  await expect(editor).toHaveValue("TP / (TP + FP)");
+  expect(errors).toEqual([]);
 });
