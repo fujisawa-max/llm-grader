@@ -87,6 +87,8 @@ def create_app(session_factory=None, *, allowed_roots=None, runtime_client=None,
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, exc: RequestValidationError):
+        if request.url.path == "/api/v1/text-tools/latex-normalize":
+            logger.warning("latex API invalid request fields=%s", [error["loc"] for error in exc.errors()])
         return JSONResponse(
             {
                 "error": {

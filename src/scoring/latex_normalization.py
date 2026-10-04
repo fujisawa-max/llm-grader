@@ -1,5 +1,6 @@
 """On-demand formatting proposals; never correct mathematics or save content."""
 import json
+import logging
 import re
 
 from .core import LocalClient, generation_payload, parse_response
@@ -63,18 +64,41 @@ def validate_proposal(text, value):
     return result
 
 
+logger = logging.getLogger(__name__)
+
+
+class LatexNormalizationError(RuntimeError):
+    def __init__(self, code, stage):
+        super().__init__(code)
+        self.code, self.stage = code, stage
+
+
 class LatexNormalizer:
     def __init__(self, manager, profile_id="ornith_rubric_draft"):
         self.manager, self.profile_id = manager, profile_id
 
     def normalize(self, text, context_type="generic", context_label=""):
-        ready = self.manager.ensure_running(self.profile_id)
+        logger.info("latex normalize requested profile=%s chars=%d", self.profile_id, len(text))
+        logger.info("latex runtime ensure start profile=%s", self.profile_id)
+        try:
+            ready = self.manager.ensure_running(self.profile_id)
+        except (RuntimeError, OSError, ValueError, KeyError) as exc:
+            description = str(exc).lower()
+            code = ("latex_runtime_start_timeout" if isinstance(exc, TimeoutError) or "timeout" in description or "timed out" in description
+                    else "latex_runtime_unavailable" if "404" in description or isinstance(exc, KeyError)
+                    else "latex_runtime_start_failed")
+            logger.warning("latex runtime ensure failed profile=%s code=%s exception=%s", self.profile_id, code, type(exc).__name__)
+            raise LatexNormalizationError(code, "runtime_start") from exc
+        logger.info("latex runtime ready profile=%s", self.profile_id)
         profile = ready.get("profile", {})
         endpoint = ready.get("endpoint") or profile.get("endpoint")
         if not endpoint or not profile.get("model_id"):
-            raise RuntimeError("normalization runtime unavailable")
-        client = LocalClient({"models": {"normalizer": {"base_url": endpoint, "model_id": profile["model_id"],
-            "request_timeout_seconds": profile.get("request_timeout_seconds", 300)}}, "generation": profile.get("generation", {})}, "normalizer")
+            raise LatexNormalizationError("latex_runtime_unavailable", "runtime_configuration")
+        try:
+            client = LocalClient({"models": {"normalizer": {"base_url": endpoint, "model_id": profile["model_id"],
+                "request_timeout_seconds": profile.get("request_timeout_seconds", 300)}}, "generation": profile.get("generation", {})}, "normalizer")
+        except (ValueError, KeyError, TypeError) as exc:
+            raise LatexNormalizationError("latex_runtime_unavailable", "runtime_configuration") from exc
         prompt = ("Format only existing mathematical expressions as Markdown LaTeX. Never correct mathematics, "
                   "change numeric spelling (0.800 must stay 0.800), signs, percentages, identifiers, answers, "
                   "prose or punctuation. Never add formulas, infer missing numerators, summarize or delete content. "
@@ -85,5 +109,17 @@ class LatexNormalizer:
             **generation_payload(client.generation), "stream": False,
             "chat_template_kwargs": {**profile.get("chat_template_kwargs", {}), "enable_thinking": False},
             "response_format": {"type": "json_schema", "json_schema": {"name": "latex_normalization", "strict": True, "schema": SCHEMA}}}
-        result = validate_proposal(text, parse_response(client.request(endpoint.rstrip("/") + "/chat/completions", request)))
+        logger.info("latex inference start profile=%s", self.profile_id)
+        try:
+            raw = client.request(endpoint.rstrip("/") + "/chat/completions", request)
+        except (OSError, RuntimeError) as exc:
+            timeout = isinstance(exc, TimeoutError) or isinstance(getattr(exc, "reason", None), TimeoutError)
+            raise LatexNormalizationError("latex_inference_timeout" if timeout else "latex_inference_failed", "inference") from exc
+        except (ValueError, KeyError, TypeError) as exc:
+            raise LatexNormalizationError("latex_invalid_response", "response") from exc
+        try:
+            result = validate_proposal(text, parse_response(raw))
+        except (ValueError, KeyError, TypeError, IndexError) as exc:
+            raise LatexNormalizationError("latex_invalid_response", "response") from exc
+        logger.info("latex inference success profile=%s status=%s", self.profile_id, result["status"])
         return {**result, "profile": self.profile_id, "model": profile["model_id"]}

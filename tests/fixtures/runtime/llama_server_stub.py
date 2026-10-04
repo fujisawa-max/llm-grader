@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import re
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 parser = argparse.ArgumentParser()
@@ -58,6 +59,9 @@ class Handler(BaseHTTPRequestHandler):
             if "[latex_failure]" in text:
                 self.send({"error": "synthetic normalization failure"}, 503)
                 return
+            if "[latex_malformed]" in text:
+                self.send({"choices": [{"finish_reason": "stop", "message": {"content": "not JSON"}}]})
+                return
             normalized = text.replace("TP / (TP + FP)", r"$\frac{TP}{TP+FP}$")
             status = "safe" if normalized != text else "no_change"
             if text == "Accuracy = TP+TN / TP+FP+FN+TN":
@@ -99,4 +103,5 @@ class Handler(BaseHTTPRequestHandler):
         self.send({"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(result)}}]})
 
 
+time.sleep(float(os.getenv("LLM_GRADER_STUB_STARTUP_DELAY_SECONDS", "0")))
 ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()

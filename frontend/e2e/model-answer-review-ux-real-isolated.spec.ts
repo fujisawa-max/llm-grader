@@ -33,8 +33,8 @@ test("review disposition, manual answer, navigation and in-pane PDF zoom persist
   const draft = await (await created).json();
   await expect(page).toHaveURL(/model-answer-import-reviews/);
   await expect(page.locator(".sidebar")).toHaveClass(/sidebar-collapsed/);
-  await expect(page.getByRole("heading", { name: "LLM取り込み結果", exact: true })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "保存済み模範解答" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "編集中の下書き", exact: true })).toBeVisible();
+  await expect(page.getByRole("group", { name: "登録済み模範解答" })).toContainText("未登録");
   await expect(page.locator(".model-answer-review-toolbar").getByRole("button", { name: "下書き保存" })).toBeVisible();
   const viewer = page.getByRole("region", { name: "模範解答PDF" });
   await expect(viewer.getByRole("button", { name: "拡大" })).toBeEnabled();
@@ -121,11 +121,12 @@ test("review disposition, manual answer, navigation and in-pane PDF zoom persist
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "再解析する" }).click();
   const secondDraft = await (await secondCreated).json();
-  await expect(page.getByRole("heading", { name: "今回のLLM取り込み結果" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "保存済み模範解答" })).toBeVisible();
-  await expect(page.getByText("Teacher-authored answer.")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "編集中の下書き" })).toBeVisible();
+  await expect(page.getByRole("group", { name: "登録済み模範解答" })).toBeVisible();
+  await expect(page.getByRole("group", {name: "登録済み模範解答"})).toContainText("Teacher-authored answer.");
   page.once("dialog", (dialog) => dialog.accept());
-  await page.getByRole("button", { name: "保存済み模範解答を読み込む" }).click();
+  await page.getByRole("group", {name: "登録済み模範解答"}).locator("summary").click();
+  await page.getByRole("button", { name: "登録済み模範解答を読み込む" }).click();
   await expect(page.getByLabel("模範解答本文 1")).toHaveValue("Teacher-authored answer.");
   await page.getByRole("button", { name: "下書き保存" }).click();
   await page.reload();

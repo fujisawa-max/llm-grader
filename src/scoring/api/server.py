@@ -1,8 +1,12 @@
 import os
+import logging
+
 from .app import create_app
 from ..db import create_session_factory
 from ..runtime import RuntimeManagerClient
 from ..operations import env_bool
+
+logging.basicConfig(level=logging.INFO)
 
 url = os.getenv("LLM_GRADER_DATABASE_URL", "sqlite:///llm_grader_api.db")
 _, session_factory = create_session_factory(url)

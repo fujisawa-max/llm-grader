@@ -1,4 +1,5 @@
 "use client";
+import { latexErrorMessage } from "@/lib/latexErrors";
 import { useState } from "react";
 import katex from "katex";
 import { MarkdownMathText } from "./MarkdownMathText";
@@ -14,9 +15,10 @@ export function LatexNormalizationControl({text, contextType, contextLabel = "",
   const [error, setError] = useState("");
   const [confirmed, setConfirmed] = useState(false);
   async function suggest() {
+    if (text.length > 12000) {setError("LaTeX変換の本文は12,000文字以内にしてください。元の本文は保持されています。"); return;}
     setBusy(true); setProposal(null); setError(""); setConfirmed(false);
     try { setProposal(await normalizeLatex(text, contextType, contextLabel)); }
-    catch { setError("LaTeX変換案を作成できませんでした。元の本文は保持されています。再試行してください。"); }
+    catch (cause) { setError(latexErrorMessage(cause)); }
     finally { setBusy(false); }
   }
   let mathError = !!proposal && (proposal.normalized_text.replace(/\\\$/g, "").match(/\$/g)?.length || 0) % 2 !== 0;
@@ -28,7 +30,7 @@ export function LatexNormalizationControl({text, contextType, contextLabel = "",
   const stale = proposal && proposal.original_text !== text;
   return <section className="latex-normalization" aria-label="LaTeX変換" aria-busy={busy}>
     <button type="button" className="button secondary" disabled={disabled || busy || !text.trim()} onClick={suggest}>LLMでLaTeX化</button>
-    {busy && <p role="status">LaTeX変換案を作成しています…</p>}
+    {busy && <p role="status">LaTeX変換案を作成しています… 必要に応じてLLMを起動します。初回は時間がかかる場合があります。</p>}
     {error && <p role="alert">{error}</p>}
     {proposal && <section aria-label="LLMによるLaTeX変換案">
       <h4>LLMによるLaTeX変換案</h4>

@@ -57,8 +57,13 @@ test("on-demand LaTeX proposals preserve answer and rubric text across reload", 
   await control.getByRole("button", {name: "キャンセル"}).click();
   await answer.fill("[latex_failure]");
   await control.getByRole("button", {name: "LLMでLaTeX化"}).click();
+  await expect(control.getByRole("alert")).toContainText("LLMから変換結果");
   await expect(control.getByRole("alert")).toContainText("元の本文は保持");
   await expect(answer).toHaveValue("[latex_failure]");
+  await answer.fill("[latex_malformed]");
+  await control.getByRole("button", {name: "LLMでLaTeX化"}).click();
+  await expect(control.getByRole("alert")).toContainText("有効な変換結果");
+  await expect(answer).toHaveValue("[latex_malformed]");
   await answer.fill("TP / (TP + FP)");
   await control.getByRole("button", {name: "LLMでLaTeX化"}).click();
   await expect(control.getByRole("button", {name: "この変換を適用"})).toBeEnabled();

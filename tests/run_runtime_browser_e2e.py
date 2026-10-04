@@ -146,6 +146,14 @@ def seed(root):
         domain.material(split_test.id, material_type="model_answer_source", storage_ref=str(split_source),
                         original_filename="split-rubric-model-answer.pdf", mime_type="application/pdf", sha256=split_digest)
         geometry_env.update({"RUBRIC_SPLIT_TEST_ID": split_test.id, "RUBRIC_SPLIT_QUESTION_ID": split_question.id})
+        state_test = domain.test(offering.id, name="LaTeX state semantics fixture", total_points=10)
+        state_question = domain.question(state_test.id, question_number="1", display_label="問題1", sort_order=1,
+                                         max_points=10, is_gradable=True, question_text="Explain precision.")
+        state_material = domain.material(state_test.id, material_type="model_answer_source", storage_ref=str(split_source),
+                                         original_filename="state-model-answer.pdf", mime_type="application/pdf", sha256=split_digest)
+        domain.model_answer(state_test.id, question_id=state_question.id, answer_text="Formal answer A.")
+        geometry_env.update({"LATEX_STATE_TEST_ID": state_test.id, "LATEX_STATE_QUESTION_ID": state_question.id,
+                             "LATEX_STATE_MATERIAL_ID": state_material.id})
         nested_test = domain.test(offering.id, name="Nested review navigation fixture", total_points=20)
         domain.question(nested_test.id, question_number="1", display_label="問題1", sort_order=1,
                         max_points=10, is_gradable=True)
@@ -257,6 +265,8 @@ def main():
                         "e2e/rubric-split-real-isolated.spec.ts",
                         "e2e/rubric-edit-reliability-real.spec.ts",
                         "e2e/latex-normalization-real.spec.ts",
+                        "e2e/latex-runtime-state-real.spec.ts",
+                        "e2e/latex-error-mapping.spec.ts",
                         "e2e/model-answer-nested-navigation-real-isolated.spec.ts",
                     ]
                     subprocess.run(["npm", "run", "e2e", "--", *specs, "--workers=1"],
@@ -270,6 +280,12 @@ def main():
                     (root / "synthetic.gguf").unlink()
                     opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
                     json_request(opener, api_url + "/api/v1/auth/login", {"email": email, "password": password})
+                    if any("latex-" in spec and "error-mapping" not in spec for spec in specs):
+                        api_log = (root / "api.log").read_text()
+                        for stage in ("latex API request", "latex runtime ensure start", "latex runtime ready", "latex inference start", "latex inference success"):
+                            assert stage in api_log, f"missing normalization stage log: {stage}"
+                        assert "Formal answer A." not in api_log
+                        assert "Draft answer B." not in api_log
                     statuses = json_request(opener, api_url + "/api/v1/system/runtimes")
                     assert all(row["availability"] == "model_missing" for row in statuses)
                     draft = json_request(opener, f"{api_url}/api/v1/tests/{test_id}/model-answer-imports", {"material_id": material_id})

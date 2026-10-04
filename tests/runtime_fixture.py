@@ -70,7 +70,7 @@ def runtime_service(root, *, model_present=True, hardware_backend=None):
     path.write_text(json.dumps(config))
     port = unused_port()
     url = f"http://127.0.0.1:{port}/internal"
-    env = {**os.environ, "PYTHONPATH": str(REPO / "src")}
+    env = {**os.environ, "PYTHONPATH": str(REPO / "src"), "LLM_GRADER_STUB_STARTUP_DELAY_SECONDS": "1"}
     if hardware_backend:
         env["LLM_GRADER_STUB_BACKEND"] = hardware_backend
     with (root / "runtime-manager.log").open("w") as log:

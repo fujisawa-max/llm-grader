@@ -98,6 +98,7 @@ export default function ModelAnswerImportReviewPage() {
   const draftId = String(useParams().draftId);
   const router = useRouter();
   const [draft, setDraft] = useState<ModelAnswerImportDraft | null>(null);
+  const [savedDraft, setSavedDraft] = useState<ModelAnswerImportDraft | null>(null);
   const [test, setTest] = useState<Test | null>(null);
   const [material, setMaterial] = useState<Material | null>(null);
   const [loading, setLoading] = useState(true);
@@ -125,7 +126,7 @@ export default function ModelAnswerImportReviewPage() {
           tests.get(current.test_id), testData.materials(current.test_id),
         ]);
         if (!active) return;
-        setDraft(current);
+        setDraft(current); setSavedDraft(current);
         setTest(testRow);
         setMaterial(materials.find((item) => item.id === current.material_id) || null);
       } catch (cause) {
@@ -168,7 +169,7 @@ export default function ModelAnswerImportReviewPage() {
   const visibleEntries = draft.entries.filter((entry) => dispositionOf(entry) !== "ignored" && (selectedTarget?.kind === "question"
     ? entry.question_id === selectedQuestionId && dispositionOf(entry) !== "unassigned"
     : selectedTarget?.entryId === entry.id));
-  const selectedSavedAnswer = draft.saved_answers?.find((answer) => answer.question_id === selectedQuestionId);
+  const selectedSavedAnswer = savedDraft?.saved_answers?.find((answer) => answer.question_id === selectedQuestionId);
   const pdfEntry = visibleEntries.find((entry) => entry.source.segments.length > 0);
   const pdfSegment = pdfEntry?.source.segments.find((segment) => segment.bbox) || pdfEntry?.source.segments[0];
   const pdfLocation = pdfSegment ? { id: `${selectedTarget?.id}:${pdfSegment.id || pdfSegment.page_index}`,
@@ -205,14 +206,14 @@ export default function ModelAnswerImportReviewPage() {
   function loadSavedAnswer(questionId: string) {
     const saved = draft?.saved_answers?.find((answer) => answer.question_id === questionId);
     if (!saved?.answer_text) return;
-    if (!window.confirm("保存済み模範解答を今回の編集欄へ読み込みます。現在編集中の本文を置き換える場合があります。続行しますか？")) return;
+    if (!window.confirm("登録済み模範解答を今回の編集欄へ読み込みます。現在編集中の本文を置き換える場合があります。続行しますか？")) return;
     const primary = draft?.entries.find((entry) => entry.question_id === questionId &&
       dispositionOf(entry) === "include" && (entry.answer_kind || "primary") === "primary" &&
       !draft.confirmed_entry_ids?.includes(entry.id));
     if (primary) updateEntry(primary.id, { answer_text: saved.answer_text, loaded_model_answer: {
       id: saved.id, version: saved.version, question_id: questionId } });
     else addManualEntry(questionId, saved.answer_text, saved.id);
-    setNotice(`保存済み模範解答 v${saved.version} を編集欄へ読み込みました。今回のPDF出典情報は保持されています。`);
+    setNotice(`登録済み模範解答 v${saved.version} を編集欄へ読み込みました。今回のPDF出典情報は保持されています。`);
   }
 
   const entryPayload = (entries: ModelAnswerDraftEntry[]) => entries.map((entry) => ({
@@ -293,7 +294,7 @@ export default function ModelAnswerImportReviewPage() {
     try {
       const prepared = draft.entries.map((value) => ({ ...value, rubric_edits: rubricRows(value) }));
       const updated = await modelAnswerImports.update(draft.id, { expected_revision: draft.revision, entries: entryPayload(prepared) });
-      setDraft(updated);
+      setDraft(updated); setSavedDraft(updated);
       const savedEntry = updated.entries.find(value => value.id === entry.id);
       const savedItem = savedEntry?.rubric_edits?.find(value => value.id === item.id);
       if (!savedEntry || !savedItem) throw new Error("分割する候補を保存できませんでした。候補を確認して再試行してください。");
@@ -381,9 +382,9 @@ export default function ModelAnswerImportReviewPage() {
       const updated = await modelAnswerImports.update(draft.id, {
         expected_revision: draft.revision, entries: entryPayload(preparedEntries),
       });
-      setDraft(updated);
+      setDraft(updated); setSavedDraft(updated);
       const result = await modelAnswerImports.registerRubric(updated.id, updated.revision);
-      setDraft(result.draft);
+      setDraft(result.draft); setSavedDraft(result.draft);
       setNotice(`採点基準 v${result.rubric.version} を登録しました。現在の状態: ${result.rubric.status === "approved" ? "承認済み" : "未承認"}。`);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "採点基準を登録できませんでした");
@@ -450,7 +451,7 @@ export default function ModelAnswerImportReviewPage() {
         expected_revision: draft.revision,
         entries: entryPayload(draft.entries),
       });
-      setDraft(updated);
+      setDraft(updated); setSavedDraft(updated);
       setNotice("下書きを保存しました。正式な模範解答はまだ登録されていません。");
       return updated;
     } catch (cause) {
@@ -471,7 +472,7 @@ export default function ModelAnswerImportReviewPage() {
       const saved = await save();
       if (!saved) return;
       const classified = await modelAnswerImports.classify(saved.id, saved.revision);
-      setDraft(classified);
+      setDraft(classified); setSavedDraft(classified);
       const counts = classified.entries.reduce((result, entry) => {
         const classification = entry.semantic_classification;
         if (!classification || classification.status === "fallback") result.fallback += 1;
@@ -510,9 +511,9 @@ export default function ModelAnswerImportReviewPage() {
         expected_revision: draft.revision,
         entries: entryPayload(draft.entries),
       });
-      setDraft(updated);
+      setDraft(updated); setSavedDraft(updated);
       const result = await modelAnswerImports.confirm(updated.id, updated.revision);
-      setDraft(result.draft);
+      setDraft(result.draft); setSavedDraft(result.draft);
       setNotice(`模範解答${result.model_answers.length}件を登録しました。`);
       const firstQuestion = selectedQuestionId && result.model_answers.some((answer) => answer.question_id === selectedQuestionId)
         ? selectedQuestionId : result.model_answers[0]?.question_id;
@@ -597,14 +598,13 @@ export default function ModelAnswerImportReviewPage() {
           <h2>{questionLabels.get(selectedQuestion.id)}</h2><h3>問題文</h3>
           <MarkdownMathText source={selectedQuestion.question_text || "問題文は登録されていません。"} />
         </section>}
-        {selectedQuestionId && selectedSavedAnswer && <section className="saved-model-answers">
-          <h2>保存済み模範解答</h2>
-          <p>{questionLabels.get(selectedQuestionId)}・版 {selectedSavedAnswer.version}</p>
-          <MathPreview source={selectedSavedAnswer.answer_text || ""} />
+        {selectedQuestionId && <details className="saved-model-answers" aria-label="登録済み模範解答">
+          <summary>登録済み模範解答{selectedSavedAnswer ? `・版 ${selectedSavedAnswer.version}` : "・未登録"}</summary>
+          {selectedSavedAnswer ? <><MarkdownMathText source={selectedSavedAnswer.answer_text || ""} />
           {draft.state === "editing" && <button type="button" className="button secondary" disabled={busy || classifying}
-            onClick={() => loadSavedAnswer(selectedQuestionId)}>保存済み模範解答を読み込む</button>}
-        </section>}
-        <h2>{draft.saved_answers?.length ? "今回のLLM取り込み結果" : "LLM取り込み結果"}</h2>
+            onClick={() => loadSavedAnswer(selectedQuestionId)}>登録済み模範解答を読み込む</button>}</> : <p>未登録</p>}
+        </details>}
+        <h2>編集中の下書き</h2>
         {selectedQuestionId && draft.state === "editing" && <div className="model-answer-manual-add">
           <button type="button" className="button secondary" onClick={() => addManualEntry(selectedQuestionId)}>
             {questionLabels.get(selectedQuestionId)} に模範解答を追加</button>
@@ -664,7 +664,12 @@ export default function ModelAnswerImportReviewPage() {
           </details>}
           {entry.extraction_method === "visual_difference_guided_native_text" &&
             <p className="muted">抽出方法: 問題PDFとの差分</p>}
-          <label className="field">模範解答本文
+          <details aria-label="保存済み下書き模範解答">
+            <summary>保存済み下書き模範解答・revision {savedDraft?.revision || "—"}</summary>
+            {savedDraft?.entries.some(saved => saved.id === entry.id) ? <MarkdownMathText source={savedDraft.entries.find(saved => saved.id === entry.id)?.answer_text || "本文なし"} /> : <p>なし</p>}
+          </details>
+          {entry.answer_text !== savedDraft?.entries.find(saved => saved.id === entry.id)?.answer_text && <p role="status">未保存の変更があります</p>}
+          <label className="field">編集中の下書き本文
             <textarea aria-label={`模範解答本文 ${index + 1}`} value={entry.answer_text} maxLength={100000} rows={6}
               disabled={busy || classifying || draft.state !== "editing" || draft.confirmed_entry_ids?.includes(entry.id)}
               onChange={(event) => updateEntry(entry.id, { answer_text: event.target.value })} />
@@ -685,7 +690,7 @@ export default function ModelAnswerImportReviewPage() {
             {entry.semantic_classification.status === "needs_teacher_review" && !entry.teacher_correction?.teacher_confirmed && entry.source.kind !== "teacher_manual" && <p className="muted">分類は参考情報です。正式登録される本文と設問の対応を確認してください。</p>}
             {entry.semantic_classification.confidence !== null && <p className="muted">分類信頼度: {Math.round(entry.semantic_classification.confidence * 100)}%</p>}
             <div className="model-answer-classification-groups">
-              <div><strong>LLM取り込み結果</strong>
+              <div><strong>元の分類結果（編集本文とは別）</strong>
                 {groupsFor(entry.semantic_classification.segments, "model_answer").length === 0 && <p className="muted">模範解答候補がありません。</p>}
                 <button type="button" className="button secondary" disabled={busy || classifying || draft.state !== "editing"}
                   onClick={() => setEntryAnswerFromClassification(entry, groupsFor(entry.semantic_classification!.segments, "model_answer").map((group) => group.text).join(""))}>
@@ -841,7 +846,7 @@ export default function ModelAnswerImportReviewPage() {
           {entry.question_text_removal?.status === "removed" && !entry.answer_text.trim() &&
             <p className="warn" role="alert">問題文以外の模範解答を抽出できませんでした。PDFを確認し、本文を入力してください。</p>}
           <small className="math-help">{mathInputHelp}</small>
-          <details open><summary>数式・Markdownプレビュー</summary><MathPreview source={entry.answer_text} /></details>
+          <details open><summary>編集中プレビュー</summary><MathPreview source={entry.answer_text} /></details>
           {entry.question_id && <p className="muted">対応先: {questionLabels.get(entry.question_id) || "設問"}</p>}
           </>}
         </article> : null)}

@@ -118,3 +118,47 @@ def test_api_failure_keeps_no_persistence(monkeypatch, error):
     response = TestClient(app).post("/api/v1/text-tools/latex-normalize", json={"text": "TP / FP"})
     assert response.status_code == 503
     assert response.json()["detail"]["error"]["code"] == "NORMALIZATION_FAILED"
+
+
+@pytest.mark.parametrize("failure,code", [
+    (RuntimeError("runtime-manager HTTP 404"), "latex_runtime_unavailable"),
+    (RuntimeError("model_missing"), "latex_runtime_start_failed"),
+    (TimeoutError("cold load timed out"), "latex_runtime_start_timeout"),
+])
+def test_start_errors_are_distinct(failure, code):
+    from scoring.latex_normalization import LatexNormalizer, LatexNormalizationError
+
+    class Manager:
+        def ensure_running(self, profile):
+            raise failure
+
+    with pytest.raises(LatexNormalizationError) as error:
+        LatexNormalizer(Manager()).normalize("TP / FP")
+    assert error.value.code == code
+    assert error.value.stage == "runtime_start"
+
+
+@pytest.mark.parametrize("failure,code", [
+    (RuntimeError("HTTP 503"), "latex_inference_failed"),
+    (TimeoutError("timeout"), "latex_inference_timeout"),
+    (ValueError("invalid JSON"), "latex_invalid_response"),
+])
+def test_inference_errors_are_distinct(monkeypatch, failure, code):
+    from types import SimpleNamespace
+    import scoring.latex_normalization as module
+    from scoring.core import DEFAULT_GENERATION
+
+    class Client:
+        generation = DEFAULT_GENERATION
+
+        def __init__(self, config, role):
+            pass
+
+        def request(self, *args):
+            raise failure
+
+    monkeypatch.setattr(module, "LocalClient", Client)
+    manager = SimpleNamespace(ensure_running=lambda profile: {"endpoint": "http://127.0.0.1:8000/v1", "profile": {"model_id": "synthetic"}})
+    with pytest.raises(module.LatexNormalizationError) as error:
+        module.LatexNormalizer(manager).normalize("TP / FP")
+    assert error.value.code == code
