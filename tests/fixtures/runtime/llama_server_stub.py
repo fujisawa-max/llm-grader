@@ -70,9 +70,17 @@ class Handler(BaseHTTPRequestHandler):
             if mode == "production_spaced":
                 fixture = json.loads((Path(__file__).parents[1]/"math_ocr"/"precision_spaced.json").read_text())
                 message = fixture["raw_response"]["choices"][0]["message"]
+            if mode == "formatting_hard" or "[formatting_hard]" in content[0].get("text", ""):
+                message = {"content": "", "reasoning_content": expression.replace(r"\frac", "\\f r\n a c", 1)}
             self.send({"choices": [{"message": message}]})
             return
         payload = json.loads(content)
+        if body.get("response_format", {}).get("json_schema", {}).get("name") == "math_ocr_formatting":
+            time.sleep(.5)
+            candidate = payload["candidate"]
+            result = {"status": "formatted", "latex": candidate.replace("\\f r\n a c", r"\frac")}
+            self.send({"choices": [{"message": {"content": json.dumps(result)}}]})
+            return
         if body.get("response_format", {}).get("json_schema", {}).get("name") == "latex_normalization":
             text = payload["text"]
             if "[latex_failure]" in text:

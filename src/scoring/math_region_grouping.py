@@ -1,10 +1,13 @@
 """Visual expression bands independent of native text segmentation."""
-from collections import Counter, defaultdict
+from collections import Counter
 import math
 import re
 
+from .math_source_tokens import canonical_math_letters
+
 
 def math_like(text):
+    text = canonical_math_letters(text)
     return bool(re.search(r'[=+^_−×÷∑∫√²³]|\\(?:frac|sqrt)|\b(?:TP|FP|TN|FN)\b', text)) or bool(re.fullmatch(r'\s*(?:[\d.]+|[A-Za-zα-ω])\s*', text))
 
 
@@ -16,9 +19,6 @@ def union_box(items):
 def aligned_atoms(segments, text):
     ordered = sorted(segments, key=lambda s: s.get('reading_order', 0))
     counts = Counter(s.get('original_text', s.get('text', '')) for s in ordered)
-    source_indices = defaultdict(list)
-    for index, segment in enumerate(ordered):
-        source_indices[segment.get('original_text', segment.get('text', ''))].append(index)
     matches_by_text = {value: list(re.finditer(r'(?m)^'+re.escape(value)+r'$', text))
                        for value in counts if value.strip()}
     anchors = {i: matches_by_text.get(s.get('original_text', s.get('text', '')), [])[0]
@@ -34,23 +34,20 @@ def aligned_atoms(segments, text):
         if len(box) != 4 or not all(type(v) in (int, float) and math.isfinite(v) for v in box) or box[0] >= box[2] or box[1] >= box[3]:
             raise ValueError('math_source_invalid')
         matches = matches_by_text.get(original, [])
-        # Align complete repetitions, or scope them by immutable unique anchors.
-        # Ambiguous partial/edited repetitions remain unchanged.
-        if len(matches) == counts[original]:
-            match = matches[source_indices[original].index(order)]
-        else:
-            # Source may also contain the same numeral in excluded question
-            # text. Use immutable neighboring anchors to scope occurrences.
-            previous = max((i for i in anchors if i < order), default=-1)
-            following = min((i for i in anchors if i > order), default=len(ordered))
-            lower = anchors[previous].end() if previous >= 0 else 0
-            upper = anchors[following].start() if following < len(ordered) else len(text)
-            scoped = [m for m in matches if lower <= m.start() and m.end() <= upper]
-            source_occurrences = [i for i in range(previous+1, following)
-                if ordered[i].get('original_text', ordered[i].get('text', '')) == original]
-            if len(scoped) != len(source_occurrences):
-                continue
-            match = scoped[source_occurrences.index(order)]
+        # Scope by immutable neighboring anchors even when the global count
+        # happens to match. Otherwise a deleted numeral can borrow an identical
+        # token from another expression. Rank repeated tokens in source order
+        # only inside this verified interval; never invent an editing span.
+        previous = max((i for i in anchors if i < order), default=-1)
+        following = min((i for i in anchors if i > order), default=len(ordered))
+        lower = anchors[previous].end() if previous >= 0 else 0
+        upper = anchors[following].start() if following < len(ordered) else len(text)
+        scoped = [m for m in matches if lower <= m.start() and m.end() <= upper]
+        source_occurrences = [i for i in range(previous+1, following)
+            if ordered[i].get('original_text', ordered[i].get('text', '')) == original]
+        if len(scoped) != len(source_occurrences):
+            continue
+        match = scoped[source_occurrences.index(order)]
         atoms.append({'id': segment['id'], 'page_index': segment['page_index'], 'bbox': list(box),
                       'start': match.start(), 'end': match.end(), 'original_text': original,
                       'reading_order': segment.get('reading_order', order)})
@@ -67,7 +64,7 @@ def connected(a, b, *, loose=False):
     vertical_gap = max(0, max(x[1], y[1])-min(x[3], y[3]))
     centers = abs((x[1]+x[3]-y[1]-y[3])/2)
     def complete(value):
-        return bool(re.match(r"^\s*[A-Za-z]+\s*=", value))
+        return bool(re.match(r"^\s*[A-Za-z]+\s*=", canonical_math_letters(value)))
     if complete(a["original_text"]) and complete(b["original_text"]):
         return False
     if vertical_overlap >= .35*h or centers <= h:
@@ -113,7 +110,7 @@ def source_regions(segments, text):
     regions = sorted((region_from_atoms(group) for group in groups), key=lambda r: r['start'])
     # Loose neighboring bands are not merged without vision confirmation.
     for region in regions:
-        region['grouping_ambiguous'] = sum(bool(re.match(r'^\s*[A-Za-z]+\s*=', a['original_text'])) for a in region['source_spans']) > 1 or any(
+        region['grouping_ambiguous'] = sum(bool(re.match(r'^\s*[A-Za-z]+\s*=', canonical_math_letters(a['original_text']))) for a in region['source_spans']) > 1 or any(
             region is not other and any(connected(a, b, loose=True) for a in region['source_spans'] for b in other['source_spans'])
             for other in regions)
     return regions
@@ -150,3 +147,26 @@ def validate_groups(value, atoms):
     if seen != set(by_id):
         raise ValueError('math_ricoh_grouping_rejected')
     return sorted(regions, key=lambda r: r['start'])
+
+
+def grouping_schema(atoms):
+    ids = list(dict.fromkeys(a['id'] for a in atoms))
+    return {'type': 'object', 'additionalProperties': False, 'required': ['groups'], 'properties': {
+        'groups': {'type': 'array', 'minItems': 1, 'maxItems': len(ids), 'items': {
+            'type': 'object', 'additionalProperties': False, 'required': ['segment_ids', 'confidence'],
+            'properties': {'segment_ids': {'type': 'array', 'minItems': 1, 'maxItems': len(ids),
+                'items': {'type': 'string', 'enum': ids}},
+                'confidence': {'type': 'number', 'minimum': .85, 'maximum': 1}}}}}}
+
+
+def safe_geometry_cluster(cluster, editing_text):
+    """Independent strict-geometry proof; never trust a broken vision JSON."""
+    atoms = [a for region in cluster for a in region['source_spans']]
+    if editing_text is None:
+        return None
+    reconstructed = source_regions(atoms, editing_text)
+    if (len(reconstructed) != 1 or reconstructed[0]['grouping_ambiguous']
+            or len(reconstructed[0]['source_spans']) != len(atoms)
+            or set(reconstructed[0]['segment_ids']) != {a['id'] for a in atoms}):
+        return None
+    return reconstructed[0]

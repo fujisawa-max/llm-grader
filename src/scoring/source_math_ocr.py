@@ -17,7 +17,8 @@ from .adapters.question_vision import PROMPTS
 from .core import LocalClient, generation_payload, image_content
 from .vision_output import response_text
 from .math_ocr_candidates import select_candidate
-from .math_region_grouping import source_regions, validate_groups, region_from_atoms
+from .math_ocr_formatting import normalize_with_fallback
+from .math_region_grouping import source_regions, validate_groups, region_from_atoms, grouping_schema, safe_geometry_cluster
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,7 @@ class SourceMathOCR:
                       crop_image='data:image/png;base64,' + base64.b64encode(image).decode())
         return image
 
-    def repair_groups(self, document, regions):
+    def repair_groups(self, document, regions, editing_text=None):
         pending = [r for r in regions if r.get('grouping_ambiguous')]
         if not pending:
             return regions
@@ -94,13 +95,15 @@ class SourceMathOCR:
             diagnostic = region_from_atoms(atoms, 'geometry_ambiguous')
             image = self.render(document, diagnostic)
             diagnostic.update(ricoh_used=True, validation='rejected', rejection_code='math_geometry_ambiguous')
+            logger.info('math grouping ensure regions=%s segments=%s', len(cluster), len(atoms))
             try:
                 client, ready = self.runtime_client('ocr', os.getenv('LLM_GRADER_MATH_GROUPING_PROFILE', 'ocr'))
                 diagnostic['ricoh_profile'] = ready['profile']['runtime_id'] if 'runtime_id' in ready['profile'] else 'ocr'
                 prompt = ('Identify only which supplied source segment IDs visually belong to one mathematical expression. '
                           'Do not solve, correct, transcribe, output LaTeX or invent coordinates or content. '
                           'Return JSON only: {"groups":[{"segment_ids":["id"],"confidence":0.95}]}. '
-                          'Each supplied ID must occur exactly once. Keep independent expressions separate.\n'
+                          'Each supplied ID must occur exactly once. Keep independent expressions separate. '
+                          'Do not explain or reason in the response. Emit only the complete JSON object.\n'
                           + json.dumps({'segments': atoms}, ensure_ascii=False))
                 with tempfile.TemporaryDirectory(prefix='math-group-') as temporary:
                     crop = Path(temporary)/'group.png'
@@ -109,23 +112,45 @@ class SourceMathOCR:
                         'model': ready['profile']['model_id'], 'stream': False,
                         'chat_template_kwargs': {'enable_thinking': False},
                         'messages': [{'role': 'user', 'content': [{'type': 'text', 'text': prompt}, image_content(crop)]}],
-                        **generation_payload(client.generation)})
-                raw_text, field, _ = response_text(raw)
-                diagnostic.update(ricoh_response_field=field, ricoh_raw_response=raw)
+                        **generation_payload(client.generation), 'temperature': 0,
+                        'response_format': {'type': 'json_schema', 'json_schema': {
+                            'name': 'math_region_grouping', 'strict': True, 'schema': grouping_schema(atoms)}}})
+                raw_text, field, flags = response_text(raw)
+                choice = raw.get('choices', [{}])[0] if isinstance(raw, dict) and raw.get('choices') else {}
+                diagnostic.update(ricoh_response_field=field, ricoh_raw_response=raw,
+                    ricoh_finish_reason=choice.get('finish_reason'), ricoh_parse_flags=flags,
+                    ricoh_completion_tokens=raw.get('usage', {}).get('completion_tokens'))
+                if 'vision_output_truncated' in flags:
+                    raise ValueError('math_ricoh_output_truncated')
                 value = json.loads(raw_text)
                 diagnostic["ricoh_result"] = value
                 repaired = validate_groups(value, atoms)
+                logger.info('math grouping accepted field=%s groups=%s finish=%s tokens=%s',
+                    field, len(repaired), diagnostic.get('ricoh_finish_reason'), diagnostic.get('ricoh_completion_tokens'))
                 same_membership = sorted(sorted(r['segment_ids']) for r in repaired) == sorted(sorted(r['segment_ids']) for r in cluster)
                 for region in repaired:
                     region.update(ricoh_result=value, ricoh_response_field=field, ricoh_used=True,
                                   grouping_method="geometry_ricoh_validation" if same_membership else "ricoh_assisted_repair")
                 output.extend(repaired)
-            except MathOCRError:
-                diagnostic['rejection_code'] = 'math_ricoh_unavailable'
-                output.append(diagnostic)
-            except Exception:
-                diagnostic['rejection_code'] = 'math_ricoh_grouping_rejected'
-                output.append(diagnostic)
+            except Exception as exc:
+                code = ('math_ricoh_unavailable' if isinstance(exc, MathOCRError) else
+                    'math_ricoh_output_truncated' if str(exc) == 'math_ricoh_output_truncated' else 'math_ricoh_grouping_rejected')
+                safe = safe_geometry_cluster(cluster, editing_text)
+                logger.info('math grouping failed reason=%s field=%s finish=%s tokens=%s geometry_fallback=%s',
+                    code, diagnostic.get('ricoh_response_field'), diagnostic.get('ricoh_finish_reason'),
+                    diagnostic.get('ricoh_completion_tokens'), safe is not None)
+                if safe is not None:
+                    safe.update(ricoh_used=True, ricoh_rejection_code=code,
+                        grouping_method='geometry_ricoh_failure_fallback',
+                        ricoh_response_field=diagnostic.get('ricoh_response_field'),
+                        ricoh_finish_reason=diagnostic.get('ricoh_finish_reason'),
+                        ricoh_completion_tokens=diagnostic.get('ricoh_completion_tokens'),
+                        ricoh_parse_flags=diagnostic.get('ricoh_parse_flags'),
+                        ricoh_raw_response=diagnostic.get('ricoh_raw_response'))
+                    output.append(safe)
+                else:
+                    diagnostic['rejection_code'] = code
+                    output.append(diagnostic)
         return sorted(output, key=lambda r: r['start'])
 
     def propose(self, path: Path, segments, text):
@@ -141,7 +166,7 @@ class SourceMathOCR:
         if len(regions) > 8:
             raise ValueError('math_region_limit')
         with fitz.open(path) as document:
-            regions = self.repair_groups(document, regions)
+            regions = self.repair_groups(document, regions, text)
             if len(regions) > 8:
                 raise ValueError("math_region_limit")
             for region in regions:
@@ -192,6 +217,8 @@ class SourceMathOCR:
                         has_message = isinstance(message, dict) and any(isinstance(message.get(k), str) for k in ('content', 'final', 'answer', 'reasoning_content', 'reasoning'))
                         raise ValueError('math_ocr_empty_response' if has_message else 'math_response_unsupported')
                     selection = select_candidate(raw_text, region['original_text'])
+                    selection = normalize_with_fallback(selection, region['original_text'],
+                        lambda profile_id: self.runtime_client('math_formatting', profile_id))
                     region.update(selection, normalized_candidate=selection['selected_candidate'])
                     if not selection['validation_accepted']:
                         raise ValueError(selection['rejection_reason'])

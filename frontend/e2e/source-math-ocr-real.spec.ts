@@ -12,6 +12,7 @@ test("source fractions: spinner, explicit apply, saved/formal isolation and warm
   const id = process.env.SOURCE_MATH_DRAFT_ID!;
   const manager = process.env.LLM_GRADER_RUNTIME_MANAGER_URL!;
   await page.request.post(`${manager}/runtimes/math_ocr/stop`);
+  await page.request.post(`${manager}/runtimes/ornith_rubric_draft/stop`);
   await page.goto(`/model-answer-import-reviews/${id}`);
   const editor = page.getByLabel(/^模範解答本文 /).first();
   const original = await editor.inputValue();
@@ -39,11 +40,16 @@ test("source fractions: spinner, explicit apply, saved/formal isolation and warm
   expect(proposal.math_regions[0].candidate_scores[1].accepted).toBe(false);
   expect(proposal.math_regions[0].candidate_scores[1].unsupported_identifiers).toContain("效");
   expect(proposal.math_regions[0].validation).toBe("accepted");
+  expect(proposal.math_regions[0].normalization_method).toBe("deterministic");
+  expect(proposal.math_regions[0].ornith_used).toBe(false);
+  expect(proposal.math_regions[0].final_validation.accepted).toBe(true);
+  expect((await (await page.request.get(`${manager}/runtimes/ornith_rubric_draft/status`)).json()).state).toBe("stopped");
   expect(proposal.math_regions[0].source_field).toBe("choices[0].message.reasoning_content");
   expect(proposal.math_regions[0].bbox).toEqual([30,37,330,68]);
   expect(proposal.math_regions[0].crop_width).toBe(624);
   expect(proposal.math_regions[0].crop_height).toBe(86);
   await expect(control).toContainText("\\frac{24}{30}");
+  await expect(control).toContainText("数式整形: 決定論的");
   await control.getByText("数式の原文: ページ 1", {exact:true}).click();
   await expect(control.getByAltText("数式OCR対象 1")).toBeVisible();
   await control.getByText("OCR診断", {exact:true}).click();

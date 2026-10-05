@@ -245,3 +245,120 @@ def test_ricoh_candidate_does_not_include_neighboring_prose(tmp_path, monkeypatc
     assert result['math_regions'][0]['segment_ids'] == [str(i) for i in range(7)]
     assert result['normalized_text'].endswith('Explanation remains.')
     assert calls == ['ocr', 'math_ocr', 'inference']
+
+
+def test_truncated_ricoh_rejected_with_exact_reason_no_unsafe_union(tmp_path, monkeypatch):
+    service, path, source, text, calls = setup_service(tmp_path, monkeypatch, gap=35)
+    def truncated(client, url, payload):
+        assert payload['response_format']['json_schema']['name'] == 'math_region_grouping'
+        assert payload['response_format']['json_schema']['schema']['properties']['groups']['items']['properties']['segment_ids']['items']['enum'] == [str(i) for i in range(7)]
+        assert payload['chat_template_kwargs']['enable_thinking'] is False
+        return {'choices': [{'finish_reason': 'length', 'message': {'content': '', 'reasoning_content': 'Long reasoning... {"groups":['}}], 'usage': {'completion_tokens': 1024}}
+    monkeypatch.setattr('scoring.source_math_ocr.LocalClient.request', truncated)
+    result = service.propose(path, source, text)
+    assert result['status'] == 'rejected'
+    assert result['reason_code'] == 'math_ricoh_output_truncated'
+    assert calls == ['ocr']
+    region = result['math_regions'][0]
+    assert region['crop_image']
+    assert region['ricoh_finish_reason'] == 'length'
+    assert region['ricoh_completion_tokens'] == 1024
+
+
+def test_safe_geometry_proof_can_survive_ricoh_parse_failure(tmp_path, monkeypatch):
+    service, path, source, text, calls = setup_service(tmp_path, monkeypatch, ricoh='malformed')
+    regions = source_regions(source, text)
+    # Simulate an upstream ambiguity flag on an independently provable band.
+    # The loose 35pt gap case above cannot use this fallback.
+    regions[0]['grouping_ambiguous'] = True
+    with fitz.open(path) as document:
+        repaired = service.repair_groups(document, regions, text)
+    assert len(repaired) == 1
+    assert 'rejection_code' not in repaired[0]
+    assert repaired[0]['grouping_method'] == 'geometry_ricoh_failure_fallback'
+    assert repaired[0]['ricoh_rejection_code'] == 'math_ricoh_grouping_rejected'
+    assert repaired[0]['segment_ids'] == [str(i) for i in range(7)]
+
+
+def production_precision():
+    from pathlib import Path
+    return json.loads((Path(__file__).parent/'fixtures/math_ocr/precision_production_observation.json').read_text())
+
+
+def test_real_precision_geometry_retains_unicode_and_both_numerators():
+    observed = production_precision()
+    # Nine records supplied by the user; do not fabricate the other two of 11.
+    source, text = observed['production_segments'], observed['complete_source_text']
+    regions = source_regions(list(reversed(source)), text)
+    assert len(regions) == 1
+    region = regions[0]
+    assert region['segment_ids'] == [s['id'] for s in source[1:8]]
+    assert region['bbox'] == observed['observed_bbox']
+    assert not region['grouping_ambiguous']
+    assert not region['ricoh_used']
+    assert region['original_text'] == observed['complete_math_text']
+    spans = region['source_spans']
+    assert spans[1]['original_text'] == '𝑇𝑃'
+    numerators = [s for s in spans if s['original_text'] == '24']
+    assert [s['reading_order'] for s in numerators] == [37, 39]
+    assert numerators[0]['start'] < numerators[1]['start']
+    assert all(text[s['start']:s['end']] == s['original_text'] for s in spans)
+    assert source[0]['id'] not in region['segment_ids']
+    assert source[-1]['id'] not in region['segment_ids']
+
+
+def test_repeated_numbers_use_local_source_anchors_not_global_count():
+    observed = production_precision()
+    source = observed['production_segments']
+    # Delete the second numerator but add an identical line outside the formula.
+    # Global source/editing counts are still two; borrowing that line is unsafe.
+    text = observed['editing_text']+'\n24'
+    region = source_regions(source, text)[0]
+    assert source[4]['id'] in region['segment_ids']
+    assert source[6]['id'] not in region['segment_ids']
+    assert all(text[s['start']:s['end']] == s['original_text'] for s in region['source_spans'])
+
+
+def test_repeated_numbers_without_unique_global_matches_align_in_source_order():
+    observed = production_precision()
+    source = observed['production_segments']
+    text = '24\n'+observed['complete_source_text']+'\n24'
+    region = source_regions(source, text)[0]
+    assert region['segment_ids'] == [s['id'] for s in source[1:8]]
+    assert [s['reading_order'] for s in region['source_spans'] if s['original_text'] == '24'] == [37, 39]
+
+
+def test_real_geometry_crop_and_one_unimumer_request(tmp_path, monkeypatch):
+    observed = production_precision()
+    service, _, _, _, calls = setup_service(tmp_path, monkeypatch, response=observed['raw_response'])
+    # Representative rendered PDF at the supplied coordinates, not the actual
+    # production artifact. Do not send an empty crop to the managed response.
+    from scoring.math_source_tokens import canonical_math_letters
+    path = tmp_path/'production-coordinate-fixture.pdf'
+    with fitz.open() as document:
+        page = document.new_page()
+        for segment in observed['production_segments'][1:8]:
+            box = segment['bbox']
+            page.insert_text((box[0], box[3]-1), canonical_math_letters(segment['original_text']), fontsize=6)
+        for denominator in (3, 5, 7):
+            box = observed['production_segments'][denominator]['bbox']
+            page.draw_line((box[0], 510.8), (box[2]-4, 510.8), width=.4)
+        document.save(path)
+    original = observed['complete_source_text']
+    result = service.propose(path, observed['production_segments'], original)
+    assert result['status'] == 'ambiguous'
+    assert calls == ['math_ocr', 'inference']  # No Ricoh or Ornith startup.
+    assert result['grouping_summary']['aligned_math_segment_count'] == 7
+    assert result['grouping_summary']['geometry_region_count'] == 1
+    assert result['grouping_summary']['final_region_count'] == 1
+    region = result['math_regions'][0]
+    assert region['bbox'] == observed['observed_bbox']
+    assert region['crop_bbox'] == observed['observed_crop_bbox']
+    assert [region['crop_width'], region['crop_height']] == observed['observed_crop_dimensions']
+    assert region['validation'] == 'accepted'
+    assert region['final_candidate'] == observed['expected']
+    assert not region['ornith_used']
+    assert not region['numeric_review_required']
+    assert result['normalized_text'].startswith('2. Precision（適合率）\n$$\n')
+    assert result['normalized_text'].endswith('答え：0.800（80%）')
+    assert result['original_text'] == original

@@ -1,5 +1,7 @@
 # J.UI.9d-fix2 Uni-MuMER Candidate Extraction, Detokenization & Validation
 
+Follow-up: [fix3 production observations, Unicode source evidence, Ricoh truncation and guarded formatting fallback](j-ui-9d-fix3-deterministic-ornith-formatting.md). The latest supplied production request failed at Ricoh grouping before candidate validation; see that report for the distinction.
+
 ## Phase result
 
 **PARTIAL.** Implementation, production-build browser tests and managed runtime validation pass. A live request against the deployed Precision draft has not been possible from this workspace. The real production acceptance condition cannot be claimed from the supplied response example or managed stubs.

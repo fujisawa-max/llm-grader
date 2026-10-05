@@ -43,6 +43,7 @@ export function mathOcrReasonMessage(code: string): string {
     math_geometry_ambiguous: "数式領域の所属が曖昧です。",
     math_ricoh_unavailable: "数式領域を確認する画像モデルを利用できません。",
     math_ricoh_grouping_rejected: "画像モデルの所属判定を検証できませんでした。",
+    math_ricoh_output_truncated: "数式領域の画像確認が途中で切れました。位置情報と診断を確認してください。",
     math_crop_invalid: "数式cropの座標を確認できません。",
     math_runtime_unavailable: "数式OCR runtimeを利用できません。",
     math_runtime_start_failed: "数式OCRを起動できません。",
@@ -58,6 +59,11 @@ export function mathOcrReasonMessage(code: string): string {
     math_wrapper_invalid: "数式の区切り・出力形式を確認できません。",
     math_detokenization_unresolved: "原文と照合できない文字・数値の分割があります。",
     math_latex_syntax_invalid: "数式のLaTeX構文を確認できません。",
+    math_formatting_fallback_unavailable: "数式の書式補助を利用できません。元の本文は保持されています。",
+    math_formatting_fallback_timeout: "数式の書式補助がtimeoutしました。再試行してください。",
+    math_formatting_fallback_invalid_output: "数式の書式補助から有効な結果を取得できませんでした。",
+    math_formatting_semantic_change: "書式補助が数値・変数・演算子・数式構造を変更したため適用できません。",
+    math_formatting_validation_failed: "書式補助の結果が原文・構文の検証を通りませんでした。",
   };
   return messages[code] || "数式OCRの結果を確認してください。";
 }

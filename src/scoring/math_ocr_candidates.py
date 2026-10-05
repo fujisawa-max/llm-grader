@@ -8,6 +8,8 @@ from __future__ import annotations
 import re
 
 from .vision_output import unwrap_math_output
+from .math_source_tokens import canonical_math_letters
+from .math_ocr_syntax import HSPACE, WSPACE, recover_controls, control_continuation
 
 NUMERIC = r'(?<![A-Za-z\d])(?:[-−]?\d+(?:\.\d+)?)'
 LETTERS = r'[^\W\d_]+'
@@ -20,23 +22,29 @@ def lexical_text(text):
 
 
 def source_tokens(text):
+    text = canonical_math_letters(text)
     identifiers = set(re.findall(LETTERS, lexical_text(text))) | (set(re.findall(r'\\([A-Za-z]+)', text)) & FUNCTIONS)
     return identifiers, re.findall(NUMERIC, text.replace('−', '-'))
 
 
-def detokenize(text, source):
+def detokenize(text, source, *, multiline=False):
     """Recover only complete source tokens, never globally remove whitespace."""
     identifiers, numbers = source_tokens(source)
-    steps = []
+    text, steps = recover_controls(text, multiline=multiline)
+    aliased = canonical_math_letters(text)
+    if aliased != text:
+        steps.append({'type': 'math_font_latin_alias'})
+        text = aliased
+    space = WSPACE if multiline else HSPACE
     for token in sorted(identifiers | set(numbers), key=lambda t: (-len(t), t)):
         if len(token) < 2:
             continue
         # A number cannot be recovered from a prefix of a larger spaced number.
-        tail = r'(?![\w.]|[ \t]+\d|[ \t]*\.[ \t]*\d)' if token in numbers else r'(?![\w]|[ \t]+[A-Za-z](?:[ \t]|$))'
-        pattern = r'(?<![\w.\\])' + r'[ \t]*'.join(re.escape(c) for c in token) + tail
+        tail = r'(?![\w.]|'+space+r'+\d|'+space+r'*\.'+space+r'*\d)' if token in numbers else r'(?![\w]|'+space+r'+[A-Za-z](?:'+space+r'|$))'
+        pattern = r'(?<![\w.\\])' + (space+'*').join(re.escape(c) for c in token) + tail
         def replace(match):
             raw = match.group()
-            if raw != token and re.search(r'[ \t]', raw):
+            if raw != token and re.search(space, raw):
                 steps.append({'type': 'source_token', 'source': raw, 'replacement': token})
             return token
         text = re.sub(pattern, replace, text)
@@ -44,13 +52,13 @@ def detokenize(text, source):
     # Syntax-only spacing outside text arguments. Ordinary text spacing and
     # operators inside source-supported \text are content, not math syntax.
     def syntax_spacing(value):
-        value = re.sub(r'(\\[A-Za-z]+)[ \t]+(?=\{)', r'\1', value)
-        value = re.sub(r'\{[ \t]+', '{', value)
-        value = re.sub(r'[ \t]+\}', '}', value)
-        value = re.sub(r'[ \t]*([=+^_])[ \t]*', r'\1', value)
-        return re.sub(r'\}[ \t]+(?=\{)', '}', value)
+        value = re.sub(r'(\\[A-Za-z]+)'+space+r'+(?=\{)', r'\1', value)
+        value = re.sub(r'\{'+space+'+', '{', value)
+        value = re.sub(space+r'+\}', '}', value)
+        value = re.sub(space+r'*([=+^_])'+space+'*', r'\1', value)
+        return re.sub(r'\}'+space+r'+(?=\{)', '}', value)
     pieces, cursor = [], 0
-    for match in re.finditer(r'\\text[ \t]*\{([^{}]*)\}', text):
+    for match in re.finditer(r'\\text'+space+r'*\{([^{}]*)\}', text):
         pieces.extend([syntax_spacing(text[cursor:match.start()]), r'\text{'+match[1].strip()+'}'])
         cursor = match.end()
     pieces.append(syntax_spacing(text[cursor:]))
@@ -70,7 +78,7 @@ must have no unsupported letters. Full environments are considered intact.
     spans = []
     cursor = 0
     identifiers, _ = source_tokens(source)
-    roots = [m.group(1) for m in re.finditer(r'\b([A-Za-z]+)\s*=', source)]
+    roots = [m.group(1) for m in re.finditer(r'\b([A-Za-z]+)\s*=', canonical_math_letters(source))]
     root_patterns = [r'(?<![\w\\])' + r'[ \t]*'.join(map(re.escape, root)) + r'[ \t]*=' for root in roots]
     for line in raw.splitlines(keepends=True):
         start, end = cursor + len(line)-len(line.lstrip()), cursor + len(line.rstrip())
@@ -98,7 +106,8 @@ must have no unsupported letters. Full environments are considered intact.
             value, _ = detokenize(following['raw_candidate'], source)
             unknown = set(re.findall(LETTERS, lexical_text(value))) - identifiers - FUNCTIONS
             continuation = value.startswith(('=', '+', '-', r'\end{')) or combined.count('{') > combined.count('}')
-            if unknown or not continuation:
+            bridge = control_continuation(combined, following['raw_candidate'])
+            if (unknown or not continuation) and not bridge:
                 break
             end = following['end']
             combined = raw[span['start']:end]
@@ -116,7 +125,8 @@ must have no unsupported letters. Full environments are considered intact.
             payload, _ = detokenize(match[1], source)
             if set(re.findall(LETTERS, payload)) - identifiers:
                 prefix = span['raw_candidate'][:match.start()].rstrip()
-                if prefix and syntax_valid(prefix) and re.search(r'[=]|\\(?:frac|sqrt)\b', prefix):
+                prefix_view, _ = detokenize(prefix, source)
+                if prefix and syntax_valid(prefix_view) and re.search(r'[=]|\\(?:frac|sqrt)\b', prefix_view):
                     prefixes.append({'start': span['start'], 'end': span['start']+len(prefix), 'raw_candidate': prefix})
                 break
     return (spans + joined + prefixes)[:64]
