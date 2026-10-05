@@ -263,3 +263,41 @@ OCR結果は必ずcrop画像と照合してください。数値の訂正・式�
 実NVIDIA環境では、停止状態から変換→crop/KaTeX preview→適用→下書き保存→
 reload→正式登録を確認し、2回目の変換でsystem runtime APIのPIDとstarted_atが
 変わらないことを確認してください。正式Q5ではなく合成PDFを使用します。
+
+### Visual math grouping（J.UI.9d-fix1）
+
+native PDFの行境界はOCR領域の境界として扱いません。同一ページの縦overlap・
+中心距離・水平gap・分数の上下関係を使ってvisual expression bandを作ります。
+連続した等号列は1 cropとし、別の式の見出し・prose・別ページは結合しません。
+重複する数値は完全な出現列、または原文の一意な前後anchorで対応付けます。
+教師編集によって対応が曖昧な断片は置換しません。
+
+geometryの弱い隣接だけが残る場合に限り、既存Ricohへbounded union cropとsource
+segment IDを渡します。Ricohの役割は所属IDの確認だけです。既知IDの完全なpartition、
+confidence、page・geometry neighborhoodを検証し、bboxはsource bboxから算出します。
+未知ID・不足・重複・低信頼・不正JSONの場合はOCRを進めず、crop付き診断を返します。
+正常な広い1式（Accuracy等）にはRicohを呼びません。
+
+- 既定grouping profile: `ocr`（APIの `LLM_GRADER_MATH_GROUPING_PROFILE` で変更可能）
+- Ricoh model設定: `LLM_GRADER_OCR_MODEL_ID` / `LLM_GRADER_OCR_MODEL_PATH` / `LLM_GRADER_OCR_MMPROJ_PATH`
+- 同じruntime configに既存の`ocr` profileがある場合は再利用します。
+- default deploymentは既存Ricohモデル用のlazy profileを定義しています。downloadは行いません。
+- bbox padding 6pt、1要求8領域、ページ35%、4百万pixelの制限を維持します。
+- grouping計算・vision promptのサイズを制限するため、aligned math segmentは128個までです。
+
+Uni-MuMERのcontent/final/answer/reasoning_content/reasoning選択は共有parserを利用します。
+合法な外側のMarkdown fence、`$`/`$$`、`\(`/`\[`区切りだけを除去します。数値・変数や
+数学内容は書き換えません。原文の数値が変更・消失した場合は拒否し、nativeにない
+追加数値はPDF照合warningとします。OCR自体の正確さは教師のcrop確認が必要です。
+
+失敗時もstaff/owner認可された同じproposal responseにcrop・bbox・source IDs・
+grouping method・source field・raw OCR・reason codeを返します。Applyはdisabledです。
+raw応答は「OCR診断」へ折りたたみ、image bytesをlogsや保存draftへ残しません。
+logsは領域数、method、寸法、crop SHA、field、応答長、validation/reasonを記録します。
+
+**実GPU受入確認:** source-awareボタンを明示的に押し、ブラウザNetworkで返る
+`grouping_summary`と各`math_regions`を確認してください。Precisionの全7断片が1つの
+cropになり、分子・分母・分数線・等号列が画像内に含まれることを先に確認します。
+実Uni-MuMERのraw OCRとfield、拒否reason、KaTeX previewを確認し、成功時のみApplyします。
+2回目でmath_ocr（必要だった場合はocrも）のPID/started_atが変わらないことを確認します。
+実サンプル・実モデルでこの受入を通すまでは、stub PASSだけでCOMPLETEとしません。

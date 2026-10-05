@@ -1,5 +1,5 @@
 "use client";
-import { latexErrorMessage } from "@/lib/latexErrors";
+import { latexErrorMessage, mathOcrReasonMessage } from "@/lib/latexErrors";
 import { useState } from "react";
 import katex from "katex";
 import { MarkdownMathText } from "./MarkdownMathText";
@@ -39,12 +39,19 @@ export function LatexNormalizationControl({text, contextType, contextLabel = "",
       <h5>変換案</h5><pre style={{whiteSpace: "pre-wrap"}}>{proposal.normalized_text}</pre>
       <MarkdownMathText source={proposal.normalized_text} />
       {proposal.status === "no_change" && <p role="status">{source ? "LaTeX化できる数式領域は見つかりませんでした。" : "LaTeX化できる数式表現は見つかりませんでした。"}</p>}
-      {proposal.math_regions?.map((region, i) => <details key={i}><summary>数式の原文: ページ {region.page_index + 1}</summary><img src={region.crop_image} alt={`数式OCR対象 ${i + 1}`} style={{maxWidth: "100%"}} /><pre>{region.raw_latex}</pre></details>)}
+      {proposal.grouping_summary && <details><summary>領域診断</summary><pre>{JSON.stringify(proposal.grouping_summary, null, 2)}</pre></details>}
+      {proposal.reason_code && proposal.status === "rejected" && <p role="alert">{mathOcrReasonMessage(proposal.reason_code)}</p>}
+      {proposal.math_regions?.map((region, i) => <details key={i} open={proposal.status === "rejected"}><summary>数式の原文: ページ {region.page_index + 1}</summary>
+        {region.crop_image && <img src={region.crop_image} alt={`数式OCR対象 ${i + 1}`} style={{maxWidth: "100%"}} />}
+        <p>領域判定: {region.grouping_method === "geometry" ? "位置情報" : "位置情報 + 画像確認"} / {region.crop_width} × {region.crop_height} px</p>
+        {region.rejection_code && <p role="alert">{mathOcrReasonMessage(region.rejection_code)}</p>}
+        <details><summary>OCR診断</summary><p>bbox: {region.bbox?.join(", ")} / crop: {region.crop_bbox?.join(", ")}</p><p>画像確認: {region.ricoh_used ? "実行" : "不要"}</p>{region.ricoh_result !== undefined && <pre>{JSON.stringify(region.ricoh_result, null, 2)}</pre>}<p>応答field: {region.source_field || "未取得"}</p><p>source segments: {region.segment_ids?.join(", ")}</p><pre>{region.raw_latex || "応答本文なし"}</pre><pre>{region.normalized_candidate}</pre></details>
+      </details>)}
       {proposal.warnings.map((warning, i) => <p role="alert" key={i}>{warning}</p>)}
       {proposal.status === "ambiguous" && <label><input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} />数式構造に曖昧さがあります。変換案を確認しました。</label>}
       {mathError && <p role="alert">数式を表示できません。構文を確認してください。</p>}
       {stale && <p role="alert">本文が変更されています。変換案を作り直してください。</p>}
-      <div className="actions"><button type="button" className="button" disabled={disabled || !!stale || mathError || proposal.status === "rejected" || proposal.status === "no_change" || (proposal.status === "ambiguous" && !confirmed)} onClick={() => {onApply(proposal.normalized_text, {...proposal, math_regions: proposal.math_regions?.map(({crop_image: _image, ...region}) => region)}); setProposal(null);}}>この変換を適用</button>
+      <div className="actions"><button type="button" className="button" disabled={disabled || !!stale || mathError || proposal.status === "rejected" || proposal.status === "no_change" || (proposal.status === "ambiguous" && !confirmed)} onClick={() => {onApply(proposal.normalized_text, {...proposal, math_regions: proposal.math_regions?.map(({crop_image: _image, raw_response: _raw, ricoh_raw_response: _ricoh, ...region}) => region)}); setProposal(null);}}>この変換を適用</button>
         <button type="button" className="button secondary" onClick={() => setProposal(null)}>キャンセル</button></div>
     </section>}
   </section>;

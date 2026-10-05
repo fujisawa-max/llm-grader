@@ -104,3 +104,7 @@ no_mathは既存proposal contractのno_changeへ対応させる。数式OCR unav
 Phase J.UI.9d: PARTIAL
 
 実装とstubによるproduction経路検証は完了。実Uni-MuMERで対象分数のsource画像復元を確認後、COMPLETEへ移行できる。
+
+## Geometry grouping follow-up
+
+See [J.UI.9d-fix1 report](j-ui-9d-fix1-geometry-vision-math-grouping.md) for visual-expression grouping, optional Ricoh validation and failure-time crop diagnostics. Real deployed Uni-MuMER acceptance remains pending.

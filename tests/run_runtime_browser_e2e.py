@@ -165,12 +165,14 @@ def seed(root):
         from uuid import uuid4
         math_pdf = pymupdf.open()
         math_page = math_pdf.new_page()
-        math_page.insert_text((50, 55), "Precision=")
-        for x, numerator, denominator in [(130, "TP", "TP+FP"), (210, "24", "24+6"), (280, "24", "30")]:
+        math_page.insert_text((30, 53), "Precision=")
+        for x, numerator, denominator in [(114, "TP", "TP+FP"), (191, "24", "24+6"), (250, "24", "30")]:
             math_page.insert_text((x, 45), numerator)
             math_page.draw_line((x-2, 50), (x+35, 50))
             math_page.insert_text((x, 65), denominator)
-        math_page.insert_text((330, 55), "=0.800")
+        math_page.insert_text((165, 53), "=")
+        math_page.insert_text((224, 53), "=")
+        math_page.insert_text((294, 53), "=0.800")
         math_page.insert_text((50, 165), "Answer: 0.800 (80%)")
         math_source = root / "sources" / "math.pdf"
         math_source.write_bytes(math_pdf.tobytes())
@@ -182,10 +184,11 @@ def seed(root):
         domain.model_answer(math_test.id, question_id=math_question.id, answer_text="Formal answer A.")
         math_material = domain.material(math_test.id, material_type="model_answer_source", storage_ref=str(math_source),
                                        original_filename="fractions.pdf", mime_type="application/pdf", sha256=math_digest)
-        source_lines = ["Precision=", "TP", "TP+FP=", "24", "24+6 =", "30 = 0.800"]
+        source_lines = ["Precision=", "TP", "TP+FP=", "24", "24+6 =", "24", "30 = 0.800"]
+        source_boxes = [[30,45,100,58], [114,37,135,49], [110,56,175,68], [191,37,205,49], [180,56,230,68], [250,37,264,49], [240,56,330,68]]
         math_text = "\n".join(source_lines) + "\nAnswer: 0.800 (80%)"
         math_segments = [{"id": f"math-{i}", "original_text": t, "text": t, "page_index": 0,
-                          "bbox": [48, 35+i*15, 390, 47+i*15], "reading_order": i}
+                          "bbox": source_boxes[i], "reading_order": i}
                          for i, t in enumerate(source_lines)]
         math_draft = ModelAnswerImportDraft(id=str(uuid4()), test_id=math_test.id, material_id=math_material.id,
             source_sha256=math_digest, artifact_ref="math-ir.json", state="editing", revision=1,

@@ -92,8 +92,11 @@ def test_ocr_failure_keeps_input(tmp_path, monkeypatch):
     def fail(*args):
         raise TimeoutError('synthetic')
     monkeypatch.setattr(source_math_ocr.LocalClient, 'request', fail)
-    with pytest.raises(source_math_ocr.MathOCRError, match="math_inference_timeout"):
-        SourceMathOCR(manager).propose(path, source, text)
+    result = SourceMathOCR(manager).propose(path, source, text)
+    assert result["reason_code"] == "math_inference_timeout"
+    assert result["status"] == "rejected"
+    assert result["math_regions"][0]["crop_image"]
+    assert result["normalized_text"] == text
     assert text == 'x=1\nProse'
     assert source[0]['bbox'] == [30, 50, 90, 65]
 
@@ -108,5 +111,7 @@ def test_unsafe_recognition_rejected(tmp_path, monkeypatch, latex):
     manager = SimpleNamespace(ensure_running=lambda _: {'state': 'ready', 'profile': {
         'model_id': 'synthetic', 'endpoint': 'http://127.0.0.1:8080/v1', 'runtime_type': 'managed'}})
     monkeypatch.setattr(source_math_ocr.LocalClient, 'request', lambda *_: {'choices': [{'message': {'content': latex}}]})
-    with pytest.raises(ValueError):
-        SourceMathOCR(manager).propose(path, source, 'x=1')
+    result = SourceMathOCR(manager).propose(path, source, 'x=1')
+    assert result["status"] == "rejected"
+    assert result["math_regions"][0]["raw_latex"] == latex
+    assert result["math_regions"][0]["crop_image"]

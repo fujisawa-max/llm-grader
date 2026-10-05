@@ -199,3 +199,23 @@ def parse_output(raw, role, native, *, source_raw_sha256=None, region_id=None, i
              "hash_convention": "canonical-json-excluding-normalized_sha256"}
     value["normalized_sha256"] = canonical_hash(value)
     return value
+
+
+def unwrap_math_output(text):
+    """Remove complete outer presentation wrappers without changing math."""
+    value = text.strip()
+    for _ in range(4):
+        previous = value
+        fence = re.fullmatch(r'```(?:latex|tex)?\s*\n?([\s\S]*?)\n?```', value, re.I)
+        if fence:
+            value = fence.group(1).strip()
+        else:
+            for left, right in [('$$', '$$'), ('$', '$'), (r'\(', r'\)'), (r'\[', r'\]')]:
+                if value.startswith(left) and value.endswith(right) and len(value) >= len(left)+len(right):
+                    value = value[len(left):-len(right)].strip()
+                    break
+        if previous == value:
+            break
+    if '$' in value or '```' in value:
+        raise ValueError('math_wrapper_invalid')
+    return value

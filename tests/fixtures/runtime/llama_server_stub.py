@@ -57,8 +57,16 @@ class Handler(BaseHTTPRequestHandler):
         content = body["messages"][-1]["content"]
         if isinstance(content, list):
             assert any(item.get("type") == "image_url" for item in content)
+            if "supplied source segment IDs" in content[0].get("text", ""):
+                metadata = json.loads(content[0]["text"].split("\n", 1)[1])
+                self.send({"choices": [{"message": {"content": json.dumps({"groups": [{"segment_ids": [s["id"] for s in metadata["segments"]], "confidence": .96}]})}}]})
+                return
             time.sleep(1)
-            self.send({"choices": [{"message": {"content": r"Precision=\frac{TP}{TP+FP}=\frac{24}{24+6}=\frac{24}{30}=0.800"}}]})
+            expression = r"Precision=\frac{TP}{TP+FP}=\frac{24}{24+6}=\frac{24}{30}=0.800"
+            mode = os.getenv("LLM_GRADER_STUB_MATH_RESPONSE_MODE", "reasoning_wrapped")
+            message = ({"content": "", "reasoning_content": "$$"+expression+"$$"} if mode == "reasoning_wrapped"
+                       else {"content": "" if mode == "empty" else expression})
+            self.send({"choices": [{"message": message}]})
             return
         payload = json.loads(content)
         if body.get("response_format", {}).get("json_schema", {}).get("name") == "latex_normalization":

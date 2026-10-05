@@ -1,6 +1,12 @@
 import { apiFetch, json } from "./client";
 export type LatexProposal = {
-  math_regions?: {page_index: number; crop_image?: string; raw_latex: string}[];
+  reason_code?: string | null;
+  grouping_summary?: Record<string, number | boolean>;
+  math_regions?: {page_index: number; crop_image?: string; raw_latex?: string; raw_response?: unknown;
+    ricoh_raw_response?: unknown; grouping_method?: string; grouping_confidence?: number | null;
+    crop_width?: number; crop_height?: number; source_field?: string; normalized_candidate?: string;
+    bbox?: number[]; crop_bbox?: number[]; ricoh_used?: boolean; ricoh_result?: unknown;
+    rejection_code?: string; validation?: string; segment_ids?: string[]}[];
   source?: Record<string, unknown>;
   status: "safe" | "ambiguous" | "no_change" | "rejected";
   original_text: string; normalized_text: string; confidence: number | null;

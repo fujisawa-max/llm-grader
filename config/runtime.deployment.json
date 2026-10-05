@@ -19,6 +19,16 @@
         "vision",
         "math_ocr"
       ]
+    },
+    "ricoh": {
+      "model_id": "${LLM_GRADER_OCR_MODEL_ID:-ricoh-8b}",
+      "model_path": "${LLM_GRADER_OCR_MODEL_PATH:-/models/Qwen-3-VL-Ricoh-8B-20260227-Q8_0.gguf}",
+      "mmproj_path": "${LLM_GRADER_OCR_MMPROJ_PATH:-/models/Qwen-3-VL-Ricoh-8B-20260227-mmproj-f16.gguf}",
+      "vision": true,
+      "capabilities": [
+        "vision",
+        "region_grouping"
+      ]
     }
   },
   "runtime_defaults": {
@@ -58,6 +68,20 @@
       "generation": {
         "temperature": 0,
         "max_output_tokens": 2048
+      }
+    },
+    "ocr": {
+      "model_ref": "ricoh",
+      "purpose": "math_region_grouping",
+      "port": 8081,
+      "log_path": "/runtime-state/math-grouping.log",
+      "request_timeout_seconds": 300,
+      "generation": {
+        "temperature": 0,
+        "max_output_tokens": 1024
+      },
+      "chat_template_kwargs": {
+        "enable_thinking": false
       }
     }
   },
