@@ -53,8 +53,11 @@ export function mathOcrReasonMessage(code: string): string {
     math_response_unsupported: "数式OCRの応答形式を読み取れません。",
     math_formula_not_found: "応答に有効な数式が見つかりません。",
     math_identifier_invalid: "原文にない変数・説明が応答に含まれています。",
+    math_identifier_missing: "原文の変数・識別子がOCR候補から欠けています。",
     math_ocr_numeric_mismatch: "原文の数値がOCR結果と一致しません。",
     math_wrapper_invalid: "数式の区切り・出力形式を確認できません。",
+    math_detokenization_unresolved: "原文と照合できない文字・数値の分割があります。",
+    math_latex_syntax_invalid: "数式のLaTeX構文を確認できません。",
   };
   return messages[code] || "数式OCRの結果を確認してください。";
 }

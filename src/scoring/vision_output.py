@@ -216,6 +216,6 @@ def unwrap_math_output(text):
                     break
         if previous == value:
             break
-    if '$' in value or '```' in value:
+    if '$' in value or '```' in value or any(marker in value for marker in (r'\[', r'\]', r'\(', r'\)')):
         raise ValueError('math_wrapper_invalid')
     return value

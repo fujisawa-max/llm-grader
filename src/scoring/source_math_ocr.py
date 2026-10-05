@@ -7,7 +7,6 @@ import json
 import os
 from hashlib import sha256
 import math
-import re
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,7 +15,8 @@ import fitz
 
 from .adapters.question_vision import PROMPTS
 from .core import LocalClient, generation_payload, image_content
-from .vision_output import response_text, unwrap_math_output
+from .vision_output import response_text
+from .math_ocr_candidates import select_candidate
 from .math_region_grouping import source_regions, validate_groups, region_from_atoms
 
 logger = logging.getLogger(__name__)
@@ -185,36 +185,30 @@ class SourceMathOCR:
                         raise MathOCRError('math_inference_failed') from exc
                     region.update(inference_completed=True, raw_response=raw)
                     raw_text, field, warnings = response_text(raw)
-                    region.update(raw_latex=raw_text, source_field=field, warnings=warnings, raw_text_sha256=sha256(raw_text.encode()).hexdigest())
+                    region.update(raw_latex=raw_text, raw_ocr_text=raw_text, source_field=field, warnings=warnings, raw_text_sha256=sha256(raw_text.encode()).hexdigest())
                     if not raw_text.strip():
                         choices = raw.get('choices', []) if isinstance(raw, dict) else []
                         message = choices[0].get('message', {}) if choices and isinstance(choices[0], dict) else {}
                         has_message = isinstance(message, dict) and any(isinstance(message.get(k), str) for k in ('content', 'final', 'answer', 'reasoning_content', 'reasoning'))
                         raise ValueError('math_ocr_empty_response' if has_message else 'math_response_unsupported')
-                    latex = unwrap_math_output(raw_text)
-                    region['normalized_candidate'] = latex
-                    native = region['original_text']
-                    lexical = re.sub(r'\\(?:begin|end)\{(?:aligned|align\*?|gathered|gather\*?|matrix|pmatrix|bmatrix|cases|array)\}(?:\{[lcr| ]+\})?', '', latex)
-                    lexical = re.sub(r'\\[A-Za-z]+', '', lexical)
-                    identifiers = set(re.findall(r'[^\W\d_]+', native)) | {'sin', 'cos', 'tan', 'log', 'ln', 'lim', 'exp'}
-                    if set(re.findall(r'[^\W\d_]+', lexical)) - identifiers:
-                        raise ValueError('math_identifier_invalid')
-                    numeric = r'(?<![A-Za-z\d])(?:[-−]?\d+(?:\.\d+)?)'
-                    source_numbers = re.findall(numeric, native.replace('−', '-'))
-                    recognized_numbers = re.findall(numeric, latex.replace('−', '-'))
-                    remaining = iter(recognized_numbers)
-                    if any(not any(token == value for token in remaining) for value in source_numbers):
-                        raise ValueError('math_ocr_numeric_mismatch')
-                    if source_numbers != recognized_numbers:
+                    selection = select_candidate(raw_text, region['original_text'])
+                    region.update(selection, normalized_candidate=selection['selected_candidate'])
+                    if not selection['validation_accepted']:
+                        raise ValueError(selection['rejection_reason'])
+                    latex = selection['selected_candidate']
+                    if selection['numeric_review_required']:
                         warnings.append('原文抽出と数値の数が異なります。PDF画像と照合してください。')
-                    if not latex or len(latex) > 12000 or not re.search(r'[=+^_−×÷]|\\[A-Za-z]+', latex):
-                        raise ValueError('math_formula_not_found')
+                    if selection['duplicate_count']:
+                        warnings.append('重複した数式候補を除外しました。')
+                    if any(not c['accepted'] for c in selection['candidate_scores']):
+                        warnings.append('原文と一致しないOCR候補を除外しました。選択された数式をPDF画像と照合してください。')
                     region.update(latex=latex, validation='accepted')
                 except (ValueError, MathOCRError) as exc:
                     region.update(validation='rejected', rejection_code=exc.code if isinstance(exc, MathOCRError) else str(exc))
-                logger.info('math OCR result region=%s field=%s raw_length=%s candidate_length=%s validation=%s reason=%s',
+                logger.info('math OCR result region=%s field=%s raw_length=%s candidate_length=%s validation=%s reason=%s candidates=%s selected=%s duplicates=%s',
                             index, region.get('source_field'), len(region.get('raw_latex', '')),
-                            len(region.get('normalized_candidate', '')), region['validation'], region.get('rejection_code'))
+                            len(region.get('normalized_candidate', '')), region['validation'], region.get('rejection_code'),
+                            region.get('candidate_count'), region.get('selected_candidate_index'), region.get('duplicate_count'))
         rejected = [r for r in regions if r['validation'] == 'rejected']
         if rejected:
             result.update(status='rejected', reason_code=rejected[0]['rejection_code'],

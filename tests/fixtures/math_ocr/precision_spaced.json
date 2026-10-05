@@ -1,0 +1,15 @@
+{
+  "description": "Production-like fixture reconstructed from the user-provided real response example; not a captured live response.",
+  "source": "Precision=\nTP\nTP+FP=\n24\n24+6 =\n24\n30 = 0.800",
+  "raw_response": {
+    "choices": [
+      {
+        "message": {
+          "content": "",
+          "reasoning_content": "P r e c i s i o n = \\frac { T P } { T P + F P } = \\frac { 2 4 } { 2 4 + 6 } = \\frac { 2 4 } { 3 0 } = 0 . 8 0 0\n\\text { 效 } \\dot { 2 } : 0 . 9 0 0 ( 9 0 0 )\nP r e c i s i o n = \\frac { T P } { T P + F P } = \\frac { 2 4 } { 2 4 + 6 } = \\frac { 2 4 } { 3 0 } = 0 . 8 0 0\nP r e c i s i o n = \\frac { T P } { T P + F P } = \\frac { 2 4 } { 2 4 + 6 } = \\frac { 2 4 } { 3 0 } = 0 . 8 0 0"
+        }
+      }
+    ]
+  },
+  "expected": "Precision=\\frac{TP}{TP+FP}=\\frac{24}{24+6}=\\frac{24}{30}=0.800"
+}

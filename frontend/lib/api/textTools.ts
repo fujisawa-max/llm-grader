@@ -6,7 +6,12 @@ export type LatexProposal = {
     ricoh_raw_response?: unknown; grouping_method?: string; grouping_confidence?: number | null;
     crop_width?: number; crop_height?: number; source_field?: string; normalized_candidate?: string;
     bbox?: number[]; crop_bbox?: number[]; ricoh_used?: boolean; ricoh_result?: unknown;
-    rejection_code?: string; validation?: string; segment_ids?: string[]}[];
+    rejection_code?: string; validation?: string; segment_ids?: string[];
+    raw_ocr_text?: string; normalized_ocr_text?: string; candidate_count?: number; duplicate_count?: number;
+    selected_candidate_index?: number; selected_candidate?: string; normalization_steps?: unknown[];
+    candidate_scores?: {index: number; start: number; end: number; raw_candidate: string; normalized_candidate: string;
+      score: number; accepted: boolean; duplicate_of?: number; rejection_reason?: string | null;
+      unsupported_identifiers?: string[]; unsupported_numbers?: string[]; normalization_steps?: unknown[]}[]}[];
   source?: Record<string, unknown>;
   status: "safe" | "ambiguous" | "no_change" | "rejected";
   original_text: string; normalized_text: string; confidence: number | null;

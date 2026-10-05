@@ -6,6 +6,7 @@ import json
 import os
 import re
 import time
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 parser = argparse.ArgumentParser()
@@ -63,9 +64,12 @@ class Handler(BaseHTTPRequestHandler):
                 return
             time.sleep(1)
             expression = r"Precision=\frac{TP}{TP+FP}=\frac{24}{24+6}=\frac{24}{30}=0.800"
-            mode = os.getenv("LLM_GRADER_STUB_MATH_RESPONSE_MODE", "reasoning_wrapped")
+            mode = os.getenv("LLM_GRADER_STUB_MATH_RESPONSE_MODE", "production_spaced")
             message = ({"content": "", "reasoning_content": "$$"+expression+"$$"} if mode == "reasoning_wrapped"
                        else {"content": "" if mode == "empty" else expression})
+            if mode == "production_spaced":
+                fixture = json.loads((Path(__file__).parents[1]/"math_ocr"/"precision_spaced.json").read_text())
+                message = fixture["raw_response"]["choices"][0]["message"]
             self.send({"choices": [{"message": message}]})
             return
         payload = json.loads(content)

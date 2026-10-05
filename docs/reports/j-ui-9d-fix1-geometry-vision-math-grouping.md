@@ -73,3 +73,7 @@ Changes are unstaged; no commit or push was performed. Local databases, crop ins
 6. Repeat explicitly and verify identical PID/started_at with no reload/stop. Audit browser console/network.
 
 All production acceptance items remain open. Correct grouping with failed real Uni-MuMER recognition must remain **PARTIAL**; software/stub success alone cannot satisfy COMPLETE.
+
+## Candidate validation follow-up
+
+The user subsequently reported successful complete Precision cropping, Ricoh grouping and real Uni-MuMER `reasoning_content`, with validation rejecting character-spaced/repeated output. See [J.UI.9d-fix2 report](j-ui-9d-fix2-unimumer-candidate-validation.md) for deterministic candidate extraction and source-guided detokenization. Live post-fix2 proposal acceptance remains pending.
