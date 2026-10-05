@@ -272,6 +272,20 @@ def seed(root):
         session.add(issue_draft)
         geometry_env.update(ANSWER_CONTINUATION_TEST_ID=issue_test.id, ANSWER_CONTINUATION_DRAFT_ID=issue_draft.id,
                             ANSWER_CONTINUATION_QUESTION_IDS=json.dumps([q.id for q in issue_questions]))
+        completion_tests = [domain.test(teacher_offering.id, name=f"Question completion fixture {n}",
+                                        total_points=20) for n in range(2)]
+        completion_material = domain.material(completion_tests[1].id, material_type="model_answer_source",
+            storage_ref=str(split_source), original_filename="saved-completion-answer.pdf",
+            mime_type="application/pdf", sha256=split_digest)
+        completion_draft = ModelAnswerImportDraft(id=str(uuid4()), test_id=completion_tests[1].id,
+            material_id=completion_material.id, source_sha256=split_digest, artifact_ref="completion-fixture.json",
+            state="editing", revision=1, snapshot={"schema": "model-answer-review.v1", "page_count": 1,
+                "entries": [{"id": str(uuid4()), "question_id": None, "answer_text": "Saved teacher answer.",
+                    "answer_kind": "primary", "disposition": "unassigned",
+                    "source": {"kind": "teacher_manual", "material_id": completion_material.id, "segments": []}}]})
+        session.add(completion_draft)
+        geometry_env.update(QUESTION_COMPLETION_TEST_IDS=json.dumps([t.id for t in completion_tests]),
+                            QUESTION_COMPLETION_DRAFT_ID=completion_draft.id)
         nested_test = domain.test(offering.id, name="Nested review navigation fixture", total_points=20)
         domain.question(nested_test.id, question_number="1", display_label="問題1", sort_order=1,
                         max_points=10, is_gradable=True)
@@ -389,6 +403,7 @@ def main():
                         "e2e/question-math-ocr-real.spec.ts",
                         "e2e/question-editor-caret-real.spec.ts",
                         "e2e/review-continuation-real.spec.ts",
+                        "e2e/question-completion-real.spec.ts",
                         "e2e/model-answer-nested-navigation-real-isolated.spec.ts",
                     ]
                     subprocess.run(["npm", "run", "e2e", "--", *specs, "--workers=1"],

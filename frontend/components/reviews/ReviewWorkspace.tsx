@@ -1,5 +1,7 @@
 "use client";
 import Link from "next/link";
+import { NextActionPanel } from "@/components/NextActionPanel";
+import { testWorkflowHref } from "@/lib/testWorkflowNavigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ApiRequestError } from "@/lib/api/client";
 import { reviews, type ImportPlan, type Confirmation } from "@/lib/api/reviews";
@@ -416,8 +418,11 @@ export function ReviewWorkspace({ id }: { id: string }) {
     if (issue) navigateIssue(issue);
   }
   return <div className="teacher-review">
-    <Link href={`/tests/${document.test_id}?section=questions`}>← 試験の問題画面に戻る</Link>
+    <Link href={testWorkflowHref(document.test_id, "questions")}>← 試験の問題画面に戻る</Link>
     <header className="review-toolbar"><h1>教師による確認</h1><span className="badge badge-draft">{reviewStateLabel(current.state)}</span><span>修正版 {document.revision_number}</span>{dirty && <strong className="warn">未保存の変更</strong>}</header>
+    {confirmation?.state === "completed" && confirmation.test_id === document.test_id && <NextActionPanel
+      description="問題の登録が完了しました。次は解答・採点基準を確認・登録してください。"
+      label="解答・採点基準へ進む" href={testWorkflowHref(document.test_id, "answers")} />}
     <p className="muted">元の問題用紙と自動解析結果を比較し、設問構造や内容を確認・修正します。ここでの確認は、設問の最終確定とは別の操作です。</p>
     <div className="review-summary" aria-label="確認状況">
       <span>設問 {counts.included_questions} / 除外 {counts.excluded_questions}</span><button type="button" onClick={() => setShowIssues(value => !value)}>警告 未確認 {reviewIssues.filter(issue => issue.issueType === "warning").length} · 未確認を表示</button>
