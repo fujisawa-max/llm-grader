@@ -239,18 +239,28 @@ class QuestionReviewService:
     def list_for_test(self, test_id):
         if not self.s.get(Test, test_id):
             raise ReviewError("test_not_found", 404)
-        rows = self.s.execute(select(QuestionImportDraft, QuestionImportReview, TestMaterial)
+        rows = self.s.execute(select(QuestionImportDraft, QuestionImportReview, TestMaterial, QuestionImportExtraction)
             .join(QuestionImportExtraction, QuestionImportDraft.extraction_id == QuestionImportExtraction.id)
             .join(TestMaterial, QuestionImportExtraction.material_id == TestMaterial.id)
             .outerjoin(QuestionImportReview, QuestionImportReview.draft_id == QuestionImportDraft.id)
             .where(QuestionImportExtraction.test_id == test_id, QuestionImportDraft.state == "completed")
-            .order_by(QuestionImportDraft.created_at.desc())).all()
+            .order_by(QuestionImportDraft.created_at.desc(), QuestionImportDraft.id.desc())).all()
         result = []
-        for draft, review, material in rows:
-            _, _, value, _ = self._draft(draft.id)
-            current = self.get(review.id) if review else None
+        for draft, review, material, extraction in rows:
+            resume_error = None
+            value = {"nodes": [], "review_flags": []}
+            current = None
+            try:
+                _, _, value, _ = self._draft(draft.id)
+                current = self.get(review.id) if review else None
+                if material.sha256 != extraction.source_sha256:
+                    raise ReviewError("source_material_changed")
+            except ReviewError as error:
+                resume_error = error.code
             result.append({"id": review.id if review else None, "draft_id": draft.id,
                 "source_filename": material.original_filename, "draft_created_at": draft.created_at,
+                "material_id": material.id, "source_pdf_sha256": extraction.source_sha256,
+                "resumable": bool(review and not resume_error), "resume_error_code": resume_error,
                 "parser_version": draft.parser_version, "question_count": len(value["nodes"]),
                 "review_required": draft.review_required, "warning_count":
                     current["summary"]["unresolved_warnings"] if current else len(value["review_flags"]),

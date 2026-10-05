@@ -9,6 +9,8 @@ import { Breadcrumbs, ErrorState, LoadingState, PageHeader } from "@/components/
 import { MathPreview, mathInputHelp } from "@/components/MathText";
 import { SourcePdfPreview } from "@/components/SourcePdfPreview";
 import { MarkdownMathText } from "@/components/MarkdownMathText";
+import { ReviewIssueList } from "@/components/reviews/ReviewIssueList";
+import { focusReviewIssue, type ReviewIssueTarget } from "@/lib/reviewIssues";
 import { ModelAnswerQuestionSelector } from "@/components/ModelAnswerQuestionSelector";
 import { questionBreadcrumb } from "@/lib/modelAnswerQuestionNavigation";
 import {
@@ -532,17 +534,57 @@ export default function ModelAnswerImportReviewPage() {
   for (const item of registrationValidation) if (item.candidateId) {
     validationByCandidate.set(item.candidateId, [...(validationByCandidate.get(item.candidateId) || []), item]);
   }
-  function jumpToValidation(item: typeof registrationValidation[number]) {
-    const target = item.reviewTargetId && targets.some((candidate) => candidate.id === item.reviewTargetId)
-      ? item.reviewTargetId
-      : item.questionId && targets.some((candidate) => candidate.id === `question:${item.questionId}`)
-        ? `question:${item.questionId}` : targets[0]?.id || "";
-    setSelectedTargetId(target);
-    if (item.candidateId) window.setTimeout(() => {
-      const article = document.getElementById(`review-entry-${item.candidateId}`);
-      article?.scrollIntoView({ behavior: "smooth", block: "center" });
-      article?.focus({ preventScroll: true });
-    }, 0);
+  const registrationIssues: ReviewIssueTarget[] = registrationValidation.map((item, index) => {
+    const path = questionLabels.get(item.questionId || "") || (item.candidateId ? "設問未割当" : "取り込み候補");
+    return {id: `${item.reasonCode}:${item.candidateId || index}`, domain: "model_answer", questionKey: item.questionId,
+      reviewTargetId: item.reviewTargetId, path, issueType: item.reasonCode, itemId: item.candidateId,
+      controlSelector: ["question_mapping_required", "invalid_question_mapping"].includes(item.reasonCode)
+        ? "[data-question-assignment]" : "textarea",
+      message: item.message.includes(" — ") ? item.message.split(" — ").slice(1).join(" — ") : item.message,
+      targetId: item.candidateId ? `review-entry-${item.candidateId}` : "model-answer-target-selector"};
+  });
+  const additionalIssues: ReviewIssueTarget[] = draft.entries.flatMap(entry => {
+    const disposition = dispositionOf(entry);
+    if (disposition === "excluded" || disposition === "ignored") return [];
+    const assigned = draft.questions.some(question => question.id === entry.question_id);
+    const path = assigned ? questionLabels.get(entry.question_id!) || "設問" : "設問未割当";
+    const base = {questionKey: assigned ? entry.question_id! : undefined, path,
+      reviewTargetId: disposition === "unassigned" || !assigned ? `unassigned:${entry.id}` : `question:${entry.question_id}`,
+      itemId: entry.id, targetId: `review-entry-${entry.id}`};
+    const issues: ReviewIssueTarget[] = [];
+    if (disposition === "unassigned" || !assigned) issues.push({...base, id: `unassigned:${entry.id}`,
+      domain: "model_answer", issueType: "unassigned", message: "模範解答候補の設問を指定", controlSelector: "[data-question-assignment]"});
+    if (entry.semantic_classification?.status === "needs_teacher_review")
+      issues.push({...base, id: `classification:${entry.id}`, domain: "model_answer", issueType: "candidate_review", message: "模範解答候補を確認", controlSelector: "[data-confirm-classification]"});
+    for (const edit of rubricRows(entry).filter(edit => !edit.excluded)) {
+      const add = (type: string, message: string, selector?: string) => issues.push({...base, id: `${type}:${entry.id}:${edit.id}`,
+        domain: "rubric", issueType: type, message, targetId: `review-rubric-${entry.id}-${edit.id}`, controlSelector: selector});
+      if (!edit.description.trim()) add("rubric_text", "採点基準の本文を入力", "textarea");
+      if (!edit.points || edit.points <= 0) add("rubric_points", "採点基準の配点を入力", 'input[type="number"]');
+      if (edit.points_conflict && !edit.points_confirmed) add("point_conflict", "採点基準の配点を確認", '[data-confirm-points]');
+      if ((edit.confidence ?? 1) < 0.82 && !edit.grouping_confirmed)
+        add("rubric_grouping", "採点基準のまとまりを確認", '[aria-label="グルーピングを確認しました"]');
+      if (disposition !== "include" || !assigned) add("rubric_target", "採点基準の設問を指定");
+    }
+    return issues;
+  });
+  // This is the existing Rubric registration rule, not a new ModelAnswer blocker.
+  for (const question of draft.questions.filter(question => question.is_gradable)) {
+    const rows = draft.entries.filter(entry => dispositionOf(entry) === "include" && entry.question_id === question.id)
+      .flatMap(entry => rubricRows(entry).filter(edit => !edit.excluded).map(edit => ({entry, edit})));
+    if (!rows.length || question.max_points === undefined) continue;
+    const total = rows.reduce((sum, row) => sum + row.edit.points, 0);
+    if (question.max_points !== null && total === question.max_points) continue;
+    additionalIssues.push({id: `rubric_total:${question.id}`, domain: "rubric", questionKey: question.id,
+      path: questionLabels.get(question.id) || "設問", reviewTargetId: `question:${question.id}`, issueType: "rubric_total",
+      message: `採点基準の配点合計（${total}点）と設問の配点（${question.max_points ?? "未設定"}点）を確認`,
+      targetId: `review-rubric-${rows[0].entry.id}-${rows[0].edit.id}`, controlSelector: 'input[type="number"]'});
+  }
+  function navigateIssue(item: ReviewIssueTarget) {
+    const target = item.reviewTargetId && targets.some(candidate => candidate.id === item.reviewTargetId)
+      ? item.reviewTargetId : targets[0]?.id || "";
+    setSelectedTargetId(target); setSplitPreview(null);
+    focusReviewIssue(item);
   }
   const runtime = draft.entries.find((entry) => entry.semantic_classification?.runtime_type)?.semantic_classification?.runtime_type;
   const pages = (entry: ModelAnswerDraftEntry) => [...new Set(entry.source.segments.map((segment) => segment.page_index + 1))];
@@ -574,24 +616,25 @@ export default function ModelAnswerImportReviewPage() {
     </div>}
     {draft.state === "editing" && registrationValidation.length > 0 && <section className="warn" aria-label="登録できない理由" role="status">
       <strong>登録前に確認が必要な項目が{registrationValidation.length}件あります</strong>
-      <ul>{registrationValidation.map((item, index) => <li key={`${item.reasonCode}:${item.candidateId || index}`}>
-        {item.candidateId ? <button type="button" className="registration-validation-jump" aria-label={`${item.message}。該当候補を表示`}
-          onClick={() => jumpToValidation(item)}>{item.message}</button> : item.message}
-      </li>)}</ul>
+      <ReviewIssueList issues={registrationIssues} onNavigate={navigateIssue} label="模範解答の登録確認項目" />
       <p>未割当・除外の候補は登録対象に含まれません。登録する候補だけを対応付けてください。</p>
     </section>}
+    {additionalIssues.length > 0 && <details className="panel" open aria-label="解答・採点基準の未確認項目">
+      <summary>未確認を表示（{additionalIssues.length}件）</summary>
+      <ReviewIssueList issues={additionalIssues} onNavigate={navigateIssue} />
+    </details>}
     {unresolved > 0 && <p className="warn" role="status">対応する設問が未確定の候補が{unresolved}件あります。レビューに保持され、模範解答には登録されません。</p>}
     {draft.entries.length === 0 && <p className="warn" role="status">PDFから読み取れる本文がありません。PDFの文字データを確認するか、設問別編集欄で手入力してください。</p>}
     {error && <p className="error" role="alert">{error}</p>}
     {notice && <p role="status">{notice}</p>}
-    <ModelAnswerQuestionSelector label="編集対象" options={targets} selectedId={selectedTarget?.id || ""} onChange={id => { setSelectedTargetId(id); setSplitPreview(null); }}>
+    <div id="model-answer-target-selector" tabIndex={-1}><ModelAnswerQuestionSelector label="編集対象" options={targets} selectedId={selectedTarget?.id || ""} onChange={id => { setSelectedTargetId(id); setSplitPreview(null); }}>
           <optgroup label="設問">{targets.filter((target) => target.kind === "question").map((target) =>
             <option key={target.id} value={target.id}>{questionLabels.get(target.questionId || "") || target.label}</option>)}</optgroup>
           {targets.some((target) => target.kind === "unassigned") && <optgroup label="対応する設問なし">{targets.filter((target) => target.kind === "unassigned").map((target) =>
             <option key={target.id} value={target.id}>{target.label}</option>)}</optgroup>}
           {targets.some((target) => target.kind === "excluded") && <optgroup label="除外済み">{targets.filter((target) => target.kind === "excluded").map((target) =>
             <option key={target.id} value={target.id}>{target.label}</option>)}</optgroup>}
-    </ModelAnswerQuestionSelector>
+    </ModelAnswerQuestionSelector></div>
     <div className="model-answer-import-layout">
       <section className="panel model-answer-import-entries" aria-label="模範解答の確認項目">
         {selectedQuestion && <section className="model-answer-question-text" aria-label="登録済み問題文">
@@ -631,7 +674,7 @@ export default function ModelAnswerImportReviewPage() {
               }}>取り込み対象に戻す</button>
           </div> : <>
           <label className="field">候補の扱い・対応先
-            <select aria-label={`模範解答 ${index + 1} の対応先`} value={(entry.disposition === "unassigned" || !entry.question_id) ? "__unassigned__" : entry.question_id} disabled={busy || classifying || draft.state !== "editing" || draft.confirmed_entry_ids?.includes(entry.id)}
+            <select data-question-assignment aria-label={`模範解答 ${index + 1} の対応先`} value={(entry.disposition === "unassigned" || !entry.question_id) ? "__unassigned__" : entry.question_id} disabled={busy || classifying || draft.state !== "editing" || draft.confirmed_entry_ids?.includes(entry.id)}
               onChange={(event) => {
                 const value = event.target.value;
                 updateEntry(entry.id, value === "__excluded__" ? { disposition: "excluded" }
@@ -744,7 +787,7 @@ export default function ModelAnswerImportReviewPage() {
                     {candidates.map((edit, groupIndex) => {
                       const sourceIds = edit.segment_ids || [edit.id];
                       const sourceText = sourceIds.map((sourceId) => entry.semantic_classification!.segments.find((item) => item.id === sourceId)?.source_text || "").join("");
-                      return <div className="rubric-candidate-edit" key={edit.id} data-candidate-id={edit.id}
+                      return <div id={`review-rubric-${entry.id}-${edit.id}`} tabIndex={-1} className="rubric-candidate-edit" key={edit.id} data-candidate-id={edit.id}
                         data-active={activeRubricId === edit.id ? "true" : undefined} aria-busy={splittingCandidateId === edit.id}>
                         <label><input type="checkbox" aria-label={`採点基準候補 ${index + 1}-${groupIndex + 1} を選択`}
                           checked={selectedIds.includes(edit.id)} onChange={(event) => setSelectedRubricGroups((current) => ({
@@ -782,7 +825,7 @@ export default function ModelAnswerImportReviewPage() {
                             onChange={(event) => updateRubricEdit(entry, edit.id, { points: Number(event.target.value), points_confirmed: true })} />
                         </label>
                         {edit.points_conflict && <p className="warn">{edit.grouping_method?.startsWith("split_") ? "配点の確認が必要です。各採点観点の配点を入力してください。" : "複数の配点記述があります。原文の配点を確認してください。"}
-                          <label><input type="checkbox" checked={!!edit.points_confirmed} onChange={(event) => updateRubricEdit(entry, edit.id, { points_confirmed: event.target.checked })} /> 配点を確認しました</label>
+                          <label><input type="checkbox" data-confirm-points checked={!!edit.points_confirmed} onChange={(event) => updateRubricEdit(entry, edit.id, { points_confirmed: event.target.checked })} /> 配点を確認しました</label>
                         </p>}
                         {edit.confidence !== undefined && <p className="muted">グルーピング信頼度: {Math.round((edit.confidence || 0) * 100)}%</p>}
                         {(edit.confidence ?? 1) < 0.82 && <p className={edit.grouping_confirmed ? "success" : "warn"}>
@@ -837,7 +880,7 @@ export default function ModelAnswerImportReviewPage() {
               </div>)}
               {entry.semantic_classification.status === "needs_teacher_review" && !entry.semantic_classification.segments.some((segment) => segment.category === "uncertain") &&
                 <button type="button" className="button secondary" disabled={busy || classifying || draft.state !== "editing"}
-                  onClick={() => updateEntry(entry.id, { semantic_classification: { ...entry.semantic_classification!, status: "teacher_reviewed" } })}>
+                  data-confirm-classification onClick={() => updateEntry(entry.id, { semantic_classification: { ...entry.semantic_classification!, status: "teacher_reviewed" } })}>
                   分類結果を確認済みにする
                 </button>}
             </details>

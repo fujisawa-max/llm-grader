@@ -98,7 +98,7 @@ def question_choices(questions: list[Any]) -> list[dict[str, Any]]:
     return [
         {"id": q.id, "label": label_for(q), "display_label": q.display_label or q.question_number,
          "parent_id": q.parent_id, "is_gradable": bool(q.is_gradable), "hierarchy_order": rank[q.id],
-         "question_text": body_for(q)}
+         "question_text": body_for(q), "max_points": getattr(q, "max_points", None)}
         for q in ordered
         if q.is_gradable
     ]

@@ -1,3 +1,4 @@
+import { reviewWarningId } from "@/lib/reviewIssues";
 import type { ReviewWarning, WarningResolution } from "@/types/reviews";
 import { reviewIssueLabel, reviewIssueReason, reviewStateLabel } from "@/lib/reviewLabels";
 
@@ -11,7 +12,7 @@ export function WarningPanel({ warnings, states, readonly, onChange, targetLabel
     {warnings.map((warning, index) => {
       const target = targetLabel?.(warning) || "試験全体";
       const pending = (states[warning.id]?.state || "unreviewed") === "unreviewed";
-      return <div key={warning.id} className={pending ? "review-warning-wrap needs-check" : "review-warning-wrap"}>
+      return <div id={reviewWarningId(warning.id)} key={warning.id} className={pending ? "review-warning-wrap needs-check" : "review-warning-wrap"}>
         <fieldset disabled={readonly} className="review-warning">
           <legend>確認事項 {index + 1}: {target} {pending && <span className="review-needs-check">要確認</span>}</legend>
           <strong>{reviewIssueLabel(warning.code)}</strong>

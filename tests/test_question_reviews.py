@@ -63,6 +63,64 @@ class ReviewApiTests(unittest.TestCase):
         snap["warning_states"] = {w["id"]: {"state": "acknowledged"} for w in self.data["warnings"]}
         return snap
 
+    def test_resume_discovery_returns_saved_revision_and_source_identity_without_analysis(self):
+        snap = self.ready()
+        snap["nodes"][0]["label"]["raw"] = "Teacher saved label"
+        self.save(snap)
+        listed = self.client.get(f"/api/v1/tests/{self.test_id}/question-import-reviews")
+        self.assertEqual(listed.status_code, 200)
+        row = listed.json()[0]
+        self.assertTrue(row["resumable"])
+        self.assertIsNone(row["resume_error_code"])
+        self.assertEqual(row["source_pdf_sha256"], self.data["source_pdf_sha256"])
+        self.assertTrue(row["material_id"])
+        self.assertEqual(row["current_revision"], self.data["current_revision"])
+        resumed = self.client.get(self.url).json()
+        self.assertEqual(resumed, self.data)
+        self.assertEqual(self.fake.calls, self.original_calls)
+
+    def test_corrupt_review_is_not_resumable_and_does_not_hide_other_discovery_rows(self):
+        with self.sf() as session:
+            rev = session.scalar(select(QuestionImportReviewRevision).where(
+                QuestionImportReviewRevision.review_id == self.data["id"]))
+            rev.snapshot = {**rev.snapshot, "state": "corrupted"}
+            session.commit()
+        listed = self.client.get(f"/api/v1/tests/{self.test_id}/question-import-reviews")
+        self.assertEqual(listed.status_code, 200)
+        row = listed.json()[0]
+        self.assertFalse(row["resumable"])
+        self.assertEqual(row["resume_error_code"], "revision_integrity_error")
+        self.assertNotEqual(self.client.get(self.url).status_code, 200)
+
+    def test_changed_material_disables_resume_discovery(self):
+        from scoring.db.models import QuestionImportExtraction, TestMaterial
+        with self.sf() as session:
+            extraction = session.get(QuestionImportExtraction, self.extraction)
+            session.get(TestMaterial, extraction.material_id).sha256 = "0" * 64
+            session.commit()
+        row = self.client.get(f"/api/v1/tests/{self.test_id}/question-import-reviews").json()[0]
+        self.assertFalse(row["resumable"])
+        self.assertTrue(row["resume_error_code"])
+
+    def test_resume_discovery_and_get_keep_domain_authorization(self):
+        from scoring.auth import hash_password
+        from scoring.domain import DomainService
+        with self.sf() as session:
+            for role in ("teacher", "student"):
+                DomainService(session).user(display_name=role, email=f"other-{role}@example.invalid",
+                    role=role, password_hash=hash_password("fixture-password"), is_active=True)
+            session.commit()
+        for role in ("teacher", "student"):
+            self.client.post("/api/v1/auth/logout")
+            login = self.client.post("/api/v1/auth/login", json={
+                "email": f"other-{role}@example.invalid", "password": "fixture-password"})
+            self.assertEqual(login.status_code, 200)
+            self.assertEqual(self.client.get(f"/api/v1/tests/{self.test_id}/question-import-reviews").status_code, 403)
+            self.assertEqual(self.client.get(self.url).status_code, 403)
+        self.client.post("/api/v1/auth/logout")
+        self.assertEqual(self.client.get(self.url).status_code, 401)
+        self.assertEqual(self.client.get(f"/api/v1/tests/{self.test_id}/question-import-reviews").status_code, 401)
+
     def test_preview_metadata_crop_raw_and_access_isolation(self):
         meta = self.client.get(self.url + "/pages/0/metadata").json()
         self.assertEqual(meta["preview_width"], 450)

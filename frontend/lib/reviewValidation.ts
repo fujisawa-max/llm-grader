@@ -1,3 +1,4 @@
+import { canonicalQuestionPath } from "./canonicalQuestionPath";
 import type { ReviewNode } from "@/types/reviews";
 
 export type FieldIssues = Record<string, Record<string, string[]>>;
@@ -11,16 +12,8 @@ export interface ReviewFieldError {
 }
 
 export function buildQuestionPath(nodeKey: string, nodes: ReviewNode[]): string {
-  const byKey = new Map(nodes.map(node => [node.stable_key, node]));
-  const labels: string[] = [];
-  const seen = new Set<string>();
-  let current = byKey.get(nodeKey);
-  while (current && !seen.has(current.stable_key)) {
-    seen.add(current.stable_key);
-    labels.unshift(current.label.raw.trim() || current.label.normalized.trim() || "名称未設定の設問");
-    current = current.parent_key ? byKey.get(current.parent_key) : undefined;
-  }
-  return labels.join(" > ") || "選択中の設問";
+  return canonicalQuestionPath(nodeKey, nodes.map(node => ({key: node.stable_key, parentKey: node.parent_key,
+    label: node.label.raw.trim() || node.label.normalized.trim() || "名称未設定の設問"})));
 }
 
 export function reviewFieldId(nodeKey: string, fieldKey: string): string {

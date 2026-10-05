@@ -223,6 +223,55 @@ def seed(root):
         caret_path.write_bytes(caret_pdf.tobytes())
         caret_pdf.close()
         geometry_env.update(QUESTION_CARET_TEST_ID=caret_test.id, QUESTION_CARET_PDF_PATH=str(caret_path))
+        continuation_test = domain.test(teacher_offering.id, name="Question continuation fixture", total_points=20)
+        continuation_pdf = pymupdf.open()
+        continuation_page = continuation_pdf.new_page()
+        for y, text, japanese in [(35, "問題1 (10点)", True), (65, "式を確認してください。", True),
+                                  (95, "Precision=TP/(TP+FP)=24/(24+6)=24/30=0.800", False), (125, "説明文を残してください。", True),
+                                  (220, "問題2 (10点)", True), (250, "Recall=TP/(TP+FN)=24/(24+6)=24/30=0.800", False)]:
+            continuation_page.insert_text((30, y), text, fontname="japan" if japanese else "helv", fontsize=10)
+        continuation_path = root / "sources" / "question-continuation.pdf"
+        continuation_path.write_bytes(continuation_pdf.tobytes())
+        continuation_pdf.close()
+        geometry_env.update(QUESTION_CONTINUATION_TEST_ID=continuation_test.id,
+                            QUESTION_CONTINUATION_PDF_PATH=str(continuation_path))
+        from scoring.model_answer_classification import fallback_classification, apply_teacher_segment_edits
+        issue_test = domain.test(teacher_offering.id, name="Answer issue continuation fixture", total_points=20)
+        issue_major = domain.question(issue_test.id, question_number="2", display_label="問題2", sort_order=1,
+                                      max_points=None, is_gradable=False)
+        issue_sub = domain.question(issue_test.id, question_number="2.2", display_label="(2)", sort_order=1,
+                                    parent_id=issue_major.id, max_points=None, is_gradable=False)
+        issue_questions = [domain.question(issue_test.id, question_number=f"2.2.{n}", display_label=f"{n}.",
+                           sort_order=n, parent_id=issue_sub.id, max_points=10, is_gradable=True) for n in (1, 2)]
+        issue_material = domain.material(issue_test.id, material_type="model_answer_source", storage_ref=str(split_source),
+            original_filename="answer-continuation.pdf", mime_type="application/pdf", sha256=split_digest)
+        candidate = "Saved answer.\n5 points: explain the source."
+        classification = fallback_classification(candidate)
+        classification = apply_teacher_segment_edits(classification, [
+            {**segment, "category": "rubric" if "5 points" in segment["text"] else "model_answer"}
+            for segment in classification["segments"]])
+        classification["status"] = "needs_teacher_review"
+        rubric_segment = next(segment for segment in classification["segments"] if segment["category"] == "rubric")
+        issue_entries = [{"id": str(uuid4()), "question_id": issue_questions[0].id,
+            "answer_text": "Saved alternative.", "answer_kind": "alternative", "disposition": "include",
+            "source": {"kind": "teacher_manual", "material_id": issue_material.id, "segments": []}},
+            {"id": str(uuid4()), "question_id": issue_questions[1].id, "answer_text": "Saved answer.",
+             "candidate_text": candidate, "answer_kind": "primary", "disposition": "include",
+             "semantic_classification": classification,
+             "rubric_edits": [{"id": "issue-criterion", "description": rubric_segment["text"], "points": 5,
+                 "segment_ids": [rubric_segment["id"]], "source_text": rubric_segment["source_text"],
+                 "points_conflict": True, "points_confirmed": False, "grouping_confirmed": True}],
+             "source": {"kind": "native_pdf", "material_id": issue_material.id, "source_sha256": split_digest,
+                        "segments": []}},
+            {"id": str(uuid4()), "question_id": None, "answer_text": "Unassigned candidate.",
+             "answer_kind": "primary", "disposition": "unassigned",
+             "source": {"kind": "teacher_manual", "material_id": issue_material.id, "segments": []}}]
+        issue_draft = ModelAnswerImportDraft(id=str(uuid4()), test_id=issue_test.id, material_id=issue_material.id,
+            source_sha256=split_digest, artifact_ref="issue-fixture.json", state="editing", revision=1,
+            snapshot={"schema": "model-answer-review.v1", "page_count": 1, "entries": issue_entries})
+        session.add(issue_draft)
+        geometry_env.update(ANSWER_CONTINUATION_TEST_ID=issue_test.id, ANSWER_CONTINUATION_DRAFT_ID=issue_draft.id,
+                            ANSWER_CONTINUATION_QUESTION_IDS=json.dumps([q.id for q in issue_questions]))
         nested_test = domain.test(offering.id, name="Nested review navigation fixture", total_points=20)
         domain.question(nested_test.id, question_number="1", display_label="問題1", sort_order=1,
                         max_points=10, is_gradable=True)
@@ -339,6 +388,7 @@ def main():
                         "e2e/source-math-ocr-real.spec.ts",
                         "e2e/question-math-ocr-real.spec.ts",
                         "e2e/question-editor-caret-real.spec.ts",
+                        "e2e/review-continuation-real.spec.ts",
                         "e2e/model-answer-nested-navigation-real-isolated.spec.ts",
                     ]
                     subprocess.run(["npm", "run", "e2e", "--", *specs, "--workers=1"],

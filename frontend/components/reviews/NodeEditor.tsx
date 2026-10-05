@@ -55,7 +55,7 @@ export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange
         <option value="">大問（最上位）</option>{nodes.filter(n => !descendants.has(n.stable_key)).map(n => <option key={n.stable_key} value={n.stable_key}>{n.label.raw || "名称未設定の設問"}の小問</option>)}
       </select>{errors("parent")}</label><p>種別: {questionTypeLabel(node.node_type)}（親設問に連動）</p>
       <div className="review-toolbar"><button type="button" onClick={() => onMove(-1)}>上へ移動</button><button type="button" onClick={() => onMove(1)}>下へ移動</button></div>
-      <label>配点の扱い<select value={node.score_semantics} onChange={e => {
+      <label id={reviewFieldId(node.stable_key, "score_method")}>配点の扱い<select value={node.score_semantics} onChange={e => {
         const semantics = e.target.value as ReviewNode["score_semantics"];
         onChange({ ...node, score_semantics: semantics, score_points: semantics === "direct" ? node.score_points : null });
       }}>
@@ -91,7 +91,7 @@ export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange
             ? "構成の変更を保存すると、元PDFとの対応を確認して数式OCRを利用できます。"
             : "この設問には利用できる元PDFの対応情報がありません。"}</p>}</>}
         {regions.some(r => r.region_type === "formula") && <div className="review-toolbar">
-          <button type="button" onClick={confirmContent}>問題文を確認</button>
+          <button type="button" data-review-confirm-content onClick={confirmContent}>問題文を確認</button>
           <span className="muted">{!contentChanged && regions.filter(r => r.region_type === "formula").every(r => formulaIsConfirmed(node.formula_decisions[r.region_id]))
             ? "元資料との照合済み" : "元資料と問題文を照合してください。編集後は再確認が必要です。"}</span>
         </div>}
@@ -100,7 +100,7 @@ export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange
       </section>
       {node.ordered_content.filter(item => item.type === "figure_region").map(item => {
         const id = String("region_id" in item ? item.region_id : ""), decision = node.figure_decisions[id];
-        return <section key={id} className="review-content-item" data-content-type="figure" data-region-id={id}>
+        return <section id={reviewFieldId(node.stable_key, `figure:${id}`)} key={id} className="review-content-item" data-content-type="figure" data-region-id={id}>
           <h4>図</h4><p className="muted">原問題用紙の図を確認し、確認結果を選択してください。</p>
           <button type="button" onClick={() => onRegion(id)}>図の原文と確認方法を表示</button>
           <p>{decision?.decision ? reviewDecisionLabel(decision.decision) : "要確認"}</p>

@@ -86,7 +86,17 @@ test("unified review registers rubric candidates separately from model answers",
     && response.request().method() === "PUT");
   await page.getByRole("button", { name: "下書き保存" }).click();
   expect((await savedDraft).status()).toBe(200);
-  await page.reload();
+  const savedState = await (await page.request.get(`/api/v1/model-answer-import-drafts/${draft.id}`)).json();
+  let resumeWrites = 0;
+  const monitorResume = (request: import("@playwright/test").Request) => {if(request.method() !== "GET") resumeWrites++;};
+  page.on("request", monitorResume);
+  await page.goto(`/tests/${testId}?section=answers`);
+  await page.getByRole("region", {name:"模範解答登録"})
+    .getByRole("button", {name:"unified-rubric-model-answer.pdfの前回の解析結果を編集"}).click();
+  await expect(page).toHaveURL(new RegExp(`/model-answer-import-reviews/${draft.id}$`));
+  expect(await (await page.request.get(`/api/v1/model-answer-import-drafts/${draft.id}`)).json()).toEqual(savedState);
+  expect(resumeWrites).toBe(0);
+  page.off("request", monitorResume);
   await page.getByLabel("編集対象").selectOption(`question:${rubricEntry.question_id}`);
   await expect(page.getByText(/採点基準候補（2件）/)).toBeVisible();
   await expect(page.getByLabel("グルーピングを確認しました").nth(1)).toBeChecked();

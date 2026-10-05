@@ -30,6 +30,7 @@ test("Question newline joining keeps the edit location and editor DOM identity",
   });
   await page.goto(`/question-import-reviews/${initial.id}`);
   const editor = page.getByLabel("問題文", {exact:true});
+  await expect(editor).toBeEditable();
   const original = await editor.inputValue();
   expect(original.split("\n").length).toBeGreaterThanOrEqual(3);
   const join = original.indexOf("\n",original.indexOf("2変数"));

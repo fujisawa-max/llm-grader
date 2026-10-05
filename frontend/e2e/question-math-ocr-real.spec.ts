@@ -195,6 +195,17 @@ test("sticky Question selection preserves local edits and split children keep ex
   const child = split.snapshot.nodes.find((n: {stable_key: string}) => n.stable_key === childKey);
   expect(child.source_review_owner).toBe(firstKey);
   expect(split.source_regions[childKey].length).toBeGreaterThan(0);
+  let resumeWrites = 0;
+  const monitorResume = (request: import("@playwright/test").Request) => {if(request.method() !== "GET") resumeWrites++;};
+  page.on("request", monitorResume);
+  await page.goto(`/tests/${testId}?section=questions`);
+  const sourceActions = page.getByRole("region", {name:"問題用紙登録"});
+  await sourceActions.getByRole("button", {name:"split-question.pdfの前回の解析結果を編集"}).click();
+  await expect(page).toHaveURL(new RegExp(`/question-import-reviews/${initial.id}$`));
+  await selector.selectOption(childKey);
+  expect(await read()).toEqual(split);
+  expect(resumeWrites).toBe(0);
+  page.off("request", monitorResume);
   const metadata = await (await page.request.get(`${path}/pages/0/metadata`)).json();
   expect(metadata.regions.some((r: {source_id: string}) => r.source_id === childKey)).toBe(true);
   expect(child.ordered_content.some((i: {type: string}) => i.type === "formula_region")).toBe(true);

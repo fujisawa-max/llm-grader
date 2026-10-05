@@ -1,6 +1,7 @@
 "use client";
 import {useEffect,useRef,useState} from "react";
 import {apiFetch} from "@/lib/api/client";
+import type {ReviewEntry} from "@/types/reviews";
 import {reviews} from "@/lib/api/reviews";
 import {useRouter} from "next/navigation";
 import {testData} from "@/lib/api/domain";
@@ -32,6 +33,8 @@ export function SourceUpload({testId,role,materials,students=[],submissions=[],r
  const [items,setItems]=useState<Item[]>([]);const [busy,setBusy]=useState(false);const [progress,setProgress]=useState("");const [notice,setNotice]=useState("");const [preview,setPreview]=useState<Material>(); const studentMode=role==="student_answer_source";
  const [answerAnalysis,setAnswerAnalysis]=useState(false);
  const [analysisStage,setAnalysisStage]=useState("");
+ const [questionReviews,setQuestionReviews]=useState<ReviewEntry[]>([]);
+ const [reviewDiscoveryError,setReviewDiscoveryError]=useState("");
  const [modelDrafts,setModelDrafts]=useState<Record<string,ModelAnswerImportDraftSummary[]>>({});
  useEffect(()=>{
    if(!answerAnalysis)return;
@@ -49,6 +52,28 @@ export function SourceUpload({testId,role,materials,students=[],submissions=[],r
    })).then(rows=>{if(active)setModelDrafts(Object.fromEntries(rows));});
    return ()=>{active=false;};
  },[materials,role,testId]);
+ useEffect(()=>{
+   if(role!=="question_sheet")return;
+   let active=true;
+   reviews.list(testId).then(rows=>{if(active){setQuestionReviews(rows);setReviewDiscoveryError("");}})
+     .catch(()=>{if(active)setReviewDiscoveryError("前回の確認情報を取得できませんでした。ページを再読み込みしてください。");});
+   return ()=>{active=false;};
+ },[materials,role,testId]);
+ function priorQuestionReview(material:Material){
+   // The existing import entry point stores a derived material containing the
+   // same PDF bytes. Match that persisted source identity within this Test.
+   return questionReviews.find(row=>Boolean(row.id)&&(row.material_id===material.id||Boolean(material.sha256&&row.source_pdf_sha256===material.sha256)));
+ }
+ async function openQuestionReview(material:Material,row:ReviewEntry){
+   if(!row.id||!row.resumable)return;
+   setBusy(true);setNotice("前回の解析結果を読み込んでいます…");
+   try {
+     const saved=await reviews.get(row.id);
+     if(saved.test_id!==testId||!material.sha256||saved.source_pdf_sha256!==material.sha256)
+       throw new Error("元資料との対応が変わっているため、前回の確認内容を開けません。資料を確認して再解析してください。");
+     router.push(`/question-import-reviews/${saved.id}`);
+   }catch(e){setNotice(e instanceof Error?e.message:"前回の確認内容を開けませんでした。");}finally{setBusy(false);}
+ }
  const inputRef=useRef<HTMLInputElement>(null);
  const rowSequence=useRef(0);
  const pending=items.filter(item=>item.state!=="登録済み");
@@ -57,6 +82,7 @@ export function SourceUpload({testId,role,materials,students=[],submissions=[],r
  const canRegister=!busy&&hasUploadable&&!mappingIncomplete;
  const router=useRouter();
  async function reviewPdf(material:Material){
+   if(priorQuestionReview(material)&&!window.confirm("再解析すると新しい確認内容を作成します。前回の保存済み内容は保持されます。続行しますか？"))return;
    setBusy(true);setNotice("PDFの問題構造を解析しています…");
    try {
      const response=await fetch(testData.materialFileUrl(testId,material.id),{credentials:"include"});
@@ -150,7 +176,17 @@ export function SourceUpload({testId,role,materials,students=[],submissions=[],r
  <div className="source-table-scroll">{items.length>0&&<table className="table"><thead><tr><th>順序 / ファイル</th>{studentMode&&<><th>学生の対応</th><th>学籍番号 / 氏名</th></>}<th>登録状態</th><th>操作</th></tr></thead><tbody>{items.map((x,i)=><tr key={x.id}><td>{i+1}. {x.file.name}</td>{studentMode&&<><td><select aria-label={`学生 ${i+1}`} disabled={busy||x.state==="登録済み"} value={x.studentId} onChange={e=>{const s=students.find(s=>s.id===e.target.value);patch(x.id,{studentId:e.target.value,number:s?.student_identifier||"",name:s?.display_name||""});}}><option value="">学籍番号を入力</option>{students.map(s=><option key={s.id} value={s.id}>{s.student_identifier} {s.display_name}</option>)}</select></td><td><input aria-label={`学籍番号 ${i+1}`} disabled={busy||!!x.studentId||x.state==="登録済み"} value={x.number} onChange={e=>patch(x.id,{number:e.target.value})}/><input aria-label={`氏名 ${i+1}`} disabled={busy||!!x.studentId||x.state==="登録済み"} value={x.name} onChange={e=>patch(x.id,{name:e.target.value})}/></td></>}<td>{x.state}{x.error&&<p role="alert">{x.error}</p>}</td><td><div className="actions"><button type="button" disabled={busy||i===0||x.state==="登録済み"} onClick={()=>move(i,-1)} aria-label={`上へ ${i+1}`}>↑</button><button type="button" disabled={busy||i===items.length-1||x.state==="登録済み"} onClick={()=>move(i,1)} aria-label={`下へ ${i+1}`}>↓</button><button type="button" disabled={busy||x.state==="登録済み"} onClick={()=>removeItem(x.id)}>取り消し</button></div></td></tr>)}</tbody></table>}</div>
  <p role="status">{progress||notice}</p><p>{captions[role]}: {registered.length}ファイル登録済み{studentMode?` / 学生答案 ${submissions.length}件`:""}</p>
  <div className="actions">{registered.map((m,i)=><button className="button secondary" key={m.id} onClick={()=>setPreview(m)}>{i+1}. {m.original_filename||"登録資料"}を確認</button>)}</div>
- {role==="question_sheet"&&registered.filter(m=>m.mime_type==="application/pdf").map(m=><button className="button secondary" disabled={busy} key={m.id} onClick={()=>void reviewPdf(m)}>{m.original_filename}を解析して設問を確認</button>)}
+ {role==="question_sheet"&&reviewDiscoveryError&&<p role="alert">{reviewDiscoveryError}</p>}
+ {role==="question_sheet"&&registered.filter(m=>m.mime_type==="application/pdf").map(m=>{
+   const previous=priorQuestionReview(m);
+   return <div className="question-source-actions" key={m.id}>
+     {previous&&<>
+       {previous.resumable?<button className="button" disabled={busy} onClick={()=>void openQuestionReview(m,previous)}>{m.original_filename}の前回の解析結果を編集</button>
+         :<p role="status">前回の確認内容は元資料との対応を検証できないため再開できません。資料を確認して再解析してください。</p>}
+     </>}
+     <button className="button secondary" disabled={busy} onClick={()=>void reviewPdf(m)}>{m.original_filename}{previous?"を再解析する":"を解析して設問を確認"}</button>
+   </div>;
+ })}
  {role==="model_answer_source"&&registered.filter(m=>m.mime_type==="application/pdf").map(m=>{
    const drafts=modelDrafts[m.id]||[];
    const latestEditable=drafts.find(draft=>draft.resumable&&(!m.sha256||draft.source_sha256===m.sha256));

@@ -136,6 +136,7 @@ export interface ModelAnswerDraftEntryUpdate {
 }
 
 export interface ModelAnswerQuestionChoice {
+  max_points?: number | null;
   id: string;
   label: string;
   display_label: string;

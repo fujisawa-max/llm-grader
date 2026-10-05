@@ -49,7 +49,7 @@ test("sampleQ1 native-only page, tree, score, save and reviewed", async ({ page 
   expect((await result.json() as ReviewDocument).snapshot.vision_pin.results).toHaveLength(0);
   await page.getByRole("link", { name: "← 試験の問題画面に戻る" }).click();
   await expect(page.getByRole("heading", { name: "問題の読み取り確認" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "確認を再開" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "前回の解析結果を編集" })).toBeVisible();
 });
 
 test("sampleQ2 formula, warnings, all node operations, reload and real stale-tab conflict", async ({ page, context }) => {

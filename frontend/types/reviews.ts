@@ -84,6 +84,7 @@ export interface RevisionInfo {
   change_metadata: { changed_nodes?: string[]; state?: string };
 }
 export interface ReviewEntry {
+  material_id: string; source_pdf_sha256: string; resumable: boolean; resume_error_code: string | null;
   id: string | null; draft_id: string; source_filename: string; draft_created_at: string;
   parser_version: string; question_count: number; review_required: boolean; warning_count: number;
   has_vision: boolean; state: string; current_revision: number | null;

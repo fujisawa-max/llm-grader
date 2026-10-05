@@ -12,7 +12,9 @@ import { EvidencePanel } from "./EvidencePanel";
 import { WarningPanel } from "./WarningPanel";
 import { MarkdownMathText } from "@/components/MarkdownMathText";
 import { clearTextSourceMapping, mapCandidateToSources, suggestSubquestions, type SplitProposal } from "@/lib/questionSplit";
-import { formulaIsConfirmed } from "@/lib/formulaConfirmation";
+import { questionReviewIssues } from "@/lib/questionReviewIssues";
+import { focusReviewIssue, type ReviewIssueTarget } from "@/lib/reviewIssues";
+import { ReviewIssueList } from "./ReviewIssueList";
 import { questionTextBuffer, bufferChanged, reconcileQuestionText, type QuestionTextBuffer } from "@/lib/questionEditing";
 import type { LatexProposal } from "@/lib/api/textTools";
 import { collectScoreGuidance, isDetailedScoreGuidanceCode, scoreDifference, scoreDisplay, uncoveredScoreWarnings } from "@/lib/importPlanGuidance";
@@ -53,6 +55,8 @@ export function ReviewWorkspace({ id }: { id: string }) {
   const [regionId, setRegionId] = useState("");
   const [page, setPage] = useState(0);
   const [error, setError] = useState("");
+  const [showIssues, setShowIssues] = useState(false);
+  const [blockingIssueType, setBlockingIssueType] = useState("");
   const [internalError, setInternalError] = useState<{ path: string; code: string } | null>(null);
   const [fieldIssues, setFieldIssues] = useState<FieldIssues>({});
   const [busy, setBusy] = useState(false);
@@ -72,8 +76,12 @@ export function ReviewWorkspace({ id }: { id: string }) {
     return d.snapshot.nodes.some(node => node.stable_key === desired) ? desired! : d.snapshot.nodes[0]?.stable_key || "";
   }); }, [id]);
   const load = useCallback(async (revision?: number) => {
-    setBusy(true); setError(""); setFieldIssues({}); setInternalError(null);
-    try { install(await reviews.get(id, revision)); setPlan(undefined); setSplitProposal(null); setPendingUnmappedOverride(null); setConfirmation(await reviews.confirmation(id)); setHistorical(!!revision); setHistory((await reviews.history(id)).revisions); }
+    setBusy(true); setError(""); setFieldIssues({}); setInternalError(null); setBlockingIssueType("");
+    try {
+      const [saved, confirmation, history] = await Promise.all([reviews.get(id, revision), reviews.confirmation(id), reviews.history(id)]);
+      install(saved); setPlan(undefined); setSplitProposal(null); setPendingUnmappedOverride(null);
+      setConfirmation(confirmation); setHistorical(!!revision); setHistory(history.revisions);
+    }
     catch (e) { setError(message(e)); } finally { setBusy(false); }
   }, [id, install]);
   useEffect(() => { void load(); }, [load]);
@@ -139,15 +147,18 @@ export function ReviewWorkspace({ id }: { id: string }) {
     setTextBuffers(previous => ({...previous, [node.stable_key]: questionTextBuffer(confirmed, document.regions)}));
   }
   function jumpToField(issue: ReviewFieldError) {
-    setSelected(issue.nodeKey); setRegionId("");
-    window.setTimeout(() => {
-      const target = window.document.getElementById(issue.fieldKey.startsWith("text:") || issue.fieldKey.startsWith("formula:")
-        ? reviewFieldId(issue.nodeKey, "content") : issue.targetId);
-      target?.scrollIntoView({ block: "center", behavior: "smooth" });
-      const focusable = target?.matches("input,textarea,select") ? target : target?.querySelector("input,textarea,select,button");
-      (focusable as HTMLElement | null)?.focus({ preventScroll: true });
-    }, 50);
+    navigateIssue({id: `${issue.nodeKey}:${issue.fieldKey}`, domain: "question", questionKey: issue.nodeKey,
+      path: issue.path, issueType: issue.fieldKey, message: issue.message,
+      targetId: issue.fieldKey.startsWith("text:") || issue.fieldKey.startsWith("formula:")
+        ? reviewFieldId(issue.nodeKey, "content") : issue.targetId});
   }
+  function navigateIssue(issue: ReviewIssueTarget) {
+    const target = current.nodes.find(candidate => candidate.stable_key === issue.questionKey);
+    if (target) chooseNode(target);
+    if (issue.itemId) chooseRegion(issue.itemId);
+    focusReviewIssue(issue);
+  }
+
   function chooseNode(n: ReviewNode) {
     setSelected(n.stable_key); setRegionId(""); setSplitProposal(null); setSplitMessage(""); setPendingUnmappedOverride(null);
     const key = sourceKey(n);
@@ -180,12 +191,14 @@ export function ReviewWorkspace({ id }: { id: string }) {
         return;
       }
     }
-    setBusy(true); setError("");
+    setBusy(true); setError(""); setBlockingIssueType("");
     try {
       const d = mark ? await reviews.reviewed(id, document.current_revision) : await reviews.save(id, saving, document.current_revision);
       install(d); setFieldIssues({}); setInternalError(null); setHistory((await reviews.history(id)).revisions);
     } catch (e) {
-      if (!mark && e instanceof ApiRequestError && e.status === 422) {
+      if (e instanceof ApiRequestError && e.status === 422) {
+        const blockingType = ({formula_review_required: "formula", figure_review_required: "figure", warning_review_required: "warning", warning_acknowledgement_required: "warning"} as Record<string, string>)[e.code || ""];
+        if (blockingType) { setBlockingIssueType(blockingType); setFieldIssues({}); setShowIssues(true); return; }
         const details = e.details && typeof e.details === "object" ? e.details as Record<string, unknown> : {};
         if (details.category === "internal_consistency" || ["invalid_source_slice", "source_anchor_changed"].includes(e.code || "")) {
           const key = typeof details.node_key === "string" && current.nodes.some(n => n.stable_key === details.node_key)
@@ -213,10 +226,11 @@ export function ReviewWorkspace({ id }: { id: string }) {
       setSnapshot({ ...current, state: "editing", reviewed: false });
     }
     setPlan(undefined);
-    chooseNode(target);
-    window.setTimeout(() => window.document.getElementById(reviewFieldId(target.stable_key, "node"))
-      ?.scrollIntoView({ block: "center", behavior: "smooth" }), 50);
+    navigateIssue({id: `score:${key}`, domain: "question", questionKey: key,
+      path: buildQuestionPath(key, current.nodes), issueType: "score", message: "配点を確認",
+      targetId: reviewFieldId(key, "score_method")});
   }
+
   function add(child: boolean) {
     const key = newReviewKey();
     const n: ReviewNode = { review_node_id: key, stable_key: key, source_draft_stable_key: null, source_draft_node_id: null,
@@ -370,28 +384,10 @@ export function ReviewWorkspace({ id }: { id: string }) {
   const activeSourceOwners = new Set(current.nodes.filter(entry => entry.included).map(entry => sourceKey(entry)).filter(Boolean));
   const formulaRegions = document.regions.filter(entry => entry.region_type === "formula" && entry.assigned_question_key &&
     activeSourceOwners.has(entry.assigned_question_key));
-  const formulaReviewed = formulaRegions.filter(entry => {
-    const decisionNode = current.nodes.find(candidate => sourceKey(candidate) === entry.assigned_question_key && candidate.formula_decisions[entry.region_id]);
-    return formulaIsConfirmed(decisionNode?.formula_decisions[entry.region_id]);
-  }).length;
-  const formulaUnreviewed = formulaRegions.length - formulaReviewed;
-  function jumpToUnreviewedFormula() {
-    const pending = formulaRegions.find(entry => {
-      const decisionNode = current.nodes.find(candidate => sourceKey(candidate) === entry.assigned_question_key && candidate.formula_decisions[entry.region_id]);
-      return !formulaIsConfirmed(decisionNode?.formula_decisions[entry.region_id]);
-    });
-    if (!pending) return;
-    const target = regionOwner(pending.region_id) || current.nodes.find(candidate => candidate.source_draft_stable_key === pending.assigned_question_key);
-    if (!target) return;
-    chooseNode(target); chooseRegion(pending.region_id);
-    window.setTimeout(() => {
-      const mergedIndex = target.ordered_content.findIndex(item => item.type === "text" &&
-        Array.isArray(item.merged_source_segments) && item.merged_source_segments.some(segment => segment.region_id === pending.region_id));
-      const element = window.document.getElementById(reviewFieldId(target.stable_key,
-        mergedIndex >= 0 ? `text:${mergedIndex}` : `formula:${pending.region_id}`));
-      element?.scrollIntoView({ block: "center", behavior: "smooth" });
-    }, 50);
-  }
+  const reviewIssues = questionReviewIssues(document, current, sourceKey, regionOwner);
+  const formulaUnreviewed = reviewIssues.filter(issue => issue.issueType === "formula").length;
+  const formulaReviewed = formulaRegions.length - formulaUnreviewed;
+  const blockingIssues = reviewIssues.filter(issue => issue.issueType === blockingIssueType);
   const saveErrors = reviewFieldErrors(current.nodes, fieldIssues);
   const activeSourceKey = sourceKey(node);
   const activeRegions = document.regions.filter(r => r.assigned_question_key === activeSourceKey &&
@@ -408,49 +404,38 @@ export function ReviewWorkspace({ id }: { id: string }) {
   const blockerCount = generalBlockers.length + blockerScoreGuidance.length;
   const warningCount = generalWarnings.length + independentWarningScoreGuidance.length;
   function warningTarget(warning: typeof document.warnings[number]) {
-    const relevant = document.regions.find(r => r.region_id === warning.source_id);
-    const target = relevant && regionOwner(relevant.region_id) || current.nodes.find(n => n.source_draft_stable_key === (relevant?.assigned_question_key || warning.owner || warning.source_id));
-    if (relevant && target) {
-      const kind = relevant.region_type === "formula" ? "formula_region" : "figure_region";
-      const number = target.ordered_content.filter(item => item.type === kind).findIndex(item => "region_id" in item && item.region_id === relevant.region_id) + 1;
-      if (!number && relevant.region_type === "formula") {
-        const decision = target.formula_decisions[relevant.region_id]?.decision;
-        if (decision === "merged_into_text") return `${target.label.raw}・問題文に結合した数式`;
-        if (decision === "excluded") return `${target.label.raw}・問題内容から除外した数式`;
-      }
-      return `${target.label.raw}・${relevant.region_type === "formula" ? "数式" : "図"} ${Math.max(1, number)}`;
-    }
-    return target?.label.raw || (warning.scope === "draft" ? "試験全体" : "該当する設問");
+    const issue = reviewIssues.find(issue => issue.id === warning.id);
+    if (issue) return issue.path;
+    const relevant = document.regions.find(region => region.region_id === warning.source_id);
+    const target = relevant && regionOwner(relevant.region_id) || current.nodes.find(candidate =>
+      candidate.stable_key === warning.owner || sourceKey(candidate) === warning.owner);
+    return target ? buildQuestionPath(target.stable_key, current.nodes) : "試験全体";
   }
   function jumpToWarning(warning: typeof document.warnings[number]) {
-    const relevant = document.regions.find(r => r.region_id === warning.source_id);
-    const target = relevant && regionOwner(relevant.region_id) || current.nodes.find(n => n.source_draft_stable_key === (relevant?.assigned_question_key || warning.owner || warning.source_id));
-    if (target) chooseNode(target);
-    if (relevant) chooseRegion(relevant.region_id);
-    window.setTimeout(() => {
-      const mergedIndex = target?.ordered_content.findIndex(item => item.type === "text" &&
-        Array.isArray(item.merged_source_segments) && item.merged_source_segments.some(
-          segment => segment.type === "formula_region" && segment.region_id === relevant?.region_id));
-      const element = (mergedIndex !== undefined && mergedIndex >= 0
-        ? window.document.getElementById(reviewFieldId(target?.stable_key || "", `text:${mergedIndex}`)) : null)
-        || (relevant && target ? window.document.getElementById(reviewFieldId(target.stable_key, `${relevant.region_type}:${relevant.region_id}`)) : null)
-        || window.document.querySelector("[aria-label='選択問題エディタ']");
-      element?.scrollIntoView({ block: "center", behavior: "smooth" });
-    }, 50);
+    const issue = reviewIssues.find(issue => issue.id === warning.id);
+    if (issue) navigateIssue(issue);
   }
   return <div className="teacher-review">
     <Link href={`/tests/${document.test_id}?section=questions`}>← 試験の問題画面に戻る</Link>
     <header className="review-toolbar"><h1>教師による確認</h1><span className="badge badge-draft">{reviewStateLabel(current.state)}</span><span>修正版 {document.revision_number}</span>{dirty && <strong className="warn">未保存の変更</strong>}</header>
     <p className="muted">元の問題用紙と自動解析結果を比較し、設問構造や内容を確認・修正します。ここでの確認は、設問の最終確定とは別の操作です。</p>
     <div className="review-summary" aria-label="確認状況">
-      <span>設問 {counts.included_questions} / 除外 {counts.excluded_questions}</span><button type="button" onClick={() => { const first = document.warnings.find(w => (current.warning_states?.[w.id]?.state || "unreviewed") === "unreviewed"); if (first) jumpToWarning(first); }}>警告 未確認 {counts.unresolved_warnings} · 対象へ移動</button>
+      <span>設問 {counts.included_questions} / 除外 {counts.excluded_questions}</span><button type="button" onClick={() => setShowIssues(value => !value)}>警告 未確認 {reviewIssues.filter(issue => issue.issueType === "warning").length} · 未確認を表示</button>
       {formulaUnreviewed > 0
-        ? <button type="button" onClick={jumpToUnreviewedFormula}>数式 確認済み {formulaReviewed} / {formulaRegions.length} · 未確認 {formulaUnreviewed} · 未確認を表示</button>
+        ? <button type="button" onClick={() => setShowIssues(value => !value)}>数式 確認済み {formulaReviewed} / {formulaRegions.length} · 未確認 {formulaUnreviewed} · 未確認を表示</button>
         : <span>数式 確認済み {formulaReviewed} / {formulaRegions.length} · 未確認 0</span>}
-      <span>図 確認済み {counts.figure_reviewed} / 未確認 {counts.figure_unreviewed}</span>
-      <span>配点 未解決 {counts.score_unresolved} · 合計点候補 {counts.total_points_candidate ?? "要確認"}</span>
+      <button type="button" onClick={() => setShowIssues(value => !value)}>図 未確認 {reviewIssues.filter(issue => issue.issueType === "figure").length} · 未確認を表示</button>
+      <button type="button" onClick={() => setShowIssues(value => !value)}>配点 未解決 {reviewIssues.filter(issue => issue.issueType === "score").length} · 合計点候補 {counts.total_points_candidate ?? "要確認"}</button>
       {dirty && <span>集計は保存済みの修正版の値です</span>}
     </div>
+    {showIssues && <section className="panel" aria-label="未確認の設問一覧">
+      <h2>確認が必要な設問</h2>
+      {reviewIssues.length ? <ReviewIssueList issues={reviewIssues} onNavigate={navigateIssue} /> : <p>未確認の項目はありません。</p>}
+    </section>}
+    {blockingIssues.length > 0 && <section className="error" role="alert" aria-label="確認エラー">
+      <strong>確認を完了できませんでした。未確認の項目が{blockingIssues.length}件あります。</strong>
+      <ReviewIssueList issues={blockingIssues} onNavigate={navigateIssue} label="確認を妨げる項目" />
+    </section>}
     {error && <p role="alert" className="error">{error}</p>}
     {saveErrors.length > 0 && <section className="review-save-errors error" role="alert" aria-label="保存エラー">
       <strong>保存できませんでした。{saveErrors.length}件の項目を確認してください。</strong>

@@ -82,7 +82,7 @@ test("review disposition, manual answer, navigation and in-pane PDF zoom persist
   await expect(validation).toContainText("模範解答本文が空");
   await validation.getByRole("button", { name: /模範解答本文が空.*該当候補を表示/ }).click();
   await expect(page.locator(".model-answer-candidate-validation")).toContainText("模範解答本文が空");
-  await expect(page.locator(".model-answer-import-entry:focus")).toHaveCount(1);
+  await expect(page.locator(".model-answer-import-entry textarea:focus")).toHaveCount(1);
   await page.getByLabel("模範解答本文 4").fill("Teacher-authored answer.");
   await expect(validation).toHaveCount(0);
   await page.getByRole("button", { name: "下書き保存" }).click();
