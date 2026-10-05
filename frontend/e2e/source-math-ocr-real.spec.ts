@@ -22,6 +22,8 @@ test("source fractions: spinner, explicit apply, saved/formal isolation and warm
   const response = page.waitForResponse(r => r.url().endsWith("/math-ocr"));
   await control.getByRole("button", {name:"数式をLaTeX化"}).click();
   await expect(control.locator(".processing-spinner")).toBeVisible();
+  await expect(control).toHaveAttribute("aria-busy", "true");
+  await expect(control.getByRole("button", {name:"この変換を適用"})).toHaveCount(0);
   await expect(control.getByRole("button", {name:"数式をLaTeX化"})).toBeDisabled();
   const received = await response;
   expect(received.status()).toBe(200);
@@ -57,8 +59,9 @@ test("source fractions: spinner, explicit apply, saved/formal isolation and warm
   await control.getByText("候補ごとの検証", {exact:true}).click();
   await expect(control.getByRole("region", {name:"OCR候補 2", exact:true})).toContainText("效");
   await expect(control.locator(".katex").first()).toBeVisible();
-  await expect(control.getByRole("button", {name:"この変換を適用"})).toBeDisabled();
-  await control.getByRole("checkbox").check();
+  await expect(control.getByRole("checkbox")).toHaveCount(0);
+  await expect(control).not.toContainText("変換案を確認しました。");
+  await expect(control.getByText("適用後も数式は編集できます。", {exact:true})).toBeVisible();
   await expect(control.getByRole("button", {name:"この変換を適用"})).toBeEnabled();
   await expect(editor).toHaveValue(original);
   const cold = await (await page.request.get(`${manager}/runtimes/math_ocr/status`)).json();
@@ -88,10 +91,12 @@ test("source fractions: spinner, explicit apply, saved/formal isolation and warm
   await control.getByRole("button", {name:"キャンセル"}).click();
   await page.unroute("**/math-ocr");
   await control.getByRole("button", {name:"数式をLaTeX化"}).click();
-  await control.getByRole("checkbox").check();
-  await control.getByRole("button", {name:"この変換を適用"}).click();
+  await control.getByRole("button", {name:"この変換を適用"}).press("Enter");
   await expect(editor).toHaveValue(/\\frac\{TP\}\{TP\+FP\}/);
-  const normalized = await editor.inputValue();
+  const applied = await editor.inputValue();
+  const normalized = applied.replace("Precision=", "\\mathrm{Precision}=")+"\n教師の確認メモ";
+  await editor.fill(normalized);
+  await expect(editor).toHaveValue(normalized);
   expect(normalized).toContain("Answer: 0.800 (80%)");
   let server = await (await page.request.get(`/api/v1/model-answer-import-drafts/${id}`)).json();
   expect(server.entries[0].answer_text).toBe(original);

@@ -14,10 +14,9 @@ export function LatexNormalizationControl({text, contextType, contextLabel = "",
   const [busy, setBusy] = useState(false);
   const [proposal, setProposal] = useState<LatexProposal | null>(null);
   const [error, setError] = useState("");
-  const [confirmed, setConfirmed] = useState(false);
   async function suggest() {
     if (text.length > 12000) {setError("LaTeX変換の本文は12,000文字以内にしてください。元の本文は保持されています。"); return;}
-    setBusy(true); setProposal(null); setError(""); setConfirmed(false);
+    setBusy(true); setProposal(null); setError("");
     try { setProposal(source ? await mathOCR(source, text) : await normalizeLatex(text, contextType, contextLabel)); }
     catch (cause) { setError(latexErrorMessage(cause)); }
     finally { setBusy(false); }
@@ -53,10 +52,10 @@ export function LatexNormalizationControl({text, contextType, contextLabel = "",
         </details>
       </details>)}
       {proposal.warnings.map((warning, i) => <p role="alert" key={i}>{warning}</p>)}
-      {proposal.status === "ambiguous" && <label><input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} />数式構造に曖昧さがあります。変換案を確認しました。</label>}
       {mathError && <p role="alert">数式を表示できません。構文を確認してください。</p>}
       {stale && <p role="alert">本文が変更されています。変換案を作り直してください。</p>}
-      <div className="actions"><button type="button" className="button" disabled={disabled || !!stale || mathError || proposal.status === "rejected" || proposal.status === "no_change" || (proposal.status === "ambiguous" && !confirmed)} onClick={() => {onApply(proposal.normalized_text, {...proposal, math_regions: proposal.math_regions?.map(({crop_image: _image, raw_response: _raw, ricoh_raw_response: _ricoh, ornith_raw_response: _ornith, ...region}) => region)}); setProposal(null);}}>この変換を適用</button>
+      <p className="muted">適用後も数式は編集できます。</p>
+      <div className="actions"><button type="button" className="button" disabled={disabled || busy || !!stale || mathError || !["safe", "ambiguous"].includes(proposal.status)} onClick={() => {onApply(proposal.normalized_text, {...proposal, math_regions: proposal.math_regions?.map(({crop_image: _image, raw_response: _raw, ricoh_raw_response: _ricoh, ornith_raw_response: _ornith, ...region}) => region)}); setProposal(null);}}>この変換を適用</button>
         <button type="button" className="button secondary" onClick={() => setProposal(null)}>キャンセル</button></div>
     </section>}
   </section>;

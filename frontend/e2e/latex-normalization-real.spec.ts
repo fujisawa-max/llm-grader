@@ -50,9 +50,8 @@ test("on-demand LaTeX proposals preserve answer and rubric text across reload", 
   expect(calls).toBe(beforeReload);
   await answer.fill("Accuracy = TP+TN / TP+FP+FN+TN");
   await control.getByRole("button", {name: "数式をLaTeX化"}).click();
-  await expect(control.getByRole("button", {name: "この変換を適用"})).toBeDisabled();
-  await expect(control.getByRole("checkbox")).toBeVisible();
-  await control.getByRole("checkbox").check();
+  await expect(control.getByRole("checkbox")).toHaveCount(0);
+  await expect(control.getByText("適用後も数式は編集できます。", {exact:true})).toBeVisible();
   await expect(control.getByRole("button", {name: "この変換を適用"})).toBeEnabled();
   await control.getByRole("button", {name: "キャンセル"}).click();
   await answer.fill("[latex_failure]");
