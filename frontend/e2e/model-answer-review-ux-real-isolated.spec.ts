@@ -5,6 +5,7 @@ const questionIds: string[] = JSON.parse(process.env.REVIEW_UX_QUESTION_IDS || "
 test.skip(!testId, "requires isolated real API, production frontend and managed classifier stub");
 
 test("review disposition, manual answer, navigation and in-pane PDF zoom persist", async ({ page }) => {
+  await page.setViewportSize({width:1920,height:1080});
   const pageErrors: string[] = [];
   const createRequests: string[] = [];
   const classifyRequests: string[] = [];
@@ -37,6 +38,41 @@ test("review disposition, manual answer, navigation and in-pane PDF zoom persist
   await expect(page.getByRole("group", { name: "登録済み模範解答" })).toContainText("未登録");
   await expect(page.locator(".model-answer-review-toolbar").getByRole("button", { name: "下書き保存" })).toBeVisible();
   const viewer = page.getByRole("region", { name: "模範解答PDF" });
+  const targetPicker = page.getByLabel("編集対象", {exact: true});
+  const stickyControls = page.locator(".model-answer-review-controls");
+  await expect(targetPicker).toHaveCount(1);
+  await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+  await expect(targetPicker).toBeInViewport();
+  await expect(page.getByRole("button", {name:"下書き保存", exact:true})).toBeInViewport();
+  const headerBottom = await page.locator(".header").evaluate(element => element.getBoundingClientRect().bottom);
+  const controlsBox = (await stickyControls.boundingBox())!;
+  expect(controlsBox.y).toBeGreaterThanOrEqual(headerBottom);
+  await targetPicker.selectOption(`question:${questionIds[1]}`);
+  await expect(page.getByLabel("模範解答本文 2", {exact:true})).toBeVisible();
+  await targetPicker.selectOption(`question:${questionIds[0]}`);
+  await expect(page.getByLabel("模範解答本文 1", {exact:true})).toBeVisible();
+  const source = page.locator(".model-answer-import-source");
+  await expect.poll(async () => {
+    const controls = (await stickyControls.boundingBox())!;
+    const pdf = (await source.boundingBox())!;
+    return pdf.y >= controls.y + controls.height;
+  }).toBe(true);
+  const pdfHeight = (await viewer.locator(".pdf-pane-viewport").boundingBox())!.height;
+  expect(pdfHeight).toBeGreaterThan(page.viewportSize()!.height * .5);
+  expect((await source.boundingBox())!.y + (await source.boundingBox())!.height).toBeLessThanOrEqual(page.viewportSize()!.height);
+  // Wrapped controls and stacked narrow screens retain one accessible selector.
+  await page.setViewportSize({width:1000,height:900});
+  await expect.poll(async () => {
+    const controls = (await stickyControls.boundingBox())!;
+    const pdf = (await source.boundingBox())!;
+    return pdf.y >= controls.y + controls.height;
+  }).toBe(true);
+  await page.setViewportSize({width:700,height:900});
+  await expect.poll(() => source.evaluate(element => getComputedStyle(element).position)).toBe("static");
+  await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+  await expect(targetPicker).toBeInViewport();
+  await expect(targetPicker).toHaveCount(1);
+  await page.setViewportSize({width:1920,height:1080});
   await expect(viewer.getByRole("button", { name: "拡大" })).toBeEnabled();
   await viewer.getByRole("button", { name: "拡大" }).click();
   await expect(viewer.getByLabel(/表示倍率/)).not.toHaveText("100%");

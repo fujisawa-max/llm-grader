@@ -135,3 +135,21 @@
 @media (prefers-reduced-motion: reduce) { .processing-spinner { animation: none; } }
 
 .review-question-selector{position:sticky;top:12px;z-index:8;background:var(--panel,#fff)}.review-question-selector label{display:grid;gap:8px}.review-question-selector select{width:100%;font:inherit;padding:10px;min-width:0}.review-question-selector .review-toolbar{margin-bottom:0}.review-fields [aria-label="問題文"]{min-height:240px}
+
+/* Answer review controls share one sticky boundary; the selector's short
+   wrapper must not constrain sticky positioning. */
+.model-answer-import-review{--answer-review-sticky-top:64px;--answer-review-controls-height:140px;--answer-review-pdf-top:calc(var(--answer-review-sticky-top) + var(--answer-review-controls-height) + 12px)}
+.model-answer-review-controls{position:sticky;top:var(--answer-review-sticky-top);z-index:55;display:grid;gap:10px;padding:12px;margin:14px 0;background:var(--paper);border:1px solid var(--line);border-radius:8px;box-shadow:0 3px 10px #24344718}
+.model-answer-review-controls .model-answer-review-toolbar{position:static;margin:0;padding:0;border:0;box-shadow:none}
+.model-answer-review-controls .model-answer-target-picker{position:static;margin:0;padding:0;border:0}
+.model-answer-review-controls .model-answer-target-picker .field{width:100%;min-width:0}
+.model-answer-import-review .model-answer-import-source{top:var(--answer-review-pdf-top);height:calc(100vh - var(--answer-review-pdf-top) - 44px);height:calc(100dvh - var(--answer-review-pdf-top) - 44px);display:flex;flex-direction:column;min-height:0}
+.model-answer-import-source>h2{flex:none;margin:0 0 12px}
+.model-answer-import-source .pdf-pane-viewer{display:flex;flex-direction:column;flex:1;min-height:0}
+.model-answer-import-source .pdf-pane-toolbar{flex:none}
+.model-answer-import-source .pdf-pane-viewport{flex:1;min-height:0;height:auto}
+@media(max-width:900px),(max-height:560px){
+  .model-answer-import-review .model-answer-import-source{position:static;height:auto}
+  .model-answer-import-source .pdf-pane-viewer{display:block}
+  .model-answer-import-source .pdf-pane-viewport{height:480px}
+}
