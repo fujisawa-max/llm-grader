@@ -91,3 +91,34 @@ test("explicit deletion excludes only that source formula and retains immutable 
   expect("merged_source_segments" in removed.ordered_content[1] && removed.ordered_content[1].merged_source_segments).toEqual([]);
   expect(region.source_element_ids).toEqual(["native-math"]);
 });
+
+test("explicit reconciliation of a deleted item separator retains both native anchors", () => {
+  const n = node();
+  n.ordered_content = ["2変数 x1, x2 に対して、", "x1 + x2 - 3 の値が", "0以上ならクラス1"].map((text,order) =>
+    ({type:"text",text,order,source_element_ids:[`source-${order}`],page_index:0,source_slice:[0,text.length,text.length]}));
+  const before = structuredClone(n);
+  const value = questionContent(n,[]).text.replace("\n", "");
+  const edited = editQuestionContent(n,[],value)!;
+  expect(questionContent(edited,[]).text).toBe(value);
+  expect(edited.ordered_content[0].source_element_ids).toEqual(["source-0"]);
+  const first = edited.ordered_content[0];
+  expect("merged_source_segments" in first && first.merged_source_segments).toContainEqual(expect.objectContaining({source_element_ids:["source-1"]}));
+  expect(edited.ordered_content[1]).toEqual({...before.ordered_content[2],order:1});
+  expect(n).toEqual(before);
+});
+test("native formula text edit preserves its exact raw spelling until explicit review", () => {
+  const n = node();
+  const value = questionContent(n,[region]).text.replace("𝑇𝑃+𝐹𝑃=24", "𝑇𝑃-𝐹𝑃=24");
+  const edited = editQuestionContent(n,[region],value)!;
+  expect(questionContent(edited,[region]).text).toBe(value);
+  expect(edited.ordered_content).toEqual(n.ordered_content);
+  expect(edited.formula_decisions.formula).toMatchObject({decision:"teacher_edit",teacher_transcription:"𝑇𝑃-𝐹𝑃=24",confirmation_status:"unreviewed"});
+});
+test("explicit newline insertion at a native item edge preserves every newline and source anchor", () => {
+  const n = node();
+  n.ordered_content = [{type:"text",order:0,text:"先頭",source_element_ids:["a"]},{type:"text",order:1,text:"次行",source_element_ids:["b"]}];
+  const value = "先頭\n\n次行";
+  const edited = editQuestionContent(n,[],value)!;
+  expect(questionContent(edited,[]).text).toBe(value);
+  expect(edited.ordered_content.flatMap(item => item.source_element_ids || [])).toEqual(["a","b"]);
+});

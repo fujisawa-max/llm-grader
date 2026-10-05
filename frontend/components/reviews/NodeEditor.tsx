@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
 import type { AutomaticNode, Region, ReviewNode } from "@/types/reviews";
 import { questionTypeLabel, reviewDecisionLabel, scoreSemanticsLabel } from "@/lib/reviewLabels";
 import { MarkdownMathText, MarkdownMathPreview, markdownMathHelp } from "@/components/MarkdownMathText";
@@ -7,10 +7,12 @@ import { reviewFieldId } from "@/lib/reviewValidation";
 import { effectiveQuestionScore } from "@/lib/questionScores";
 import { LatexNormalizationControl } from "@/components/LatexNormalizationControl";
 import { questionMathSource, questionMathReference } from "@/lib/questionMathSource";
-import { questionContent, editQuestionContent } from "@/lib/questionContent";
 import type { LatexProposal } from "@/lib/api/textTools";
 
-export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange, onParent, onMove, onRegion, activeRegionId, renderEvidence, issues = {}, mathContext }: {
+export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange, onParent, onMove, onRegion, activeRegionId, renderEvidence, issues = {}, mathContext, content, contentChanged, onContentChange, onConfirmContent }: {
+  content: string; contentChanged: boolean;
+  onContentChange: (text: string, proposal?: LatexProposal) => void;
+  onConfirmContent: (confirm: (node: ReviewNode) => ReviewNode) => void;
   mathContext?: {reviewId: string; revision: number; savedNode?: ReviewNode};
   node: ReviewNode; nodes: ReviewNode[]; automatic?: AutomaticNode; regions: Region[]; readonly: boolean;
   onChange: (node: ReviewNode) => void; onParent: (key: string | null) => void;
@@ -19,24 +21,18 @@ export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange
 }) {
   const descendants = new Set([node.stable_key]);
   for (let i = 0; i < nodes.length; i++) for (const n of nodes) if (n.parent_key && descendants.has(n.parent_key)) descendants.add(n.stable_key);
-  const modified = automatic && (JSON.stringify(automatic.ordered_content) !== JSON.stringify(node.ordered_content) ||
-    automatic.label.raw !== node.label.raw || automatic.score.points !== node.score_points || automatic.score.semantics !== node.score_semantics);
+  const modified = useMemo(() => automatic && (JSON.stringify(automatic.ordered_content) !== JSON.stringify(node.ordered_content) ||
+    automatic.label.raw !== node.label.raw || automatic.score.points !== node.score_points || automatic.score.semantics !== node.score_semantics), [automatic, node]);
   const childQuestions = nodes.filter(entry => entry.included && entry.parent_key === node.stable_key)
     .sort((left, right) => left.sort_order - right.sort_order);
   const hasChildren = childQuestions.length > 0;
-  const derivedScore = effectiveQuestionScore(node.stable_key, nodes);
-  const [contentError, setContentError] = useState("");
-  const content = questionContent(node, regions).text;
-  const source = mathContext && questionMathSource(mathContext.reviewId, mathContext.revision, node, mathContext.savedNode);
-  const changeContent = (text: string, proposal?: LatexProposal) => {
-    const next = editQuestionContent(node, regions, text);
-    if (!next) {setContentError("出典の境界をまたぐ変更は対応情報を確認してください。図の位置や数式の対応を保って編集してください。"); return;}
-    setContentError("");
-    if (proposal?.apply_provenance) next.math_ocr_edits = [...(node.math_ocr_edits || []), proposal.apply_provenance].slice(-16);
-    onChange(next);
-  };
-  const confirmContent = () => {
-    const decisions = {...node.formula_decisions};
+  const derivedScore = useMemo(() => effectiveQuestionScore(node.stable_key, nodes), [node.stable_key, nodes]);
+  const contentDiagnostics = useMemo(() => JSON.stringify(node.ordered_content, null, 2), [node.ordered_content]);
+  const reviewId = mathContext?.reviewId, revision = mathContext?.revision, savedNode = mathContext?.savedNode;
+  const source = useMemo(() => reviewId && revision !== undefined ? questionMathSource(reviewId, revision, node, savedNode) : undefined,
+    [reviewId, revision, savedNode, node]);
+  const confirmContent = () => onConfirmContent(current => {
+    const decisions = {...current.formula_decisions};
     for (const region of regions.filter(r => r.region_type === "formula")) {
       const old = decisions[region.region_id] || {decision: "unreviewed"};
       decisions[region.region_id] = setFormulaConfirmation({...old,
@@ -44,13 +40,13 @@ export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange
         teacher_transcription: old.teacher_transcription ?? region.text_fragments?.map(f => f.native_text).join("\n") ?? "",
       }, "confirmed", "bulk");
     }
-    onChange({...node, formula_decisions: decisions});
-  };
+    return {...current, formula_decisions: decisions};
+  });
   const fieldIssues = (key: string) => issues[key] || [];
   const errors = (key: string) => fieldIssues(key).map((issue, index) => <small key={index} className="review-field-error" role="alert">{issue}</small>);
   const needsCheck = (key: string) => fieldIssues(key).length ? <span className="review-required">要確認</span> : null;
   return <article className="panel review-field-target" id={reviewFieldId(node.stable_key, "node")} aria-label="選択問題エディタ">
-    <h3>{node.label.raw || "名称未設定の設問"} {modified && <span className="badge badge-rubric_review">自動解析から変更あり</span>}</h3>
+    <h3>{node.label.raw || "名称未設定の設問"} {(modified || contentChanged) && <span className="badge badge-rubric_review">自動解析から変更あり</span>}</h3>
     {errors("node")}
     <fieldset disabled={readonly} className="review-fields"><legend>設問の編集</legend>
       <label id={reviewFieldId(node.stable_key, "label")} className={fieldIssues("label").length ? "review-field-target has-error" : "review-field-target"}>設問番号・見出し <span className="review-required" aria-label="必須">*</span>{needsCheck("label")}<input maxLength={200} value={node.label.raw} aria-invalid={!!fieldIssues("label").length} onChange={e => onChange({ ...node, label: { raw: e.target.value, normalized: e.target.value } })} />{errors("label")}</label>
@@ -85,19 +81,18 @@ export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange
         {Object.keys(issues).filter(key => key.startsWith("text:") || key.startsWith("formula:")).map(key =>
           <span key={key} id={reviewFieldId(node.stable_key, key)} />)}
         <label>問題文<textarea aria-label="問題文" maxLength={20000} rows={14} value={content} aria-invalid={!!fieldIssues("content").length}
-          onChange={event => changeContent(event.target.value)} /></label>
+          onChange={event => onContentChange(event.target.value)} /></label>
         {errors("content")}
-        {contentError && <p role="alert">{contentError}</p>}
         <small className="math-help">{markdownMathHelp}</small><MarkdownMathPreview source={content} />
         {mathContext && <><LatexNormalizationControl key={`${node.stable_key}:${mathContext.revision}`} text={content}
           contextType="question" contextLabel={node.label.raw} source={source} disabled={readonly || !source}
-          onApply={changeContent} />
+          onApply={onContentChange} />
           {!source && <p className="muted" role="status">{!mathContext.savedNode || JSON.stringify(node.ordered_content.map(questionMathReference)) !== JSON.stringify(mathContext.savedNode.ordered_content.map(questionMathReference))
             ? "構成の変更を保存すると、元PDFとの対応を確認して数式OCRを利用できます。"
             : "この設問には利用できる元PDFの対応情報がありません。"}</p>}</>}
         {regions.some(r => r.region_type === "formula") && <div className="review-toolbar">
           <button type="button" onClick={confirmContent}>問題文を確認</button>
-          <span className="muted">{regions.filter(r => r.region_type === "formula").every(r => formulaIsConfirmed(node.formula_decisions[r.region_id]))
+          <span className="muted">{!contentChanged && regions.filter(r => r.region_type === "formula").every(r => formulaIsConfirmed(node.formula_decisions[r.region_id]))
             ? "元資料との照合済み" : "元資料と問題文を照合してください。編集後は再確認が必要です。"}</span>
         </div>}
         {Object.entries(issues).filter(([key]) => key.startsWith("text:") || key.startsWith("formula:")).flatMap(([key, messages]) =>
@@ -113,7 +108,7 @@ export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange
         </section>;
       })}
       <details><summary>出典・読み取り構造の診断</summary>
-        <pre>{JSON.stringify(node.ordered_content, null, 2)}</pre>
+        <pre>{contentDiagnostics}</pre>
         {regions.filter(r => r.region_type === "formula").map(r => <section key={r.region_id}>
           <button type="button" onClick={() => onRegion(r.region_id)}>元資料を確認</button>
           {activeRegionId === r.region_id && renderEvidence?.(r.region_id)}

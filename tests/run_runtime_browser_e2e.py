@@ -212,6 +212,17 @@ def seed(root):
         question_pdf_path.write_bytes(question_pdf.tobytes())
         question_pdf.close()
         geometry_env.update(QUESTION_MATH_TEST_ID=question_math_test.id, QUESTION_MATH_PDF_PATH=str(question_pdf_path), QUESTION_SPLIT_MATH_TEST_ID=question_split_math_test.id)
+        caret_test = domain.test(teacher_offering.id, name="Question caret fixture", total_points=10)
+        caret_pdf = pymupdf.open()
+        caret_page = caret_pdf.new_page()
+        for y, text in [(35, "問題1 (10点)"), (65, "2変数 x1, x2 に対して、"),
+                        (95, "x1 + x2 - 3 の値が"), (125, "0以上ならクラス1"),
+                        (220, "問題2 (0点)"), (250, "隣の設問の文章。")]:
+            caret_page.insert_text((30, y), text, fontname="japan", fontsize=10)
+        caret_path = root / "sources" / "question-caret.pdf"
+        caret_path.write_bytes(caret_pdf.tobytes())
+        caret_pdf.close()
+        geometry_env.update(QUESTION_CARET_TEST_ID=caret_test.id, QUESTION_CARET_PDF_PATH=str(caret_path))
         nested_test = domain.test(offering.id, name="Nested review navigation fixture", total_points=20)
         domain.question(nested_test.id, question_number="1", display_label="問題1", sort_order=1,
                         max_points=10, is_gradable=True)
@@ -327,6 +338,7 @@ def main():
                         "e2e/latex-error-mapping.spec.ts",
                         "e2e/source-math-ocr-real.spec.ts",
                         "e2e/question-math-ocr-real.spec.ts",
+                        "e2e/question-editor-caret-real.spec.ts",
                         "e2e/model-answer-nested-navigation-real-isolated.spec.ts",
                     ]
                     subprocess.run(["npm", "run", "e2e", "--", *specs, "--workers=1"],

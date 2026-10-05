@@ -1,6 +1,6 @@
 "use client";
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ApiRequestError } from "@/lib/api/client";
 import { reviews, type ImportPlan, type Confirmation } from "@/lib/api/reviews";
 import type { Decision, ReviewDocument, ReviewNode, ReviewSnapshot, RevisionInfo } from "@/types/reviews";
@@ -13,6 +13,8 @@ import { WarningPanel } from "./WarningPanel";
 import { MarkdownMathText } from "@/components/MarkdownMathText";
 import { clearTextSourceMapping, mapCandidateToSources, suggestSubquestions, type SplitProposal } from "@/lib/questionSplit";
 import { formulaIsConfirmed } from "@/lib/formulaConfirmation";
+import { questionTextBuffer, bufferChanged, reconcileQuestionText, type QuestionTextBuffer } from "@/lib/questionEditing";
+import type { LatexProposal } from "@/lib/api/textTools";
 import { collectScoreGuidance, isDetailedScoreGuidanceCode, scoreDifference, scoreDisplay, uncoveredScoreWarnings } from "@/lib/importPlanGuidance";
 
 function renumber(nodes: ReviewNode[]) {
@@ -46,6 +48,7 @@ function message(e: unknown) {
 export function ReviewWorkspace({ id }: { id: string }) {
   const [data, setData] = useState<ReviewDocument>();
   const [snapshot, setSnapshot] = useState<ReviewSnapshot>();
+  const [textBuffers, setTextBuffers] = useState<Record<string, QuestionTextBuffer>>({});
   const [selected, setSelected] = useState("");
   const [regionId, setRegionId] = useState("");
   const [page, setPage] = useState(0);
@@ -60,8 +63,11 @@ export function ReviewWorkspace({ id }: { id: string }) {
   const [splitProposal, setSplitProposal] = useState<SplitProposal | null>(null);
   const [splitMessage, setSplitMessage] = useState("");
   const [pendingUnmappedOverride, setPendingUnmappedOverride] = useState<number | null>(null);
-  const dirty = !!data && !!snapshot && JSON.stringify(snapshot) !== JSON.stringify(data.snapshot);
-  const install = useCallback((d: ReviewDocument) => { setData(d); setSnapshot(structuredClone(d.snapshot)); setSelected(prev => {
+  const snapshotChanged = useMemo(() => !!data && !!snapshot && JSON.stringify(snapshot) !== JSON.stringify(data.snapshot), [data, snapshot]);
+  const dirty = snapshotChanged || Object.values(textBuffers).some(bufferChanged);
+  const install = useCallback((d: ReviewDocument) => { setData(d); setSnapshot(structuredClone(d.snapshot));
+    setTextBuffers(Object.fromEntries(d.snapshot.nodes.map(n => [n.stable_key, questionTextBuffer(n, d.regions)])));
+    setSelected(prev => {
     const desired = prev || sessionStorage.getItem(`question-review-selection:${id}`);
     return d.snapshot.nodes.some(node => node.stable_key === desired) ? desired! : d.snapshot.nodes[0]?.stable_key || "";
   }); }, [id]);
@@ -109,6 +115,29 @@ export function ReviewWorkspace({ id }: { id: string }) {
     setError("");
     setSnapshot({ ...current, nodes: current.nodes.map(n => n.review_node_id === next.review_node_id ? next : n) });
   }
+  function changeContent(text: string, proposal?: LatexProposal) {
+    setTextBuffers(previous => {
+      const old = previous[node.stable_key] || questionTextBuffer(node, document.regions);
+      return {...previous, [node.stable_key]: {...old, text,
+        ocrEdits: proposal?.apply_provenance ? [...old.ocrEdits, proposal.apply_provenance].slice(-16) : old.ocrEdits}};
+    });
+    setSplitProposal(null); setPendingUnmappedOverride(null);
+  }
+  function reconciled(target: ReviewNode): ReviewNode | null {
+    const next = reconcileQuestionText(target, document.regions, textBuffers[target.stable_key]);
+    if (!next) {
+      setSelected(target.stable_key);
+      setFieldIssues({[target.stable_key]: {content: ["元資料との対応を確認できません。図の位置や数式の対応を保って編集してください。未保存の本文は保持されています。"]}});
+    }
+    return next;
+  }
+  function confirmContent(confirm: (target: ReviewNode) => ReviewNode) {
+    const next = reconciled(node);
+    if (!next) return;
+    const confirmed = confirm(next);
+    updateNode(confirmed);
+    setTextBuffers(previous => ({...previous, [node.stable_key]: questionTextBuffer(confirmed, document.regions)}));
+  }
   function jumpToField(issue: ReviewFieldError) {
     setSelected(issue.nodeKey); setRegionId("");
     window.setTimeout(() => {
@@ -135,8 +164,16 @@ export function ReviewWorkspace({ id }: { id: string }) {
     updateNode({ ...owner, [field]: { ...owner[field], [regionId]: d } });
   }
   async function save(mark = false) {
+    let saving = current;
     if (!mark) {
-      const found = validateReviewFields(current.nodes);
+      const nodes: ReviewNode[] = [];
+      for (const target of current.nodes) {
+        const next = reconciled(target);
+        if (!next) return;
+        nodes.push(next);
+      }
+      saving = {...current, nodes};
+      const found = validateReviewFields(nodes);
       if (Object.keys(found).length) {
         setFieldIssues(found);
         setError("");
@@ -145,7 +182,7 @@ export function ReviewWorkspace({ id }: { id: string }) {
     }
     setBusy(true); setError("");
     try {
-      const d = mark ? await reviews.reviewed(id, document.current_revision) : await reviews.save(id, current, document.current_revision);
+      const d = mark ? await reviews.reviewed(id, document.current_revision) : await reviews.save(id, saving, document.current_revision);
       install(d); setFieldIssues({}); setInternalError(null); setHistory((await reviews.history(id)).revisions);
     } catch (e) {
       if (!mark && e instanceof ApiRequestError && e.status === 422) {
@@ -224,10 +261,14 @@ export function ReviewWorkspace({ id }: { id: string }) {
     setSnapshot({ ...current, nodes: current.nodes.map(n => n.stable_key === node.stable_key ? { ...n, sort_order: other.sort_order } : n.stable_key === other.stable_key ? { ...n, sort_order: node.sort_order } : n) });
   }
   function startSplit() {
+    const next = reconciled(node);
+    if (!next) return;
+    updateNode(next);
+    setTextBuffers(previous => ({...previous, [node.stable_key]: questionTextBuffer(next, document.regions)}));
     setPendingUnmappedOverride(null);
     const sourceStableKey = sourceKey(node);
     const sourceNode = document.automatic_nodes.find(entry => entry.stable_key === sourceStableKey);
-    const proposal = suggestSubquestions(node, sourceNode);
+    const proposal = suggestSubquestions(next, sourceNode);
     setSplitProposal(proposal);
     setSplitMessage(proposal ? "" : "小問候補を検出できませんでした。必要なら「小問を追加」を使用してください。");
   }
@@ -321,6 +362,8 @@ export function ReviewWorkspace({ id }: { id: string }) {
     if (!parentHasTextMapping) delete updated.source_mapping_decision;
     setSnapshot({ ...current, nodes: renumber([...ordered(current.nodes).map(entry => entry.node).map(entry =>
       entry.stable_key === node.stable_key ? updated : entry), ...children]) });
+    setTextBuffers(previous => ({...previous, [updated.stable_key]: questionTextBuffer(updated, document.regions),
+      ...Object.fromEntries(children.map(child => [child.stable_key, questionTextBuffer(child, document.regions)]))}));
     setSplitProposal(null); setSplitMessage(""); setPendingUnmappedOverride(null); setSelected(children[0].stable_key);
   }
   const counts = document.summary;
@@ -553,7 +596,9 @@ export function ReviewWorkspace({ id }: { id: string }) {
         <div className="review-toolbar">{[...new Set((document.source_regions[node.stable_key] || []).map(r => r.page_index))].map(p => <button key={p} onClick={() => { setPage(p); setRegionId(""); }}>元の問題用紙 {p + 1}ページ</button>)}</div>
         {node.source_mapping_decision === "teacher_unmapped_override" && <p className="notice" role="status">この小問は元資料との詳細な対応情報なしで作成されています。</p>}
         {node.source_mapping_decision === "teacher_manual_mapping" && <p className="notice" role="status">この小問の元資料との対応は教師が指定しました。</p>}
-        <NodeEditor node={node} nodes={current.nodes} automatic={document.automatic_nodes.find(n => n.stable_key === activeSourceKey)} regions={activeRegions}
+        <NodeEditor content={(textBuffers[node.stable_key] || questionTextBuffer(node, document.regions)).text}
+          contentChanged={!!textBuffers[node.stable_key] && bufferChanged(textBuffers[node.stable_key])}
+          onContentChange={changeContent} onConfirmContent={confirmContent} node={node} nodes={current.nodes} automatic={document.automatic_nodes.find(n => n.stable_key === activeSourceKey)} regions={activeRegions}
           mathContext={{reviewId: id, revision: document.current_revision, savedNode: document.snapshot.nodes.find(n => n.stable_key === node.stable_key)}}
           readonly={readonly} onChange={updateNode} onParent={reparent} onMove={move} onRegion={chooseRegion} activeRegionId={regionId} issues={fieldIssues[node.stable_key]}
           renderEvidence={key => region?.region_id === key && owner ? <EvidencePanel key={key} id={id} regionId={key} ownerLabel={owner.label.raw || "未割当"} readonly={readonly} onDecision={decision}

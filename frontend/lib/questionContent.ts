@@ -24,7 +24,7 @@ export function questionContent(node: ReviewNode, regions: Region[]) {
   return {text, spans};
 }
 
-/** Edit a coherent view without changing immutable source anchors. A local
+/** Reconcile an explicit editor transition without changing immutable source anchors. A local
  * change stays in its original item; an edit across anchors uses the existing
  * provenance-preserving merge contract. Figures never move across text. */
 export function editQuestionContent(node: ReviewNode, regions: Region[], value: string): ReviewNode | null {
@@ -36,6 +36,7 @@ export function editQuestionContent(node: ReviewNode, regions: Region[], value: 
   let end = view.text.length, newEnd = value.length;
   while (end > start && newEnd > start && view.text[end-1] === value[newEnd-1]) {end--; newEnd--;}
   const span = view.spans.find(s => s.start <= start && end <= s.end);
+  let changedSeparator = false;
   const decisions = {...node.formula_decisions};
   const excluded = new Set<string>();
   const resetEmbedded = (item: ContentItem, text: string): boolean => {
@@ -78,15 +79,26 @@ export function editQuestionContent(node: ReviewNode, regions: Region[], value: 
         [id]: setFormulaConfirmation({...decisions[id], decision: "excluded"}, "confirmed", "individual")},
         ordered_content: node.ordered_content.filter((_, index) => index !== span.index).map((it, order) => ({...it, order}))};
       const raw = questionFormulaText(text) ?? text;
-      const markdown = questionFormulaText(text) !== null ? text : `$${text}$`;
+      if (questionFormulaText(text) === null) {
+        decisions[id] = setFormulaConfirmation({...decisions[id], decision: "teacher_edit", teacher_transcription: text}, "unreviewed");
+        return {...node, formula_decisions: decisions};
+      }
+      const markdown = text;
       const anchor = Object.fromEntries(Object.entries(item).filter(([key]) => key !== "order"));
       decisions[id] = setFormulaConfirmation({...decisions[id], decision: "merged_into_text", teacher_transcription: raw}, "unreviewed");
       return {...node, formula_decisions: decisions, ordered_content: node.ordered_content.map((it, index) => index === span.index
         ? {type: "text", order: it.order, text: markdown, merged_source_segments: [anchor]} : it)};
     }
     if (!resetEmbedded(item, text)) return null;
-    return {...node, formula_decisions: decisions, ordered_content: node.ordered_content.map((it, index) => index === span.index
+    const updated = {...node, formula_decisions: decisions, ordered_content: node.ordered_content.map((it, index) => index === span.index
       ? {...it, text, ...("merged_source_segments" in it ? {merged_source_segments: it.merged_source_segments?.filter(s => !excluded.has(String(s.region_id)))} : {})} : it)};
+    if (questionContent(updated, regions).text === value) return updated;
+    // Materialize an explicitly requested blank line rather than letting the
+    // projection swallow it at an empty/trailing-newline item boundary.
+    const explicitSeparator = {...updated, ordered_content: updated.ordered_content.map((it, index) =>
+      index === span.index ? {...it, text: text+"\n"} : it)};
+    if (questionContent(explicitSeparator, regions).text === value) return explicitSeparator;
+    changedSeparator = true;
   }
   // Preserve unchanged formula anchors when several prose spans are edited
   // together (for example numbering before a split). Match the whole formula,
@@ -120,7 +132,15 @@ export function editQuestionContent(node: ReviewNode, regions: Region[], value: 
   }
   // Cross-item replacement is bounded to a contiguous textual run. Retain
   // figures/score evidence and refuse a rewrite that crosses their positions.
-  const affected = view.spans.filter(s => s.end > start && s.start < end);
+  // The displayed separator belongs to neither native item. Include both
+  // adjacent anchors when an edit removes/replaces that separator.
+  const affected = view.spans.filter(s => s.end >= start && s.start <= end);
+  if (changedSeparator && span && affected.length === 1) {
+    const at = view.spans.indexOf(span);
+    const next = view.spans[at+1];
+    if (next) affected.push(next);
+    else if (view.spans[at-1]) affected.unshift(view.spans[at-1]);
+  }
   if (!affected.length) return null;
   const first = affected[0].index, last = affected[affected.length-1].index;
   if (node.ordered_content.slice(first, last+1).some(it => !["text", "formula_region"].includes(it.type))) return null;
