@@ -32,8 +32,9 @@ class MathOCRError(RuntimeError):
 
 
 class SourceMathOCR:
-    def __init__(self, manager, profile_id='math_ocr'):
+    def __init__(self, manager, profile_id='math_ocr', *, excluded_source_regions=()):
         self.manager, self.profile_id = manager, profile_id
+        self.excluded_source_regions = excluded_source_regions
 
     def runtime_client(self, role, profile_id):
         logger.info('math runtime ensure role=%s profile=%s', role, profile_id)
@@ -53,7 +54,7 @@ class SourceMathOCR:
         return client, ready
 
     @staticmethod
-    def render(document, region):
+    def render(document, region, *, excluded_source_regions=()):
         page_index, box = region['page_index'], region['bbox']
         if (type(page_index) is not int or not 0 <= page_index < len(document) or len(box) != 4
                 or not all(type(v) in (int, float) and math.isfinite(v) for v in box)):
@@ -63,6 +64,12 @@ class SourceMathOCR:
         if rect.is_empty or not page.rect.contains(rect):
             raise ValueError('math_crop_invalid')
         clip = (rect + (-6, -6, 6, 6)) & page.rect
+        # Domain adapters may exclude native evidence owned by other targets.
+        # Check the actual padded crop before either vision or math inference.
+        if any(other['page_index'] == page_index and
+               not (clip & fitz.Rect(other['bbox'])).is_empty
+               for other in excluded_source_regions):
+            raise ValueError('math_source_boundary')
         if clip.get_area() > page.rect.get_area() * .35 or clip.get_area() * 4 > 4_000_000:
             raise ValueError('math_crop_too_large')
         pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=clip)
@@ -72,7 +79,7 @@ class SourceMathOCR:
                       crop_image='data:image/png;base64,' + base64.b64encode(image).decode())
         return image
 
-    def repair_groups(self, document, regions, editing_text=None):
+    def repair_groups(self, document, regions, editing_text=None, *, alignment_mode='line'):
         pending = [r for r in regions if r.get('grouping_ambiguous')]
         if not pending:
             return regions
@@ -93,7 +100,7 @@ class SourceMathOCR:
         for cluster in neighborhoods:
             atoms = [a for r in cluster for a in r['source_spans']]
             diagnostic = region_from_atoms(atoms, 'geometry_ambiguous')
-            image = self.render(document, diagnostic)
+            image = self.render(document, diagnostic, excluded_source_regions=self.excluded_source_regions)
             diagnostic.update(ricoh_used=True, validation='rejected', rejection_code='math_geometry_ambiguous')
             logger.info('math grouping ensure regions=%s segments=%s', len(cluster), len(atoms))
             try:
@@ -135,7 +142,7 @@ class SourceMathOCR:
             except Exception as exc:
                 code = ('math_ricoh_unavailable' if isinstance(exc, MathOCRError) else
                     'math_ricoh_output_truncated' if str(exc) == 'math_ricoh_output_truncated' else 'math_ricoh_grouping_rejected')
-                safe = safe_geometry_cluster(cluster, editing_text)
+                safe = safe_geometry_cluster(cluster, editing_text, alignment_mode=alignment_mode)
                 logger.info('math grouping failed reason=%s field=%s finish=%s tokens=%s geometry_fallback=%s',
                     code, diagnostic.get('ricoh_response_field'), diagnostic.get('ricoh_finish_reason'),
                     diagnostic.get('ricoh_completion_tokens'), safe is not None)
@@ -153,8 +160,8 @@ class SourceMathOCR:
                     output.append(diagnostic)
         return sorted(output, key=lambda r: r['start'])
 
-    def propose(self, path: Path, segments, text):
-        regions = source_regions(segments, text)
+    def propose(self, path: Path, segments, text, *, alignment_mode='line'):
+        regions = source_regions(segments, text, alignment_mode=alignment_mode)
         result = {'original_text': text, 'normalized_text': text, 'reconstructed_text': text,
                   'status': 'no_change', 'confidence': None, 'warnings': [], 'changes': [],
                   'profile': self.profile_id, 'model': '', 'math_regions': [], 'reason_code': 'math_no_region',
@@ -166,11 +173,11 @@ class SourceMathOCR:
         if len(regions) > 8:
             raise ValueError('math_region_limit')
         with fitz.open(path) as document:
-            regions = self.repair_groups(document, regions, text)
+            regions = self.repair_groups(document, regions, text, alignment_mode=alignment_mode)
             if len(regions) > 8:
                 raise ValueError("math_region_limit")
             for region in regions:
-                self.render(document, region)
+                self.render(document, region, excluded_source_regions=self.excluded_source_regions)
         result['math_regions'] = regions
         result['grouping_summary'].update(final_region_count=len(regions), ricoh_used=any(r['ricoh_used'] for r in regions))
         if any(r.get('rejection_code') for r in regions):

@@ -21,6 +21,13 @@ class MarkReviewed(BaseModel):
     base_revision: int = Field(ge=1, strict=True)
 
 
+class QuestionMathRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: str = Field(min_length=1, max_length=12000)
+    expected_revision: int = Field(ge=1, strict=True)
+    expected_source: dict
+
+
 class ImportConfirm(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expected_revision: int = Field(ge=1, strict=True)
@@ -74,8 +81,41 @@ class CorrectionRequest(BaseModel):
     plan_sha256: str | None = Field(default=None, min_length=64, max_length=64)
 
 
-def router(db, root):
+def router(db, root, classifier=None):
     r = APIRouter(prefix="/api/v1")
+
+    @r.post("/question-import-reviews/{review_id}/nodes/{node_key}/items/{item_index}/math-ocr")
+    def math_ocr(review_id: str, node_key: str, body: QuestionMathRequest,
+                 item_index: int = 0, s=Depends(db)):
+        import json
+        import logging
+        from ..question_math_source import question_math_source, compact_provenance
+        from ..source_math_ocr import SourceMathOCR, MathOCRError
+        if item_index < 0 or len(json.dumps(body.expected_source)) > 20000:
+            raise HTTPException(422, detail={"error": {"code": "math_question_source_missing"}})
+        try:
+            path, segments, source, exclusions = question_math_source(QuestionReviewService(s, root), review_id,
+                node_key, item_index, body.expected_revision, body.expected_source)
+            if classifier is None or classifier.manager is None:
+                raise MathOCRError('math_runtime_unavailable')
+            logging.getLogger(__name__).info('question math OCR requested review=%s node=%s item=%s segments=%s',
+                review_id, node_key, item_index, len(segments))
+            result = SourceMathOCR(classifier.manager, excluded_source_regions=exclusions).propose(
+                path, segments, body.text, alignment_mode='source_fragment')
+            result['source'] = source
+            if result['status'] in {'safe', 'ambiguous'}:
+                result['apply_provenance'] = compact_provenance(result)
+            return result
+        except ReviewError as exc:
+            raise HTTPException(exc.status, detail={"error": {"code": exc.code}}) from exc
+        except MathOCRError as exc:
+            raise HTTPException(504 if 'timeout' in exc.code else 503, detail={"error": {"code": exc.code}}) from exc
+        except ValueError as exc:
+            raise HTTPException(422, detail={"error": {"code": str(exc)}}) from exc
+        except Exception as exc:
+            logging.getLogger(__name__).warning('question math OCR failure review=%s node=%s type=%s',
+                review_id, node_key, type(exc).__name__)
+            raise HTTPException(503, detail={"error": {"code": "math_runtime_unavailable"}}) from exc
 
     def call(s, method, *args, **kw):
         try:

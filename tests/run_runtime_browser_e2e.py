@@ -198,6 +198,19 @@ def seed(root):
                 "source": {"kind": "native_pdf", "material_id": math_material.id, "segments": math_segments}}]})
         session.add(math_draft)
         geometry_env["SOURCE_MATH_DRAFT_ID"] = math_draft.id
+        question_math_test = domain.test(teacher_offering.id, name="Question source math fixture", total_points=10)
+        question_pdf = pymupdf.open()
+        question_page = question_pdf.new_page()
+        question_page.insert_text((30, 35), "問題1 (10点)", fontname="japan", fontsize=12)
+        question_page.insert_text((30, 65), "次の式の意味を説明せよ。", fontname="japan", fontsize=10)
+        question_page.insert_text((30, 95), "Precision=TP/(TP+FP)=24/(24+6)=24/30=0.800", fontsize=10)
+        question_page.insert_text((30, 130), "途中の数値を変更しないこと。", fontname="japan", fontsize=10)
+        question_page.insert_text((30, 220), "問題2 (0点)", fontname="japan", fontsize=12)
+        question_page.insert_text((30, 250), "隣の設問の文章。", fontname="japan", fontsize=10)
+        question_pdf_path = root / "sources" / "question-math.pdf"
+        question_pdf_path.write_bytes(question_pdf.tobytes())
+        question_pdf.close()
+        geometry_env.update(QUESTION_MATH_TEST_ID=question_math_test.id, QUESTION_MATH_PDF_PATH=str(question_pdf_path))
         nested_test = domain.test(offering.id, name="Nested review navigation fixture", total_points=20)
         domain.question(nested_test.id, question_number="1", display_label="問題1", sort_order=1,
                         max_points=10, is_gradable=True)
@@ -312,6 +325,7 @@ def main():
                         "e2e/latex-runtime-state-real.spec.ts",
                         "e2e/latex-error-mapping.spec.ts",
                         "e2e/source-math-ocr-real.spec.ts",
+                        "e2e/question-math-ocr-real.spec.ts",
                         "e2e/model-answer-nested-navigation-real-isolated.spec.ts",
                     ]
                     subprocess.run(["npm", "run", "e2e", "--", *specs, "--workers=1"],

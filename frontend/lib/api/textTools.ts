@@ -1,5 +1,6 @@
 import { apiFetch, json } from "./client";
 export type LatexProposal = {
+  apply_provenance?: Record<string, unknown>;
   reason_code?: string | null;
   grouping_summary?: Record<string, number | boolean>;
   math_regions?: {page_index: number; crop_image?: string; raw_latex?: string; raw_response?: unknown;
@@ -28,6 +29,12 @@ export function normalizeLatex(text: string, context_type: TextContext, context_
   return apiFetch<LatexProposal>("/text-tools/latex-normalize", json({text, context_type, context_label}));
 }
 
-export function mathOCR(source: {draftId: string; entryId: string; revision: number}, text: string) {
+export type MathSource = {kind?: "model_answer"; draftId: string; entryId: string; revision: number} |
+  {kind: "question_review"; reviewId: string; nodeKey: string; itemIndex: number; revision: number; expectedSource: Record<string, unknown>};
+export function mathOCR(source: MathSource, text: string) {
+  if (source.kind === "question_review") {
+    return apiFetch<LatexProposal>(`/question-import-reviews/${encodeURIComponent(source.reviewId)}/nodes/${encodeURIComponent(source.nodeKey)}/items/${source.itemIndex}/math-ocr`,
+      json({text, expected_revision: source.revision, expected_source: source.expectedSource}));
+  }
   return apiFetch<LatexProposal>(`/model-answer-import-drafts/${encodeURIComponent(source.draftId)}/entries/${encodeURIComponent(source.entryId)}/math-ocr`, json({text, expected_revision: source.revision}));
 }

@@ -254,6 +254,11 @@ class ConfirmationTests(TestCase):
     def test_sum_children_import_plan_recurses_without_double_counting_and_propagates_unset(self):
         snap = self.ready()
         root = snap["nodes"][0]
+        # The native fixture contains fragmented formula spans. This test is
+        # about recursive scores; complete the existing teacher-edit requirement
+        # rather than expecting unresolved native math to pass registration.
+        for rid in root['formula_decisions']:
+            root['formula_decisions'][rid] = {'decision': 'teacher_edit', 'teacher_transcription': 'x'}
         root.update(score_semantics="sum_children", score_points=None)
 
         def teacher_node(key, parent, depth, order, label, semantics, points):

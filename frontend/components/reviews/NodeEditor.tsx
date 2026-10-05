@@ -9,8 +9,12 @@ import { formulaHasRenderError, formulaIsConfirmed, setFormulaConfirmation } fro
 import { FormulaConfirmation } from "@/components/reviews/FormulaConfirmation";
 import { reviewFieldId } from "@/lib/reviewValidation";
 import { effectiveQuestionScore } from "@/lib/questionScores";
+import { LatexNormalizationControl } from "@/components/LatexNormalizationControl";
+import { questionMathSource, questionFormulaText } from "@/lib/questionMathSource";
+import type { LatexProposal } from "@/lib/api/textTools";
 
-export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange, onParent, onMove, onRegion, activeRegionId, renderEvidence, issues = {} }: {
+export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange, onParent, onMove, onRegion, activeRegionId, renderEvidence, issues = {}, mathContext }: {
+  mathContext?: {reviewId: string; revision: number; savedNode?: ReviewNode};
   node: ReviewNode; nodes: ReviewNode[]; automatic?: AutomaticNode; regions: Region[]; readonly: boolean;
   onChange: (node: ReviewNode) => void; onParent: (key: string | null) => void;
   onMove: (direction: number) => void; onRegion: (region: string) => void;
@@ -34,6 +38,9 @@ export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange
   const clearMergeSelection = () => setMergeSelectionState(state => state.nodeKey === node.stable_key
     ? { ...state, indices: [] } : state);
   const updateItems = (items: ContentItem[]) => onChange({ ...node, ordered_content: items.map((item, order) => ({ ...item, order })) });
+  const mathSource = (index: number) => mathContext && questionMathSource(mathContext.reviewId, mathContext.revision, node, mathContext.savedNode, index);
+  const edits = (proposal: LatexProposal) => proposal.apply_provenance
+    ? [...(node.math_ocr_edits || []), proposal.apply_provenance].slice(-16) : node.math_ocr_edits;
   const addText = () => { clearMergeSelection(); updateItems([...node.ordered_content, { type: "text", order: node.ordered_content.length, text: "" }]); };
   const removeText = (index: number, value: string) => {
     if (value.trim() && !window.confirm("この問題文を削除しますか？")) return;
@@ -223,6 +230,11 @@ export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange
             <label>問題文 {number} <span className="review-required" aria-label="必須">*</span>{needsCheck(key)}<textarea ref={element => { if (element && mergeFocusIndex.current === index) { element.focus(); mergeFocusIndex.current = null; } }} aria-label={`問題文 ${number}`} maxLength={20000} value={item.text} aria-invalid={!!fieldIssues(key).length}
               onChange={e => updateItems(node.ordered_content.map((value, at) => at === index ? { ...value, text: e.target.value } : value))} /></label>
             {errors(key)}<small className="math-help">{markdownMathHelp}</small><MarkdownMathPreview source={item.text} />
+            {mathContext && <><LatexNormalizationControl key={`${node.stable_key}:${index}:${mathContext.revision}`} text={item.text} contextType="question"
+              contextLabel={node.label.raw} source={mathSource(index)} disabled={readonly || !mathSource(index)}
+              onApply={(text, proposal) => onChange({...node, math_ocr_edits: edits(proposal),
+                ordered_content: node.ordered_content.map((value, at) => at === index ? {...value, text} : value)})} />
+              {!mathSource(index) && <p className="muted">数式OCRには、この問題文に対応する元PDFの位置情報が必要です。構成を変更した場合は先に保存してください。</p>}</>}
             {embeddedFormulaIds.length > 0 && <section className="embedded-formula-confirmations" aria-label={`問題文 ${number}に含まれる数式`}>
               <strong>この問題文に含まれる数式（{embeddedFormulaIds.length}件）</strong>
               {embeddedFormulaIds.map((regionId, embeddedIndex) => {
@@ -267,6 +279,12 @@ export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange
               const next = { ...setFormulaConfirmation({ ...old, decision: "teacher_edit", teacher_transcription: e.target.value }, "unreviewed"), decision: "teacher_edit", teacher_transcription: e.target.value };
               onChange({ ...node, formula_decisions: { ...node.formula_decisions, [regionId]: next } });
             }} /></label>{errors(key)}<MathPreview source={String(source)} mathOnly />
+              {mathContext && <LatexNormalizationControl key={`${node.stable_key}:${index}:${mathContext.revision}`} text={String(source)} contextType="question"
+                contextLabel={node.label.raw} source={mathSource(index)} disabled={readonly || !mathSource(index)}
+                prepareApply={questionFormulaText}
+                onApply={(text, proposal) => onChange({...node, math_ocr_edits: edits(proposal), formula_decisions: {
+                  ...node.formula_decisions, [regionId]: setFormulaConfirmation({ ...decision, decision: "teacher_edit",
+                    teacher_transcription: text}, "confirmed", "individual")}})} />}
               <FormulaConfirmation label={`数式 ${number}の確認`} decision={decision} disabled={readonly}
                 onChange={status => onChange({ ...node, formula_decisions: {
                   ...node.formula_decisions, [regionId]: setFormulaConfirmation(decision, status, "individual"),

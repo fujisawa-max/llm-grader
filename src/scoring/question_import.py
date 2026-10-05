@@ -479,6 +479,8 @@ class QuestionImportConfirmationService(QuestionImportPlanner):
                     "revision": expected_revision,
                     "revision_sha256": expected_revision_sha256,
                     "review_node_id": p["review_node_id"],
+                    "math_ocr_edits": deepcopy(next((n.get('math_ocr_edits', []) for n in rev.snapshot['nodes']
+                        if n['review_node_id'] == p['review_node_id']), [])),
                 },
             )
             self.s.add(q)

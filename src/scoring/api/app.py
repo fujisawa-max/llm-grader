@@ -808,7 +808,7 @@ def create_app(session_factory=None, *, allowed_roots=None, runtime_client=None,
                        dependencies=[Depends(domain_authorized)])
     app.include_router(question_draft_router(db, import_root),
                        dependencies=[Depends(staff_dependency)])
-    app.include_router(question_review_router(db, import_root),
+    app.include_router(question_review_router(db, import_root, classifier=model_answer_classifier),
                        dependencies=[Depends(staff_dependency)])
     app.include_router(model_answer_import_router(db, action_root, classifier=model_answer_classifier),
                        dependencies=[Depends(staff_dependency)])

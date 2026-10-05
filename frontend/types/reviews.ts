@@ -15,6 +15,7 @@ export type Decision = {
 };
 export type WarningResolution = { state: "unreviewed" | "acknowledged" | "resolved"; note?: string };
 export interface ReviewNode {
+  math_ocr_edits?: Record<string, unknown>[];
   review_node_id: string; stable_key: string; source_draft_stable_key: string | null;
   source_draft_node_id: string | null; parent_key: string | null; node_type: "major_question" | "subquestion";
   depth: number; sort_order: number; label: { raw: string; normalized: string }; body_text: string;

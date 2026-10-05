@@ -3,11 +3,12 @@ import { latexErrorMessage, mathOcrReasonMessage } from "@/lib/latexErrors";
 import { useState } from "react";
 import katex from "katex";
 import { MarkdownMathText } from "./MarkdownMathText";
-import { mathOCR, normalizeLatex, type LatexProposal, type TextContext } from "@/lib/api/textTools";
+import { mathOCR, normalizeLatex, type LatexProposal, type TextContext, type MathSource } from "@/lib/api/textTools";
 import { parseMathText } from "@/lib/mathText";
 
-export function LatexNormalizationControl({text, contextType, contextLabel = "", disabled = false, source, onApply}: {
-  source?: {draftId: string; entryId: string; revision: number};
+export function LatexNormalizationControl({text, contextType, contextLabel = "", disabled = false, source, onApply, prepareApply}: {
+  prepareApply?: (text: string) => string | null;
+  source?: MathSource;
   text: string; contextType: TextContext; contextLabel?: string; disabled?: boolean;
   onApply: (text: string, proposal: LatexProposal) => void;
 }) {
@@ -28,6 +29,7 @@ export function LatexNormalizationControl({text, contextType, contextLabel = "",
     } } catch { mathError = true; }
   }
   const stale = proposal && proposal.original_text !== text;
+  const applyText = proposal ? (prepareApply ? prepareApply(proposal.normalized_text) : proposal.normalized_text) : null;
   return <section className="latex-normalization" aria-label="LaTeX変換" aria-busy={busy}>
     <button type="button" className="button secondary" disabled={disabled || busy || !text.trim()} onClick={suggest}>数式をLaTeX化</button>
     {busy && <p role="status"><span className="processing-spinner" aria-hidden="true" />数式を解析中… 必要に応じてLLMを起動します。初回は時間がかかる場合があります。</p>}
@@ -53,9 +55,10 @@ export function LatexNormalizationControl({text, contextType, contextLabel = "",
       </details>)}
       {proposal.warnings.map((warning, i) => <p role="alert" key={i}>{warning}</p>)}
       {mathError && <p role="alert">数式を表示できません。構文を確認してください。</p>}
+      {prepareApply && proposal.status !== "no_change" && applyText === null && <p role="alert">この編集欄に適用できる数式形式ではありません。変換案と元の文章を確認してください。</p>}
       {stale && <p role="alert">本文が変更されています。変換案を作り直してください。</p>}
       <p className="muted">適用後も数式は編集できます。</p>
-      <div className="actions"><button type="button" className="button" disabled={disabled || busy || !!stale || mathError || !["safe", "ambiguous"].includes(proposal.status)} onClick={() => {onApply(proposal.normalized_text, {...proposal, math_regions: proposal.math_regions?.map(({crop_image: _image, raw_response: _raw, ricoh_raw_response: _ricoh, ornith_raw_response: _ornith, ...region}) => region)}); setProposal(null);}}>この変換を適用</button>
+      <div className="actions"><button type="button" className="button" disabled={disabled || busy || !!stale || mathError || applyText === null || !["safe", "ambiguous"].includes(proposal.status)} onClick={() => {if (applyText === null) return; onApply(applyText, {...proposal, math_regions: proposal.math_regions?.map(({crop_image: _image, raw_response: _raw, ricoh_raw_response: _ricoh, ornith_raw_response: _ornith, ...region}) => region)}); setProposal(null);}}>この変換を適用</button>
         <button type="button" className="button secondary" onClick={() => setProposal(null)}>キャンセル</button></div>
     </section>}
   </section>;

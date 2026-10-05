@@ -16,10 +16,25 @@ def union_box(items):
     return [min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes)]
 
 
-def aligned_atoms(segments, text):
+def aligned_atoms(segments, text, *, alignment_mode='line'):
+    if alignment_mode not in {'line', 'source_fragment'}:
+        raise ValueError('math_source_invalid')
     ordered = sorted(segments, key=lambda s: s.get('reading_order', 0))
     counts = Counter(s.get('original_text', s.get('text', '')) for s in ordered)
-    matches_by_text = {value: list(re.finditer(r'(?m)^'+re.escape(value)+r'$', text))
+    def pattern(value):
+        if alignment_mode == 'line':
+            return r'(?m)^'+re.escape(value)+r'$'
+        # A Question's native spans can occur inside an editable prose line.
+        # Exact source characters only, with lexical boundaries: never match
+        # a numeral inside another number or identifier.
+        # Japanese prose may adjoin a separately anchored mathematical span
+        # without a space. Still forbid substrings inside Latin/Greek math
+        # identifiers, styled Latin identifiers, decimals and larger numbers.
+        token_chars = r'A-Za-z0-9_.\u0370-\u03ff\U0001d400-\U0001d6a5'
+        left = r'(?<!['+token_chars+r'])' if re.match(r'[\w.]', value[0]) else ''
+        right = r'(?!['+token_chars+r'])' if re.match(r'[\w.]', value[-1]) else ''
+        return left+re.escape(value)+right
+    matches_by_text = {value: list(re.finditer(pattern(value), text))
                        for value in counts if value.strip()}
     anchors = {i: matches_by_text.get(s.get('original_text', s.get('text', '')), [])[0]
                for i, s in enumerate(ordered)
@@ -83,8 +98,8 @@ def region_from_atoms(atoms, method='geometry', confidence=None):
             'grouping_method': method, 'grouping_confidence': confidence, 'ricoh_used': method != 'geometry'}
 
 
-def source_regions(segments, text):
-    atoms = aligned_atoms(segments, text)
+def source_regions(segments, text, *, alignment_mode='line'):
+    atoms = aligned_atoms(segments, text, alignment_mode=alignment_mode)
     if len(atoms) > 128:
         raise ValueError("math_region_limit")
     groups = []
@@ -159,12 +174,12 @@ def grouping_schema(atoms):
                 'confidence': {'type': 'number', 'minimum': .85, 'maximum': 1}}}}}}
 
 
-def safe_geometry_cluster(cluster, editing_text):
+def safe_geometry_cluster(cluster, editing_text, *, alignment_mode='line'):
     """Independent strict-geometry proof; never trust a broken vision JSON."""
     atoms = [a for region in cluster for a in region['source_spans']]
     if editing_text is None:
         return None
-    reconstructed = source_regions(atoms, editing_text)
+    reconstructed = source_regions(atoms, editing_text, alignment_mode=alignment_mode)
     if (len(reconstructed) != 1 or reconstructed[0]['grouping_ambiguous']
             or len(reconstructed[0]['source_spans']) != len(atoms)
             or set(reconstructed[0]['segment_ids']) != {a['id'] for a in atoms}):

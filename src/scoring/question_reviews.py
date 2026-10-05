@@ -297,6 +297,14 @@ class QuestionReviewService:
         validation_base = self._revision(review, store, base) if base != review.current_revision else current
         snap = validate_snapshot(payload.get("snapshot"), validation_base.snapshot, value,
                                  current.snapshot["vision_pin"], mark=mark)
+        for node in snap['nodes']:
+            for edit in node.get('math_ocr_edits', []):
+                from .question_math_source import validate_math_edit_source
+                if (edit['source_sha256'] != ir['source']['sha256'] or
+                        edit['material_id'] != ir['source']['material_id'] or edit['review_id'] != review.id or
+                        edit['revision'] > review.current_revision):
+                    raise ReviewError('math_question_provenance_invalid', 422)
+                validate_math_edit_source(edit, ir)
         digest = canonical_hash(snap)
         if digest == canonical_hash(current.snapshot) and base in {
                 review.current_revision, current.parent_revision_number}:

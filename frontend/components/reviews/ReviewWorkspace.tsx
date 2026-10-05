@@ -546,6 +546,7 @@ export function ReviewWorkspace({ id }: { id: string }) {
         {node.source_mapping_decision === "teacher_unmapped_override" && <p className="notice" role="status">この小問は元資料との詳細な対応情報なしで作成されています。</p>}
         {node.source_mapping_decision === "teacher_manual_mapping" && <p className="notice" role="status">この小問の元資料との対応は教師が指定しました。</p>}
         <NodeEditor node={node} nodes={current.nodes} automatic={document.automatic_nodes.find(n => n.stable_key === activeSourceKey)} regions={activeRegions}
+          mathContext={{reviewId: id, revision: document.current_revision, savedNode: document.snapshot.nodes.find(n => n.stable_key === node.stable_key)}}
           readonly={readonly} onChange={updateNode} onParent={reparent} onMove={move} onRegion={chooseRegion} activeRegionId={regionId} issues={fieldIssues[node.stable_key]}
           renderEvidence={key => region?.region_id === key && owner ? <EvidencePanel key={key} id={id} regionId={key} ownerLabel={owner.label.raw || "未割当"} readonly={readonly} onDecision={decision}
             decision={owner[region.region_type === "formula" ? "formula_decisions" : "figure_decisions"][key] || { decision: "unreviewed" }} /> : null} />

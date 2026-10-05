@@ -238,10 +238,10 @@ def validate_snapshot(snapshot, current, draft, pin, *, mark=False):
                           "parent_key", "node_type", "depth", "sort_order", "label", "body_text",
                           "ordered_content", "included", "score_semantics", "score_points",
                           "effective_points_candidate", "review_flags", "formula_decisions",
-                          "figure_decisions", "warning_states", "source_mapping_decision"}
+                          "figure_decisions", "warning_states", "source_mapping_decision", "math_ocr_edits"}
         if set(n) - allowed_fields:
             raise ReviewError("unknown_node_fields", 422)
-        required_fields = allowed_fields - {"effective_points_candidate", "depth", "source_mapping_decision"}
+        required_fields = allowed_fields - {"effective_points_candidate", "depth", "source_mapping_decision", "math_ocr_edits"}
         if not required_fields.issubset(n):
             raise ReviewError("missing_node_fields", 422)
         key, identity = n.get("stable_key"), n.get("review_node_id")
@@ -382,6 +382,10 @@ def validate_snapshot(snapshot, current, draft, pin, *, mark=False):
             elif not has_text_mapping:
                 raise ReviewError("missing_source_mapping_decision", 422, node_key=key, field_key="source_mapping")
     _validate_content_provenance(nodes, source, by_key)
+    from .question_math_source import validate_math_edits
+    for n in nodes:
+        if 'math_ocr_edits' in n:
+            validate_math_edits(n['math_ocr_edits'], n, draft, nodes)
     pinned = {p["region_id"]: p for p in pin.get("results", [])}
     for n in nodes:
         for kind, allowed in (("formula", {"unreviewed", "use_native", "use_vision", "teacher_edit",
