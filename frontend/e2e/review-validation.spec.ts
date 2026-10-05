@@ -28,9 +28,9 @@ test("multiple field errors retain their question path and unique target", () =>
   const issues = validateReviewFields(nodes);
   const errors = reviewFieldErrors(nodes, issues);
   expect(errors.map(error => `${error.path} > ${error.fieldLabel}`)).toEqual([
-    "問題1 > (2) > 問題文1", "問題2 > (1) > 問題文1",
+    "問題1 > (2) > 問題文", "問題2 > (1) > 問題文",
   ]);
   expect(errors[0].message).toContain("問題文が空です");
-  expect(errors[0].targetId).toBe(reviewFieldId("q1-2", "text:0"));
+  expect(errors[0].targetId).toBe(reviewFieldId("q1-2", "content"));
   expect(errors[1].targetId).not.toBe(errors[0].targetId);
 });

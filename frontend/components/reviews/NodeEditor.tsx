@@ -1,16 +1,13 @@
-import { useRef, useState, type ReactNode } from "react";
-import type { AutomaticNode, ContentItem, Region, ReviewNode } from "@/types/reviews";
-import { questionTypeLabel, reviewContentLabel, reviewDecisionLabel, scoreSemanticsLabel } from "@/lib/reviewLabels";
-import { MathPreview } from "@/components/MathText";
+import { useState, type ReactNode } from "react";
+import type { AutomaticNode, Region, ReviewNode } from "@/types/reviews";
+import { questionTypeLabel, reviewDecisionLabel, scoreSemanticsLabel } from "@/lib/reviewLabels";
 import { MarkdownMathText, MarkdownMathPreview, markdownMathHelp } from "@/components/MarkdownMathText";
-import { inlineFormulaSource } from "@/lib/formulaMerge";
-import { mergeContiguousContent } from "@/lib/reviewTextMerge";
-import { formulaHasRenderError, formulaIsConfirmed, setFormulaConfirmation } from "@/lib/formulaConfirmation";
-import { FormulaConfirmation } from "@/components/reviews/FormulaConfirmation";
+import { formulaIsConfirmed, setFormulaConfirmation } from "@/lib/formulaConfirmation";
 import { reviewFieldId } from "@/lib/reviewValidation";
 import { effectiveQuestionScore } from "@/lib/questionScores";
 import { LatexNormalizationControl } from "@/components/LatexNormalizationControl";
-import { questionMathSource, questionFormulaText } from "@/lib/questionMathSource";
+import { questionMathSource, questionMathReference } from "@/lib/questionMathSource";
+import { questionContent, editQuestionContent } from "@/lib/questionContent";
 import type { LatexProposal } from "@/lib/api/textTools";
 
 export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange, onParent, onMove, onRegion, activeRegionId, renderEvidence, issues = {}, mathContext }: {
@@ -24,137 +21,34 @@ export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange
   for (let i = 0; i < nodes.length; i++) for (const n of nodes) if (n.parent_key && descendants.has(n.parent_key)) descendants.add(n.stable_key);
   const modified = automatic && (JSON.stringify(automatic.ordered_content) !== JSON.stringify(node.ordered_content) ||
     automatic.label.raw !== node.label.raw || automatic.score.points !== node.score_points || automatic.score.semantics !== node.score_semantics);
-  const regionById = new Map(regions.map(region => [region.region_id, region]));
   const childQuestions = nodes.filter(entry => entry.included && entry.parent_key === node.stable_key)
     .sort((left, right) => left.sort_order - right.sort_order);
   const hasChildren = childQuestions.length > 0;
   const derivedScore = effectiveQuestionScore(node.stable_key, nodes);
-  const mergeFocusIndex = useRef<number | null>(null);
-  const [mergeSelectionState, setMergeSelectionState] = useState<{
-    nodeKey: string; active: boolean; indices: number[];
-  }>({ nodeKey: node.stable_key, active: false, indices: [] });
-  const mergeMode = mergeSelectionState.nodeKey === node.stable_key && mergeSelectionState.active;
-  const selectedMergeIndices = mergeSelectionState.nodeKey === node.stable_key ? mergeSelectionState.indices : [];
-  const clearMergeSelection = () => setMergeSelectionState(state => state.nodeKey === node.stable_key
-    ? { ...state, indices: [] } : state);
-  const updateItems = (items: ContentItem[]) => onChange({ ...node, ordered_content: items.map((item, order) => ({ ...item, order })) });
-  const mathSource = (index: number) => mathContext && questionMathSource(mathContext.reviewId, mathContext.revision, node, mathContext.savedNode, index);
-  const edits = (proposal: LatexProposal) => proposal.apply_provenance
-    ? [...(node.math_ocr_edits || []), proposal.apply_provenance].slice(-16) : node.math_ocr_edits;
-  const addText = () => { clearMergeSelection(); updateItems([...node.ordered_content, { type: "text", order: node.ordered_content.length, text: "" }]); };
-  const removeText = (index: number, value: string) => {
-    if (value.trim() && !window.confirm("この問題文を削除しますか？")) return;
-    clearMergeSelection();
-    updateItems(node.ordered_content.filter((_, at) => at !== index));
+  const [contentError, setContentError] = useState("");
+  const content = questionContent(node, regions).text;
+  const source = mathContext && questionMathSource(mathContext.reviewId, mathContext.revision, node, mathContext.savedNode);
+  const changeContent = (text: string, proposal?: LatexProposal) => {
+    const next = editQuestionContent(node, regions, text);
+    if (!next) {setContentError("出典の境界をまたぐ変更は対応情報を確認してください。図の位置や数式の対応を保って編集してください。"); return;}
+    setContentError("");
+    if (proposal?.apply_provenance) next.math_ocr_edits = [...(node.math_ocr_edits || []), proposal.apply_provenance].slice(-16);
+    onChange(next);
   };
-  const moveItem = (index: number, delta: number) => {
-    const next = index + delta;
-    if (next < 0 || next >= node.ordered_content.length) return;
-    clearMergeSelection();
-    const copy = [...node.ordered_content]; [copy[index], copy[next]] = [copy[next], copy[index]];
-    updateItems(copy);
-  };
-  const mergeContentItems = (indices: number[]) => {
-    const firstIndex = [...new Set(indices)].sort((a, b) => a - b)[0];
-    const formulaSources = Object.fromEntries(regions.filter(region => region.region_type === "formula").map(region => {
-      const decision = node.formula_decisions[region.region_id];
-      return [region.region_id, decision?.teacher_transcription ?? region.text_fragments?.map(fragment => fragment.native_text).join("\n") ?? ""];
-    }));
-    const mergedItems = mergeContiguousContent(node.ordered_content, indices, formulaSources);
-    if (!mergedItems) return;
-    const formulaDecisions = { ...node.formula_decisions };
-    for (const index of indices) {
-      const item = node.ordered_content[index];
-      if (item?.type !== "formula_region" || typeof item.region_id !== "string") continue;
-      const old = formulaDecisions[item.region_id] || { decision: "unreviewed" };
-      const source = inlineFormulaSource(old.teacher_transcription ?? formulaSources[item.region_id] ?? "");
-      formulaDecisions[item.region_id] = {
-        ...old, decision: "merged_into_text", teacher_transcription: source,
-        confirmation_status: formulaIsConfirmed(old) ? "confirmed" : "unreviewed",
-      };
+  const confirmContent = () => {
+    const decisions = {...node.formula_decisions};
+    for (const region of regions.filter(r => r.region_type === "formula")) {
+      const old = decisions[region.region_id] || {decision: "unreviewed"};
+      decisions[region.region_id] = setFormulaConfirmation({...old,
+        decision: old.decision === "unreviewed" ? "teacher_edit" : old.decision,
+        teacher_transcription: old.teacher_transcription ?? region.text_fragments?.map(f => f.native_text).join("\n") ?? "",
+      }, "confirmed", "bulk");
     }
-    mergeFocusIndex.current = firstIndex;
-    onChange({ ...node, ordered_content: mergedItems, formula_decisions: formulaDecisions });
-    setMergeSelectionState({ nodeKey: node.stable_key, active: false, indices: [] });
-  };
-  const mergeText = (index: number) => mergeContentItems([index - 1, index]);
-  const selectedMergeContiguous = selectedMergeIndices.length >= 2 && selectedMergeIndices.every((index, at) =>
-    at === 0 || index === selectedMergeIndices[at - 1] + 1);
-  const selectedMergeLength = selectedMergeIndices.reduce((total, index) => {
-    const item = node.ordered_content[index];
-    if (item?.type === "text" && typeof item.text === "string") return total + item.text.length;
-    if (item?.type === "formula_region" && typeof item.region_id === "string") {
-      const decision = node.formula_decisions[item.region_id], region = regionById.get(item.region_id);
-      const source = decision?.teacher_transcription ?? region?.text_fragments?.map(fragment => fragment.native_text).join("\n") ?? "";
-      return total + inlineFormulaSource(source).length + 2;
-    }
-    return total;
-  }, 0);
-  const firstSelectedIndex = selectedMergeIndices[0];
-  const canMergeSelection = selectedMergeContiguous && selectedMergeLength <= 20000 && firstSelectedIndex !== undefined &&
-    node.ordered_content[firstSelectedIndex]?.type === "text" && selectedMergeIndices.every(index => {
-      const item = node.ordered_content[index];
-      if (item?.type === "text") return true;
-      if (item?.type !== "formula_region" || typeof item.region_id !== "string") return false;
-      const decision = node.formula_decisions[item.region_id], region = regionById.get(item.region_id);
-      const source = decision?.teacher_transcription ?? region?.text_fragments?.map(fragment => fragment.native_text).join("\n") ?? "";
-      return !!inlineFormulaSource(source) && !(decision?.decision === "use_vision" && !decision.teacher_transcription);
-    });
-  const pendingFormulaIds = [...new Set(regions.filter(region => region.region_type === "formula").map(region => region.region_id))]
-    .filter(regionId => !formulaIsConfirmed(node.formula_decisions[regionId]));
-  const confirmAllFormulas = () => {
-    const count = pendingFormulaIds.length;
-    const renderErrors = pendingFormulaIds.filter(regionId => {
-      const decision = node.formula_decisions[regionId], region = regionById.get(regionId);
-      return formulaHasRenderError(inlineFormulaSource(decision?.teacher_transcription ??
-        region?.text_fragments?.map(fragment => fragment.native_text).join("\n") ?? ""));
-    }).length;
-    const warning = renderErrors ? `\n注意: ${renderErrors}件は数式プレビューで表示できない内容です。` : "";
-    if (!count || !window.confirm(`この設問には未確認の数式が${count}件あります。個別の詳細確認を省略し、すべて確認済みとして扱いますか？${warning}`)) return;
-    const formulaDecisions = { ...node.formula_decisions };
-    for (const regionId of pendingFormulaIds) {
-      formulaDecisions[regionId] = setFormulaConfirmation(formulaDecisions[regionId], "confirmed", "bulk");
-    }
-    onChange({ ...node, formula_decisions: formulaDecisions });
-  };
-  const removeFormula = (index: number, regionId: string) => {
-    if (!window.confirm("この数式を問題内容から削除しますか？ 元の問題用紙は残ります。")) return;
-    clearMergeSelection();
-    onChange({ ...node,
-      ordered_content: node.ordered_content.filter((_, at) => at !== index).map((item, order) => ({ ...item, order })),
-      formula_decisions: { ...node.formula_decisions,
-        [regionId]: setFormulaConfirmation({ ...node.formula_decisions[regionId], decision: "excluded" }, "confirmed", "individual") },
-    });
-  };
-  const mergeFormula = (index: number, regionId: string, source: string) => {
-    const previous = node.ordered_content[index - 1];
-    const formula = node.ordered_content[index];
-    const latex = inlineFormulaSource(source);
-    if (previous?.type !== "text" || typeof previous.text !== "string" ||
-        formula?.type !== "formula_region" || !latex || previous.text.length + latex.length + 2 > 20000) return;
-    clearMergeSelection();
-    const anchor = Object.fromEntries(Object.entries(formula).filter(([key]) => key !== "order"));
-    const segments = [
-      ...(Array.isArray(previous.merged_source_segments) ? previous.merged_source_segments : []),
-      anchor,
-    ];
-    const merged = { ...previous, text: `${previous.text}$${latex}$`, merged_source_segments: segments };
-    mergeFocusIndex.current = index - 1;
-    const oldDecision = node.formula_decisions[regionId] || { decision: "unreviewed" };
-    const wasConfirmed = formulaIsConfirmed(oldDecision);
-    const mergedDecision = setFormulaConfirmation({
-      ...oldDecision, decision: "merged_into_text", teacher_transcription: latex,
-    }, wasConfirmed ? "confirmed" : "unreviewed", oldDecision.confirmation_method || "individual");
-    onChange({ ...node,
-      ordered_content: node.ordered_content.flatMap((item, at) => at === index - 1 ? [merged] : at === index ? [] : [item])
-        .map((item, order) => ({ ...item, order })),
-      formula_decisions: { ...node.formula_decisions, [regionId]: mergedDecision },
-    });
+    onChange({...node, formula_decisions: decisions});
   };
   const fieldIssues = (key: string) => issues[key] || [];
   const errors = (key: string) => fieldIssues(key).map((issue, index) => <small key={index} className="review-field-error" role="alert">{issue}</small>);
   const needsCheck = (key: string) => fieldIssues(key).length ? <span className="review-required">要確認</span> : null;
-  let textNumber = 0, formulaNumber = 0, figureNumber = 0;
   return <article className="panel review-field-target" id={reviewFieldId(node.stable_key, "node")} aria-label="選択問題エディタ">
     <h3>{node.label.raw || "名称未設定の設問"} {modified && <span className="badge badge-rubric_review">自動解析から変更あり</span>}</h3>
     {errors("node")}
@@ -187,123 +81,44 @@ export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange
           : <label id={reviewFieldId(node.stable_key, "score")} className={fieldIssues("score").length ? "review-field-target has-error" : "review-field-target"}>配点{node.score_semantics === "direct" ? <span className="review-required" aria-label="必須">*</span> : null}{needsCheck("score")}<input type="number" min="0" max="1000000000" step="any" disabled={node.score_semantics === "ambiguous" || hasChildren} value={node.score_points ?? ""} aria-invalid={!!fieldIssues("score").length}
             onChange={e => onChange({ ...node, score_points: e.target.value === "" ? null : Number(e.target.value) })} />{hasChildren && <p className="muted">小問がある設問は、この画面では直接配点できません。小問の個別配点を合計する方式を選んでください。</p>}{errors("score")}</label>}
       {automatic && <p className="muted">自動解析による配点: {scoreSemanticsLabel(automatic.score.semantics)} {automatic.score.points ?? "—"}</p>}
-      <h4>問題文・数式・図（原文の読み順）</h4>
-      <div className="review-toolbar">
-        <button type="button" onClick={() => setMergeSelectionState({
-          nodeKey: node.stable_key, active: !mergeMode, indices: [],
-        })}>{mergeMode ? "一括結合をキャンセル" : "内容をまとめて結合"}</button>
-        {pendingFormulaIds.length > 0 && <button type="button" className="button secondary" onClick={confirmAllFormulas}>
-          未確認の数式を一括確認（{pendingFormulaIds.length}件）
-        </button>}
-        {mergeMode && <>
-          <span className="muted">先頭を問題文にして、連続する問題文と数式を2件以上選択してください。図をまたぐ結合はできません。</span>
-          <button type="button" disabled={!canMergeSelection} onClick={() => mergeContentItems(selectedMergeIndices)}>
-            選択した{selectedMergeIndices.length}件の内容を結合
-          </button>
-        </>}
-      </div>
-      {mergeMode && selectedMergeIndices.length > 0 && !canMergeSelection && <p className="warn" role="status">
-        {selectedMergeIndices.length < 2 ? "問題文と数式を2件以上選択してください。"
-          : !selectedMergeContiguous ? "連続する内容だけを結合できます。間にある項目も選択してください。"
-            : node.ordered_content[selectedMergeIndices[0]]?.type !== "text" ? "選択範囲の先頭は問題文にしてください。"
-              : selectedMergeIndices.some(index => node.ordered_content[index]?.type === "figure_region") ? "図をまたぐ結合はできません。"
-                : "数式の内容または文字数上限を確認してください。"}
-      </p>}
-      {node.ordered_content.map((item, index) => {
-        if (item.type === "text" && typeof item.text === "string") {
-          const number = ++textNumber, key = `text:${index}`;
-          const preceding = node.ordered_content[index - 1];
-          const precedingText = preceding?.type === "text" && typeof preceding.text === "string" ? preceding.text : null;
-          const canMerge = precedingText !== null;
-          const mergeTooLong = precedingText !== null && precedingText.length + item.text.length > 20000;
-          const embeddedFormulaIds = Array.isArray(item.merged_source_segments)
-            ? [...new Set(item.merged_source_segments.filter(segment => segment.type === "formula_region" && typeof segment.region_id === "string")
-              .map(segment => String(segment.region_id)))] : [];
-          return <section className={fieldIssues(key).length ? "review-content-item has-error" : "review-content-item"} id={reviewFieldId(node.stable_key, key)} key={`text-${index}`} data-content-type="text">
-            {mergeMode && <label className="review-merge-select"><input type="checkbox" aria-label={`まとめて結合する 問題文 ${number}`}
-              checked={selectedMergeIndices.includes(index)} onChange={event => setMergeSelectionState({
-                nodeKey: node.stable_key, active: true,
-                indices: event.target.checked
-                  ? [...new Set([...selectedMergeIndices, index])].sort((a, b) => a - b)
-                  : selectedMergeIndices.filter(selectedIndex => selectedIndex !== index),
-              })} />この問題文を一括結合に含める</label>}
-            <label>問題文 {number} <span className="review-required" aria-label="必須">*</span>{needsCheck(key)}<textarea ref={element => { if (element && mergeFocusIndex.current === index) { element.focus(); mergeFocusIndex.current = null; } }} aria-label={`問題文 ${number}`} maxLength={20000} value={item.text} aria-invalid={!!fieldIssues(key).length}
-              onChange={e => updateItems(node.ordered_content.map((value, at) => at === index ? { ...value, text: e.target.value } : value))} /></label>
-            {errors(key)}<small className="math-help">{markdownMathHelp}</small><MarkdownMathPreview source={item.text} />
-            {mathContext && <><LatexNormalizationControl key={`${node.stable_key}:${index}:${mathContext.revision}`} text={item.text} contextType="question"
-              contextLabel={node.label.raw} source={mathSource(index)} disabled={readonly || !mathSource(index)}
-              onApply={(text, proposal) => onChange({...node, math_ocr_edits: edits(proposal),
-                ordered_content: node.ordered_content.map((value, at) => at === index ? {...value, text} : value)})} />
-              {!mathSource(index) && <p className="muted">数式OCRには、この問題文に対応する元PDFの位置情報が必要です。構成を変更した場合は先に保存してください。</p>}</>}
-            {embeddedFormulaIds.length > 0 && <section className="embedded-formula-confirmations" aria-label={`問題文 ${number}に含まれる数式`}>
-              <strong>この問題文に含まれる数式（{embeddedFormulaIds.length}件）</strong>
-              {embeddedFormulaIds.map((regionId, embeddedIndex) => {
-                const decision = node.formula_decisions[regionId];
-                return <div className="embedded-formula-confirmation" key={regionId} data-embedded-formula-id={regionId}>
-                  <FormulaConfirmation label={`結合済み数式 ${embeddedIndex + 1}`} decision={decision} disabled={readonly}
-                    onChange={status => onChange({ ...node, formula_decisions: {
-                      ...node.formula_decisions,
-                      [regionId]: setFormulaConfirmation(decision, status, "individual"),
-                    } })} />
-                  <button type="button" onClick={() => onRegion(regionId)}>元資料で数式を確認</button>
-                  {activeRegionId === regionId && renderEvidence?.(regionId)}
-                </div>;
-              })}
-            </section>}
-            <div className="review-content-actions"><button type="button" onClick={() => moveItem(index, -1)} disabled={index === 0}>上へ</button><button type="button" onClick={() => moveItem(index, 1)} disabled={index === node.ordered_content.length - 1}>下へ</button>{canMerge && <button type="button" onClick={() => mergeText(index)} disabled={mergeTooLong} title={mergeTooLong ? "結合後の問題文が文字数上限を超えます" : undefined}>上の問題文とマージ</button>}<button type="button" onClick={() => removeText(index, String(item.text))}>問題文 {number}を削除</button></div>
-          </section>;
-        }
-        if ((item.type === "formula_region" || item.type === "figure_region") && typeof item.region_id === "string") {
-          const regionId = item.region_id, formula = item.type === "formula_region";
-          const number = formula ? ++formulaNumber : ++figureNumber;
-          const region = regionById.get(regionId);
-          const decision = formula ? node.formula_decisions[regionId] : node.figure_decisions[regionId];
-          const source = decision?.teacher_transcription ?? region?.text_fragments?.map(fragment => fragment.native_text).join("\n") ?? "";
-          const preceding = node.ordered_content[index - 1];
-          const precedingText = preceding?.type === "text" && typeof preceding.text === "string" ? preceding.text : null;
-          const latex = inlineFormulaSource(String(source));
-          const mergeDisabled = !latex || (decision?.decision === "use_vision" && !decision.teacher_transcription) ||
-            (precedingText !== null && precedingText.length + latex.length + 2 > 20000);
-          const key = `${formula ? "formula" : "figure"}:${regionId}`;
-          return <section className={fieldIssues(key).length ? "review-content-item has-error" : "review-content-item"} id={reviewFieldId(node.stable_key, key)} key={regionId} data-content-type={formula ? "formula" : "figure"} data-region-id={regionId}>
-            {mergeMode && formula && <label className="review-merge-select"><input type="checkbox" aria-label={`まとめて結合する 数式 ${number}`}
-              checked={selectedMergeIndices.includes(index)} onChange={event => setMergeSelectionState({
-                nodeKey: node.stable_key, active: true,
-                indices: event.target.checked
-                  ? [...new Set([...selectedMergeIndices, index])].sort((a, b) => a - b)
-                  : selectedMergeIndices.filter(selectedIndex => selectedIndex !== index),
-              })} />この数式を一括結合に含める</label>}
-            <div className="review-content-heading"><h5>{reviewContentLabel(item.type)} {number}</h5><span className={formulaIsConfirmed(decision) ? "review-confirmed" : "review-needs-check"}>{formula ? (formulaIsConfirmed(decision) ? "確認済み" : "未確認") : decision?.decision && decision.decision !== "unreviewed" ? reviewDecisionLabel(decision.decision) : "要確認"}</span>{needsCheck(key)}</div>
-            {formula ? <><label>数式 {number}のLaTeX<textarea aria-label={`数式 ${number}のLaTeX`} maxLength={20000} value={String(source)} aria-invalid={!!fieldIssues(key).length} onFocus={() => onRegion(regionId)} onChange={e => {
-              const old = node.formula_decisions[regionId] || { decision: "unreviewed" };
-              const next = { ...setFormulaConfirmation({ ...old, decision: "teacher_edit", teacher_transcription: e.target.value }, "unreviewed"), decision: "teacher_edit", teacher_transcription: e.target.value };
-              onChange({ ...node, formula_decisions: { ...node.formula_decisions, [regionId]: next } });
-            }} /></label>{errors(key)}<MathPreview source={String(source)} mathOnly />
-              {mathContext && <LatexNormalizationControl key={`${node.stable_key}:${index}:${mathContext.revision}`} text={String(source)} contextType="question"
-                contextLabel={node.label.raw} source={mathSource(index)} disabled={readonly || !mathSource(index)}
-                prepareApply={questionFormulaText}
-                onApply={(text, proposal) => onChange({...node, math_ocr_edits: edits(proposal), formula_decisions: {
-                  ...node.formula_decisions, [regionId]: setFormulaConfirmation({ ...decision, decision: "teacher_edit",
-                    teacher_transcription: text}, "confirmed", "individual")}})} />}
-              <FormulaConfirmation label={`数式 ${number}の確認`} decision={decision} disabled={readonly}
-                onChange={status => onChange({ ...node, formula_decisions: {
-                  ...node.formula_decisions, [regionId]: setFormulaConfirmation(decision, status, "individual"),
-                } })} />
-            </> : <p className="muted">原問題用紙の図を確認し、確認結果を選択してください。</p>}
-            <button type="button" onClick={() => onRegion(regionId)}>{formula ? "読み取り候補と確認方法を表示" : "図の原文と確認方法を表示"}</button>
-            <div className="review-content-actions"><button type="button" onClick={() => moveItem(index, -1)} disabled={index === 0}>上へ</button><button type="button" onClick={() => moveItem(index, 1)} disabled={index === node.ordered_content.length - 1}>下へ</button></div>
-            {formula && <div className="review-content-actions">
-              {precedingText !== null && <button type="button" onClick={() => mergeFormula(index, regionId, String(source))} disabled={mergeDisabled}
-                title={mergeDisabled ? "数式の内容を確認・修正してから結合してください" : "数式を直前の問題文にインライン数式として結合します"}>上の問題文とマージ</button>}
-              <button type="button" onClick={() => removeFormula(index, regionId)}>数式 {number}を削除</button>
-            </div>}
-            {activeRegionId === regionId && renderEvidence?.(regionId)}
-          </section>;
-        }
-        if (item.type === "score_expression") return <div className="review-content-item" key={`score-${index}`}>配点の記載: {typeof item.text === "string" ? item.text : "原文を確認してください"}</div>;
-        return <div className="notice" key={`other-${index}`}>表示できない内容があります。<details><summary>技術情報</summary><code>{item.type}</code></details></div>;
+      <section id={reviewFieldId(node.stable_key, "content")} className={fieldIssues("content").length ? "review-content-item has-error" : "review-content-item"} data-content-type="question-content" aria-label="問題文の編集">
+        {Object.keys(issues).filter(key => key.startsWith("text:") || key.startsWith("formula:")).map(key =>
+          <span key={key} id={reviewFieldId(node.stable_key, key)} />)}
+        <label>問題文<textarea aria-label="問題文" maxLength={20000} rows={14} value={content} aria-invalid={!!fieldIssues("content").length}
+          onChange={event => changeContent(event.target.value)} /></label>
+        {errors("content")}
+        {contentError && <p role="alert">{contentError}</p>}
+        <small className="math-help">{markdownMathHelp}</small><MarkdownMathPreview source={content} />
+        {mathContext && <><LatexNormalizationControl key={`${node.stable_key}:${mathContext.revision}`} text={content}
+          contextType="question" contextLabel={node.label.raw} source={source} disabled={readonly || !source}
+          onApply={changeContent} />
+          {!source && <p className="muted" role="status">{!mathContext.savedNode || JSON.stringify(node.ordered_content.map(questionMathReference)) !== JSON.stringify(mathContext.savedNode.ordered_content.map(questionMathReference))
+            ? "構成の変更を保存すると、元PDFとの対応を確認して数式OCRを利用できます。"
+            : "この設問には利用できる元PDFの対応情報がありません。"}</p>}</>}
+        {regions.some(r => r.region_type === "formula") && <div className="review-toolbar">
+          <button type="button" onClick={confirmContent}>問題文を確認</button>
+          <span className="muted">{regions.filter(r => r.region_type === "formula").every(r => formulaIsConfirmed(node.formula_decisions[r.region_id]))
+            ? "元資料との照合済み" : "元資料と問題文を照合してください。編集後は再確認が必要です。"}</span>
+        </div>}
+        {Object.entries(issues).filter(([key]) => key.startsWith("text:") || key.startsWith("formula:")).flatMap(([key, messages]) =>
+          messages.map((message, index) => <p role="alert" key={`${key}:${index}`}>{message}</p>))}
+      </section>
+      {node.ordered_content.filter(item => item.type === "figure_region").map(item => {
+        const id = String("region_id" in item ? item.region_id : ""), decision = node.figure_decisions[id];
+        return <section key={id} className="review-content-item" data-content-type="figure" data-region-id={id}>
+          <h4>図</h4><p className="muted">原問題用紙の図を確認し、確認結果を選択してください。</p>
+          <button type="button" onClick={() => onRegion(id)}>図の原文と確認方法を表示</button>
+          <p>{decision?.decision ? reviewDecisionLabel(decision.decision) : "要確認"}</p>
+          {errors(`figure:${id}`)}{activeRegionId === id && renderEvidence?.(id)}
+        </section>;
       })}
-      <button type="button" className="button secondary" onClick={addText}>＋ 問題文を追加</button>
+      <details><summary>出典・読み取り構造の診断</summary>
+        <pre>{JSON.stringify(node.ordered_content, null, 2)}</pre>
+        {regions.filter(r => r.region_type === "formula").map(r => <section key={r.region_id}>
+          <button type="button" onClick={() => onRegion(r.region_id)}>元資料を確認</button>
+          {activeRegionId === r.region_id && renderEvidence?.(r.region_id)}
+        </section>)}
+      </details>
     </fieldset>
     <details><summary>保存済みの問題文を表示</summary><MarkdownMathText source={node.body_text} /></details>
     {automatic && <details><summary>自動解析された問題文を表示</summary><MarkdownMathText source={automatic.body_text} /></details>}

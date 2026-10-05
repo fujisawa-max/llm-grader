@@ -273,6 +273,8 @@ class QuestionReviewService:
         pin = snap["vision_pin"]
         self._verify_pin(store, pin)
         extraction = self.s.get(QuestionImportExtraction, draft.extraction_id)
+        from .question_source_ownership import review_source_regions
+        source_regions = review_source_regions(snap['nodes'], value, ir)
         return {"id": review.id, "draft_id": review.draft_id, "test_id": extraction.test_id,
                 "state": snap["state"], "current_revision": review.current_revision,
                 "revision_number": rev.revision_number, "current_revision_sha256": review.current_revision_sha256,
@@ -282,7 +284,7 @@ class QuestionReviewService:
                 "source_ir_sha256": canonical_hash(ir), "summary": review_summary(snap, value, pin),
                 "warnings": warning_catalog(value, pin), "regions": regions(value),
                 "automatic_nodes": value["nodes"],
-                "source_regions": {n["stable_key"]: n["source_regions"] for n in value["nodes"]}}
+                "source_regions": source_regions}
 
     def save(self, rid, payload, *, mark=False):
         review = self._review(rid, lock=True)
@@ -389,10 +391,14 @@ class QuestionReviewService:
         return {"source_raw_sha256": pin["raw_sha256"], "result_id": pin["result_id"],
                 "raw": _load(self._artifact(store, pin["raw_ref"], pin["raw_sha256"], run_id))}
 
-    def preview(self, rid, page_index):
+    def preview(self, rid, page_index, revision_number=None):
         from .review_preview import page_preview
 
         review = self._review(rid)
         _, store, draft, ir = self._draft(review.draft_id)
-        self._revision(review, store)
-        return page_preview(store, ir, draft, page_index)
+        revision = self._revision(review, store, revision_number)
+        from .question_source_ownership import review_source_regions
+        mapping = review_source_regions(revision.snapshot['nodes'], draft, ir)
+        preview_draft = {**draft, 'nodes': [{**node, 'source_regions': mapping[node['stable_key']]}
+                         for node in revision.snapshot['nodes']]}
+        return page_preview(store, ir, preview_draft, page_index)

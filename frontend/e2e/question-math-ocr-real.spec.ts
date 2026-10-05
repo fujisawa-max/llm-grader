@@ -32,12 +32,12 @@ test("Question source OCR reuses crop/proposal UI and isolates local, saved and 
   const answersBefore = await (await page.request.get(`/api/v1/tests/${testId}/model-answers`)).json();
   const rubricsBefore = await (await page.request.get(`/api/v1/tests/${testId}/rubrics`)).json();
   await page.goto(`/question-import-reviews/${reviewId}`);
-  const formula = page.locator('[data-content-type="formula"]').first();
-  const editor = formula.getByLabel("数式 1のLaTeX", {exact:true});
+  const formula = page.locator('[data-content-type="question-content"]').first();
+  const editor = formula.getByLabel("問題文", {exact:true});
   const control = formula.getByRole("region", {name:"LaTeX変換", exact:true});
   const original = await editor.inputValue();
   expect(original).toContain("Precision=");
-  await expect(page.locator(".review-tree")).toContainText("問題2");
+  await expect(page.getByRole("combobox", {name:"対象設問", exact:true})).toContainText("問題2");
   let calls = 0;
   page.on("request", r => {if(r.url().endsWith("/math-ocr")) calls++;});
   const getProposal = async () => {
@@ -91,18 +91,6 @@ test("Question source OCR reuses crop/proposal UI and isolates local, saved and 
   await expect(control).toContainText("構文を確認してください");
   await control.getByRole("button", {name:"キャンセル"}).click();
   await page.unroute("**/math-ocr");
-  // A raw-LaTeX formula field preserves multiple independent proposals using
-  // a presentation-only environment, rather than leaving nested $$ wrappers.
-  const candidate = proposed.math_regions[0].final_candidate;
-  await page.route("**/math-ocr", r => r.fulfill({json: {...proposed,
-    normalized_text:`$$${candidate}$$\n\n$$${candidate}$$`}}));
-  await control.getByRole("button", {name:"数式をLaTeX化"}).click();
-  await expect(control.getByRole("button", {name:"この変換を適用"})).toBeEnabled();
-  await control.getByRole("button", {name:"この変換を適用"}).click();
-  await expect(editor).toHaveValue(`\\begin{gathered}${candidate}\\\\${candidate}\\end{gathered}`);
-  expect(await read()).toEqual(initial);
-  await editor.fill(original);
-  await page.unroute("**/math-ocr");
   await getProposal();
   await control.getByRole("button", {name:"この変換を適用"}).press("Enter");
   await expect(editor).toHaveValue(/\\frac\{TP\}\{TP\+FP\}/);
@@ -130,7 +118,7 @@ test("Question source OCR reuses crop/proposal UI and isolates local, saved and 
   await expect(editor).toHaveValue(edited);
   const warm = await (await page.request.get(`${manager}/runtimes/math_ocr/status`)).json();
   expect(warm.pid).toBe(cold.pid); expect(warm.started_at).toBe(cold.started_at);
-  await page.getByLabel("数式 1の確認", {exact:true}).selectOption("confirmed");
+  await page.getByRole("button", {name:"問題文を確認", exact:true}).click();
   // Preserve existing warning/confirmation workflow before the final import.
   const ack = page.getByRole("combobox", {name:/確認事項 .*の状態/});
   for(let i=0;i<await ack.count();i++) await ack.nth(i).selectOption("acknowledged");
@@ -149,6 +137,147 @@ test("Question source OCR reuses crop/proposal UI and isolates local, saved and 
   expect(formal[0].provenance.math_ocr_edits).toHaveLength(1);
   expect(await (await page.request.get(`/api/v1/tests/${testId}/model-answers`)).json()).toEqual(answersBefore);
   expect(await (await page.request.get(`/api/v1/tests/${testId}/rubrics`)).json()).toEqual(rubricsBefore);
-  expect(calls).toBe(7);
+  expect(calls).toBe(6);
+  expect(errors).toEqual([]);
+});
+
+test("sticky Question selection preserves local edits and split children keep exclusive formula provenance", async ({page}) => {
+  const errors: string[] = [];
+  page.on("dialog", d => d.accept());
+  await page.goto("/login");
+  await page.getByLabel("メールアドレス").fill(process.env.TEXT_TOOL_TEACHER_EMAIL!);
+  await page.getByLabel("パスワード").fill(process.env.MODEL_ANSWER_CLASSIFICATION_PASSWORD!);
+  await page.getByRole("button", {name:"ログイン"}).click();
+  await expect(page).not.toHaveURL(/login/);
+  page.on("pageerror", e => errors.push(e.message));
+  page.on("console", m => {if(m.type() === "error") errors.push(m.text());});
+  const testId = process.env.QUESTION_SPLIT_MATH_TEST_ID!;
+  const upload = await page.request.post(`/api/v1/tests/${testId}/question-materials`, {
+    headers: {"content-type":"application/pdf", "x-filename":"split-question.pdf"},
+    data: await readFile(process.env.QUESTION_MATH_PDF_PATH!)});
+  expect(upload.status()).toBe(201);
+  const draft = await (await page.request.post(`/api/v1/question-imports/${(await upload.json()).id}/draft`)).json();
+  const initial = await (await page.request.post(`/api/v1/question-import-drafts/${draft.id}/reviews`)).json();
+  const path = `/api/v1/question-import-reviews/${initial.id}`;
+  const read = async () => (await page.request.get(path)).json();
+  await page.goto(`/question-import-reviews/${initial.id}`);
+  const editor = page.getByLabel("問題文", {exact:true});
+  const selector = page.getByRole("combobox", {name:"対象設問", exact:true});
+  const control = page.getByRole("region", {name:"LaTeX変換", exact:true});
+  await expect(selector).toBeVisible();
+  expect(await selector.locator("option").allTextContents()).toEqual(expect.arrayContaining([expect.stringContaining("問題1"), expect.stringContaining("問題2")]));
+  expect(await page.locator(".review-question-selector").evaluate(e => getComputedStyle(e).position)).toBe("sticky");
+  const original = await editor.inputValue();
+  expect(original).toContain("Precision=");
+  await expect(page.locator('[data-content-type="formula"]')).toHaveCount(0);
+  await expect(page.getByLabel(/問題文 \d|数式 \dのLaTeX/)).toHaveCount(0);
+  // Add explicit split markers around the existing source-backed formula.
+  const numbered = original.replace("次の式の意味を説明せよ。", "1. 次の式の意味を説明せよ。")
+    .replace("途中の数値を変更しないこと。", "2. 途中の数値を変更しないこと。");
+  await editor.fill(numbered);
+  const firstKey = await selector.inputValue();
+  await selector.selectOption(initial.snapshot.nodes[1].stable_key);
+  await expect(editor).toHaveValue(/隣の設問/);
+  await selector.selectOption(firstKey);
+  await expect(editor).toHaveValue(numbered); // No discard and no implicit save.
+  expect(await read()).toEqual(initial);
+  await page.getByRole("button", {name:"小問に分割", exact:true}).click();
+  await expect(page.getByText("元資料との対応: 自動確認済み", {exact:true})).toHaveCount(2);
+  await page.getByRole("button", {name:"この内容で分割", exact:true}).click();
+  await expect(editor).toHaveValue(/Precision=/);
+  await expect(control.getByRole("button", {name:"数式をLaTeX化"})).toBeDisabled();
+  await expect(page.getByText("構成の変更を保存すると、元PDFとの対応を確認して数式OCRを利用できます。", {exact:true})).toBeVisible();
+  const save = page.waitForResponse(r => r.url().endsWith(`${initial.id}/revisions`) && r.request().method() === "POST");
+  await page.getByRole("button", {name:"変更を保存", exact:true}).click();
+  expect((await save).status()).toBe(200);
+  const split = await read();
+  const childKey = await selector.inputValue();
+  const child = split.snapshot.nodes.find((n: {stable_key: string}) => n.stable_key === childKey);
+  expect(child.source_review_owner).toBe(firstKey);
+  expect(split.source_regions[childKey].length).toBeGreaterThan(0);
+  const metadata = await (await page.request.get(`${path}/pages/0/metadata`)).json();
+  expect(metadata.regions.some((r: {source_id: string}) => r.source_id === childKey)).toBe(true);
+  expect(child.ordered_content.some((i: {type: string}) => i.type === "formula_region")).toBe(true);
+  await expect(control.getByRole("button", {name:"数式をLaTeX化"})).toBeEnabled();
+  const received = page.waitForResponse(r => r.url().endsWith("/math-ocr"));
+  await control.getByRole("button", {name:"数式をLaTeX化"}).click();
+  await expect(control.locator(".processing-spinner")).toBeVisible();
+  const response = await received;
+  expect(response.status()).toBe(200);
+  const proposal = await response.json();
+  expect(proposal.source.node_key).toBe(childKey);
+  expect(proposal.math_regions).toHaveLength(1);
+  expect(proposal.math_regions[0].validation).toBe("accepted");
+  expect(proposal.math_regions[0].original_text).not.toContain("途中の数値");
+  await expect(control.locator(".katex").first()).toBeVisible();
+  await expect(control.getByRole("checkbox")).toHaveCount(0);
+  await expect(control.getByRole("button", {name:"この変換を適用"})).toBeEnabled();
+  await control.getByRole("button", {name:"キャンセル"}).click();
+  expect(await read()).toEqual(split);
+  const manager = process.env.LLM_GRADER_RUNTIME_MANAGER_URL!;
+  const warmBefore = await (await page.request.get(`${manager}/runtimes/math_ocr/status`)).json();
+  const second = page.waitForResponse(r => r.url().endsWith("/math-ocr"));
+  await control.getByRole("button", {name:"数式をLaTeX化"}).click();
+  expect((await second).status()).toBe(200);
+  await control.getByRole("button", {name:"この変換を適用"}).click();
+  await expect(editor).toHaveValue(/\\frac\{TP\}/);
+  const edited = (await editor.inputValue()).replace("0.800", "0.800\\," );
+  await editor.fill(edited);
+  await expect(editor).toHaveValue(edited);
+  expect(await read()).toEqual(split);
+  const sibling = split.snapshot.nodes.find((n: {parent_key: string; stable_key: string}) => n.parent_key === firstKey && n.stable_key !== childKey);
+  await selector.selectOption(sibling.stable_key);
+  await expect(editor).toHaveValue(/途中の数値/);
+  expect(await editor.inputValue()).not.toContain("Precision");
+  // The prose-only sibling may request a no-math proposal; it cannot borrow
+  // the source formula owned by the other child.
+  const noMathResponse = page.waitForResponse(r => r.url().endsWith("/math-ocr"));
+  await control.getByRole("button", {name:"数式をLaTeX化"}).click();
+  const noMath = await noMathResponse;
+  expect(noMath.status()).toBe(200);
+  expect((await noMath.json()).status).toBe("no_change");
+  await selector.selectOption(childKey);
+  await expect(editor).toHaveValue(edited);
+  await page.getByRole("button", {name:"問題文を確認", exact:true}).click();
+  const saved = page.waitForResponse(r => r.url().endsWith(`${initial.id}/revisions`) && r.request().method() === "POST");
+  await page.getByRole("button", {name:"変更を保存", exact:true}).click();
+  expect((await saved).status()).toBe(200);
+  const persisted = await read();
+  expect(persisted.snapshot.nodes.find((n: {stable_key: string}) => n.stable_key === sibling.stable_key)).toEqual(sibling);
+  await page.reload();
+  await expect(selector).toHaveValue(childKey);
+  await expect(editor).toHaveValue(edited);
+  const warmAfter = await (await page.request.get(`${manager}/runtimes/math_ocr/status`)).json();
+  expect(warmAfter.pid).toBe(warmBefore.pid);
+  expect(warmAfter.started_at).toBe(warmBefore.started_at);
+  expect(await (await page.request.get(`/api/v1/tests/${testId}/questions`)).json()).toEqual([]);
+  // Finalization remains a separate, explicit hierarchy-aware operation.
+  await selector.selectOption(childKey);
+  await page.getByLabel("配点の扱い").selectOption("direct");
+  await page.getByRole("article", {name:"選択問題エディタ"}).locator('input[type="number"]').fill("10");
+  await selector.selectOption(sibling.stable_key);
+  await page.getByLabel("配点の扱い").selectOption("direct");
+  await page.getByRole("article", {name:"選択問題エディタ"}).locator('input[type="number"]').fill("0");
+  const ack = page.getByRole("combobox", {name:/確認事項 .*の状態/});
+  for(let i=0;i<await ack.count();i++) await ack.nth(i).selectOption("acknowledged");
+  const finalSave = page.waitForResponse(r => r.url().endsWith(`${initial.id}/revisions`) && r.request().method() === "POST");
+  await page.getByRole("button", {name:"変更を保存", exact:true}).click();
+  expect((await finalSave).status()).toBe(200);
+  const marked = page.waitForResponse(r => r.url().endsWith("/mark-reviewed"));
+  await page.getByRole("button", {name:"確認済みにする", exact:true}).click();
+  expect((await marked).status()).toBe(200);
+  await page.getByRole("button", {name:"問題登録前の最終確認へ", exact:true}).click();
+  await expect(page.getByText("問題を登録できます。登録すると、この試験の問題として確定されます。")).toBeVisible();
+  await page.getByRole("button", {name:"確認した問題を登録", exact:true}).click();
+  await expect.poll(async () => (await (await page.request.get(`/api/v1/tests/${testId}/questions`)).json()).length).toBe(4);
+  const formal = await (await page.request.get(`/api/v1/tests/${testId}/questions`)).json();
+  const formalChild = formal.find((q: {question_text: string}) => q.question_text.includes("\\frac{TP}"));
+  expect(formalChild.parent_id).toBeTruthy();
+  expect(formalChild.question_text).toContain("次の式の意味を説明せよ。");
+  expect(formalChild.question_text).not.toContain("途中の数値を変更しないこと。");
+  expect(formalChild.provenance.math_ocr_edits).toHaveLength(1);
+  expect(formalChild.max_points).toBe(10);
+  expect(await (await page.request.get(`/api/v1/tests/${testId}/model-answers`)).json()).toEqual([]);
+  expect(await (await page.request.get(`/api/v1/tests/${testId}/rubrics`)).json()).toEqual([]);
   expect(errors).toEqual([]);
 });

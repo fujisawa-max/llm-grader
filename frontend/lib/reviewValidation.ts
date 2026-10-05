@@ -32,17 +32,7 @@ export function reviewFieldLabel(node: ReviewNode, fieldKey: string): string {
   if (fieldKey === "label") return "設問名";
   if (fieldKey === "score") return "配点";
   if (fieldKey === "parent") return "設問の階層";
-  if (fieldKey.startsWith("text:")) {
-    const index = Number(fieldKey.slice(5));
-    const count = node.ordered_content.slice(0, index + 1).filter(item => item.type === "text").length;
-    return `問題文${count || 1}`;
-  }
-  if (fieldKey.startsWith("formula:")) {
-    const regionId = fieldKey.slice(8);
-    const index = node.ordered_content.findIndex(item => item.type === "formula_region" && "region_id" in item && item.region_id === regionId);
-    const count = node.ordered_content.slice(0, index < 0 ? 0 : index + 1).filter(item => item.type === "formula_region").length;
-    return `数式${count || 1}`;
-  }
+  if (fieldKey === "content" || fieldKey.startsWith("text:") || fieldKey.startsWith("formula:")) return "問題文";
   return "保存内容";
 }
 
@@ -60,11 +50,10 @@ export function validateReviewFields(nodes: ReviewNode[]): FieldIssues {
   for (const node of nodes.filter(item => item.included)) {
     const fields: Record<string, string[]> = {};
     if (!node.label.raw.trim()) fields.label = ["設問名を入力してください。"];
-    node.ordered_content.forEach((item, index) => {
-      if (item.type === "text" && typeof item.text === "string" && !item.text.trim()) {
-        fields[`text:${index}`] = ["問題文が空です。不要な項目は削除してください。"];
-      }
-    });
+    if (!nodes.some(child => child.included && child.parent_key === node.stable_key) &&
+        (!node.ordered_content.length || node.ordered_content.every(item => item.type === "text" && !String(item.text ?? "").trim()))) {
+      fields.content = ["問題文が空です。入力してください。"];
+    }
     if (["direct", "each_child"].includes(node.score_semantics) && node.score_points === null) {
       fields.score = ["配点を入力してください。"];
     }

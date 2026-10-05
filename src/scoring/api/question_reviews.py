@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Literal
@@ -84,14 +84,15 @@ class CorrectionRequest(BaseModel):
 def router(db, root, classifier=None):
     r = APIRouter(prefix="/api/v1")
 
+    @r.post("/question-import-reviews/{review_id}/nodes/{node_key}/math-ocr")
     @r.post("/question-import-reviews/{review_id}/nodes/{node_key}/items/{item_index}/math-ocr")
     def math_ocr(review_id: str, node_key: str, body: QuestionMathRequest,
-                 item_index: int = 0, s=Depends(db)):
+                 item_index: int | None = None, s=Depends(db)):
         import json
         import logging
         from ..question_math_source import question_math_source, compact_provenance
         from ..source_math_ocr import SourceMathOCR, MathOCRError
-        if item_index < 0 or len(json.dumps(body.expected_source)) > 20000:
+        if (item_index is not None and item_index < 0) or len(json.dumps(body.expected_source)) > 200000:
             raise HTTPException(422, detail={"error": {"code": "math_question_source_missing"}})
         try:
             path, segments, source, exclusions = question_math_source(QuestionReviewService(s, root), review_id,
@@ -223,8 +224,8 @@ def router(db, root, classifier=None):
         return call(s, "get", review_id, revision)
 
     @r.get("/question-import-reviews/{review_id}/pages/{page_index}/metadata")
-    def page_metadata(review_id: str, page_index: int, s=Depends(db)):
-        return call(s, "preview", review_id, page_index)[1]
+    def page_metadata(review_id: str, page_index: int, revision: int | None = Query(default=None, ge=1), s=Depends(db)):
+        return call(s, "preview", review_id, page_index, revision)[1]
 
     @r.get("/question-import-reviews/{review_id}/pages/{page_index}/preview")
     def page_preview(review_id: str, page_index: int, s=Depends(db)):

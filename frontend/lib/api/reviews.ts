@@ -17,7 +17,7 @@ export const reviews = {
   save: (id: string, snapshot: ReviewSnapshot, base_revision: number) => apiFetch<ReviewDocument>(path(id) + "/revisions", json({ snapshot, base_revision })),
   reviewed: (id: string, base_revision: number) => apiFetch<ReviewDocument>(path(id) + "/mark-reviewed", json({ base_revision })),
   history: (id: string) => apiFetch<{ revisions: RevisionInfo[] }>(path(id) + "/revisions"),
-  metadata: (id: string, page: number) => apiFetch<PreviewMetadata>(path(id) + `/pages/${page}/metadata`),
+  metadata: (id: string, page: number, revision?: number) => apiFetch<PreviewMetadata>(path(id) + `/pages/${page}/metadata` + (revision ? `?revision=${revision}` : "")),
   previewUrl: (id: string, page: number) => base + path(id) + `/pages/${page}/preview`,
   cropUrl: (id: string, region: string) => base + path(id) + `/regions/${encodeURIComponent(region)}/crop`,
   evidence: (id: string, region: string) => apiFetch<RegionEvidence>(path(id) + `/regions/${encodeURIComponent(region)}/evidence`),

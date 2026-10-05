@@ -133,3 +133,5 @@
 .processing-spinner { display: inline-block; width: 1em; height: 1em; margin-right: .5em; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: math-processing-spin 1s linear infinite; }
 @keyframes math-processing-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .processing-spinner { animation: none; } }
+
+.review-question-selector{position:sticky;top:12px;z-index:8;background:var(--panel,#fff)}.review-question-selector label{display:grid;gap:8px}.review-question-selector select{width:100%;font:inherit;padding:10px;min-width:0}.review-question-selector .review-toolbar{margin-bottom:0}.review-fields [aria-label="問題文"]{min-height:240px}

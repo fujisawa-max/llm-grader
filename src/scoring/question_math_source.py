@@ -28,42 +28,33 @@ def question_math_source(service, review_id, node_key, item_index, revision, exp
     if node is None or not node.get('included'):
         raise ReviewError('math_question_target_not_found', 404)
     items = node['ordered_content']
-    if item_index >= len(items) or items[item_index]['type'] not in {'text', 'formula_region'}:
+    if item_index is None:
+        reference = {'items': [item_reference(it) for it in items]}
+    elif 0 <= item_index < len(items) and items[item_index]['type'] in {'text', 'formula_region'}:
+        reference = item_reference(items[item_index])
+    else:
         raise ReviewError('math_question_source_missing', 422)
-    item = items[item_index]
-    if item_reference(item) != expected_source:
+    if reference != expected_source:
         raise ReviewError('math_question_source_stale', 409)
-    ids = item_ids(item)
-    if not ids and item['type'] == 'formula_region':
-        region = next((r for r in automatic.get('formula_regions', []) if r['region_id'] == item['region_id']), None)
-        ids = (region or {}).get('source_element_ids', [])
+    from .question_source_ownership import owned_native_ids
+    nodes = current.snapshot['nodes']
+    owned, unresolved = owned_native_ids(node, nodes, automatic, ir)
+    if item_index is None:
+        ids = owned
+    else:
+        target = {**node, 'ordered_content': [items[item_index]]}
+        ids, _ = owned_native_ids(target, nodes, automatic, ir)
     if not ids:
-        raise ReviewError('math_question_source_missing', 422)
-    # Review save already validates immutable anchors. Additionally fail closed
-    # on shared/sliced source elements: a partial native bbox could contain a
-    # sibling Question even when its current text happens to match.
-    if item.get('source_slice') or any(s.get('source_slice') for s in item.get('merged_source_segments') or []):
-        raise ReviewError('math_question_source_boundary', 422)
-    for other in current.snapshot['nodes']:
+        raise ReviewError('math_question_source_boundary' if unresolved else 'math_question_source_missing', 422)
+    for other in nodes:
         if other['stable_key'] == node_key or not other.get('included'):
             continue
-        if any(set(ids) & set(item_ids(it)) for it in other['ordered_content']):
+        other_ids, shared = owned_native_ids(other, nodes, automatic, ir)
+        if set(ids) & set(other_ids + shared):
             raise ReviewError('math_question_source_boundary', 422)
-    # Allow only native IDs actually belonging to this source node. No page-wide
-    # discovery or arbitrary frontend bbox/path is used.
-    owner_key = node.get('source_draft_stable_key')
-    by_key = {n['stable_key']: n for n in current.snapshot['nodes']}
-    ancestor = node
-    while not owner_key and ancestor.get('parent_key'):
-        ancestor = by_key[ancestor['parent_key']]
-        owner_key = ancestor.get('source_draft_stable_key')
-    owner = next((n for n in automatic['nodes'] if n['stable_key'] == owner_key), None)
-    allowed = {i for it in (owner or {}).get('ordered_content', []) for i in item_ids(it)}
-    owner_regions = {it.get('region_id') for it in (owner or {}).get('ordered_content', [])}
-    allowed.update(i for region in automatic.get('formula_regions', [])
-                   if region['region_id'] in owner_regions for i in region.get('source_element_ids', []))
-    if not set(ids) <= allowed:
-        raise ReviewError('math_question_source_boundary', 422)
+    # Reviewed ownership is derived from immutable anchors and nonoverlapping
+    # source slices, not from all evidence of the original automatic ancestor.
+    allowed = set(owned)
     by_id = {e['element_id']: (page['page_index'], e) for page in ir['pages'] for e in page['elements']}
     segments = []
     for identifier in ids:
@@ -73,12 +64,15 @@ def question_math_source(service, review_id, node_key, item_index, revision, exp
         segments.append({'id': identifier, 'original_text': element.get('native_text', ''),
             'page_index': page_index, 'bbox': deepcopy(element['bbox']),
             'reading_order': element.get('reading_order', ids.index(identifier))})
+    segments.sort(key=lambda value: (value['page_index'], value['reading_order'], value['id']))
+    ids = [segment['id'] for segment in segments]
     exclusions = [{'page_index': page_index, 'bbox': deepcopy(element['bbox'])}
         for identifier, (page_index, element) in by_id.items()
         if identifier not in allowed and element['type'] == 'text' and element.get('bbox')]
     return store.path('source.pdf'), segments, {
         'kind': 'question_review', 'review_id': review.id, 'node_key': node_key,
-        'review_node_id': node['review_node_id'], 'revision': revision, 'item_index': item_index,
+        'review_node_id': node['review_node_id'], 'revision': revision, 'item_index': item_index if item_index is not None else 0,
+        'target': 'question_content' if item_index is None else 'item', 'unresolved_source_ids': unresolved,
         'material_id': ir['source']['material_id'], 'source_sha256': ir['source']['sha256'],
         'source_ir_sha256': draft.source_ir_sha256, 'source_segment_ids': ids}, exclusions
 
@@ -129,13 +123,9 @@ def validate_math_edits(edits, node, draft, nodes):
         regions: list[Region] = Field(min_length=1, max_length=8)
     if not isinstance(edits, list) or len(edits) > 16 or len(json.dumps(edits)) > 100000:
         raise ReviewError('math_question_provenance_invalid', 422)
-    owner = node
-    seen = set()
-    by_key = {n['stable_key']: n for n in nodes}
-    while not owner.get('source_draft_stable_key') and owner.get('parent_key') and owner['stable_key'] not in seen:
-        seen.add(owner['stable_key'])
-        owner = by_key.get(owner['parent_key'], {})
-    original = next((n for n in draft['nodes'] if n['stable_key'] == owner.get('source_draft_stable_key')), {})
+    from .review_document import _source_owner
+    owner = _source_owner(node, {n['stable_key']: n for n in nodes})
+    original = next((n for n in draft['nodes'] if n['stable_key'] == owner), {})
     allowed = {i for item in original.get('ordered_content', []) for i in item_ids(item)}
     region_ids = {item.get('region_id') for item in original.get('ordered_content', [])}
     allowed.update(i for r in draft.get('formula_regions', []) if r['region_id'] in region_ids for i in r.get('source_element_ids', []))

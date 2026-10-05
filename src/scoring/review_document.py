@@ -75,10 +75,12 @@ def _text(value, limit=20000):
 
 
 def _source_owner(node, by_key):
-    """Nearest automatic ancestor owns PDF evidence used by a teacher child."""
+    """Stable reviewed origin, falling back to the legacy automatic ancestor."""
     seen = set()
     while node is not None and node["stable_key"] not in seen:
         seen.add(node["stable_key"])
+        if node.get("source_review_owner") is not None:
+            return node["source_review_owner"]
         if node.get("source_draft_stable_key") is not None:
             return node["source_draft_stable_key"]
         node = by_key.get(node.get("parent_key"))
@@ -88,6 +90,12 @@ def _source_owner(node, by_key):
 def _content_evidence(item):
     return {key: value for key, value in item.items()
             if key not in {"type", "order", "text", "merged_source_segments", "source_slice"}}
+
+
+def _contains_reviewed_formula(text, latex):
+    # Markdown inline/display math differ only in presentation. Check the
+    # reviewed transcription exactly, allowing delimiter-adjacent whitespace.
+    return bool(latex and re.search(r"(?<!\\)\${1,2}\s*" + re.escape(latex) + r"\s*\${1,2}", text))
 
 
 def _formula_confirmation_resolved(decision):
@@ -196,7 +204,7 @@ def _validate_content_provenance(nodes, source, by_key):
                 if len(matches) != 1:
                     target_node = next((node_key for segment, _, node_key in formula_segments if segment == evidence), owner)
                     raise ReviewError("source_anchor_changed", 422, node_key=target_node, field_key="source_mapping")
-                if not latex or f"${latex}$" not in matches[0]:
+                if not latex or not _contains_reviewed_formula(matches[0], latex):
                     raise ReviewError("merged_formula_text_missing", 422)
             elif state != "excluded":
                 raise ReviewError("formula_content_decision_mismatch", 422)
@@ -238,10 +246,10 @@ def validate_snapshot(snapshot, current, draft, pin, *, mark=False):
                           "parent_key", "node_type", "depth", "sort_order", "label", "body_text",
                           "ordered_content", "included", "score_semantics", "score_points",
                           "effective_points_candidate", "review_flags", "formula_decisions",
-                          "figure_decisions", "warning_states", "source_mapping_decision", "math_ocr_edits"}
+                          "figure_decisions", "warning_states", "source_mapping_decision", "math_ocr_edits", "source_review_owner"}
         if set(n) - allowed_fields:
             raise ReviewError("unknown_node_fields", 422)
-        required_fields = allowed_fields - {"effective_points_candidate", "depth", "source_mapping_decision", "math_ocr_edits"}
+        required_fields = allowed_fields - {"effective_points_candidate", "depth", "source_mapping_decision", "math_ocr_edits", "source_review_owner"}
         if not required_fields.issubset(n):
             raise ReviewError("missing_node_fields", 422)
         key, identity = n.get("stable_key"), n.get("review_node_id")
@@ -349,6 +357,18 @@ def validate_snapshot(snapshot, current, draft, pin, *, mark=False):
                 raise ReviewError("each_child_requires_children", 422)
             if n["score_semantics"] == "sum_children" and not has_children:
                 raise ReviewError("sum_children_requires_children", 422, node_key=key, field_key="score")
+        # The server binds a teacher node to its validated source origin once.
+        # Reparenting changes hierarchy, not the immutable PDF ownership chain.
+        if n.get("source_draft_stable_key") is None:
+            prior = previous.get(key)
+            expected_owner = _source_owner(prior, previous) if prior else _source_owner(
+                {k: v for k, v in n.items() if k != "source_review_owner"}, by_key)
+            if n.get("source_review_owner") not in (None, expected_owner):
+                raise ReviewError("source_identity_changed", 422)
+            if expected_owner is not None:
+                n["source_review_owner"] = expected_owner
+        elif n.get("source_review_owner") is not None:
+            raise ReviewError("source_identity_changed", 422)
         mapping_decision = n.get("source_mapping_decision")
         if mapping_decision is not None:
             if (not isinstance(mapping_decision, str) or mapping_decision not in
@@ -379,7 +399,10 @@ def validate_snapshot(snapshot, current, draft, pin, *, mark=False):
                             for segment in item.get("merged_source_segments", []) if isinstance(segment, dict))
                         for item in n["ordered_content"]):
                     raise ReviewError("invalid_unmapped_source_decision", 422, node_key=key, field_key="source_mapping")
-            elif not has_text_mapping:
+            elif not has_text_mapping and not any(
+                    item.get("type") == "formula_region" or any(
+                        segment.get("type") == "formula_region" for segment in item.get("merged_source_segments", []))
+                    for item in n["ordered_content"]):
                 raise ReviewError("missing_source_mapping_decision", 422, node_key=key, field_key="source_mapping")
     _validate_content_provenance(nodes, source, by_key)
     from .question_math_source import validate_math_edits
@@ -431,7 +454,7 @@ def validate_snapshot(snapshot, current, draft, pin, *, mark=False):
                 if decision == "merged_into_text":
                     formula_source = d.get("teacher_transcription", "").strip()
                     if not formula_source or not any(
-                            item.get("type") == "text" and f"${formula_source}$" in item.get("text", "")
+                            item.get("type") == "text" and _contains_reviewed_formula(item.get("text", ""), formula_source)
                             for item in n["ordered_content"]):
                         raise ReviewError("merged_formula_text_missing", 422)
                 identity = {"native_sha256": canonical_hash(owned[rid]),

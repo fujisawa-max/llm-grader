@@ -152,15 +152,17 @@ test("formula confirmation remains separate from independent or embedded state",
   expect(bulk).toMatchObject({ decision: "unreviewed", confirmation_status: "confirmed", confirmation_method: "bulk" });
 });
 
-test("repeated source text is ambiguous instead of choosing an arbitrary occurrence", () => {
+test("repeated text in a verified complete source block keeps ordered occurrences", () => {
   const original = "1. 同じ指示\n1. 同じ指示";
   const edited = node(`${original} `);
   const canonical = { ordered_content: [{
     type: "text", order: 0, text: original, page_index: 0, source_element_ids: ["source-1"],
   }] };
   const proposal = suggestSubquestions(edited, canonical);
-  expect(proposal?.children.map(child => child.mappingStatus)).toEqual(["manual_required", "manual_required"]);
-  expect(proposal?.canApply).toBe(false);
+  expect(proposal?.children.map(child => child.mappingStatus)).toEqual(["automatic", "automatic"]);
+  expect(proposal?.canApply).toBe(true);
+  const slices = proposal!.children.map(child => child.items[0].source_slice!);
+  expect(slices[0][1]).toBeLessThanOrEqual(slices[1][0]);
 });
 
 test("candidate matching normalizes only whitespace while preserving canonical offsets", () => {

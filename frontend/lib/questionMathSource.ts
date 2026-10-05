@@ -19,7 +19,15 @@ export function questionFormulaText(text: string): string | null {
 export function questionMathReference(item: ContentItem): Record<string, unknown> {
   return Object.fromEntries(Object.entries(item).filter(([key]) => key !== "text" && key !== "order"));
 }
-export function questionMathSource(reviewId: string, revision: number, node: ReviewNode, saved: ReviewNode | undefined, itemIndex: number): MathSource | undefined {
+export function questionMathSource(reviewId: string, revision: number, node: ReviewNode, saved: ReviewNode | undefined, itemIndex?: number): MathSource | undefined {
+  if (itemIndex === undefined) {
+    if (!saved) return;
+    const expected = {items: saved.ordered_content.map(questionMathReference)};
+    if (JSON.stringify({items: node.ordered_content.map(questionMathReference)}) !== JSON.stringify(expected)) return;
+    if (!node.ordered_content.some(item => [item, ...("merged_source_segments" in item ? item.merged_source_segments || [] : [])].some(s =>
+      (Array.isArray(s.source_element_ids) && s.source_element_ids.length) || s.type === "formula_region"))) return;
+    return {kind: "question_review", reviewId, nodeKey: node.stable_key, revision, expectedSource: expected};
+  }
   const item = node.ordered_content[itemIndex], previous = saved?.ordered_content[itemIndex];
   if (!item || !previous || !["text", "formula_region"].includes(item.type)) return;
   const reference = questionMathReference(item), expected = questionMathReference(previous);
@@ -27,6 +35,5 @@ export function questionMathSource(reviewId: string, revision: number, node: Rev
   const merged = "merged_source_segments" in item && Array.isArray(item.merged_source_segments) ? item.merged_source_segments : [];
   const evidence = [item, ...merged];
   if (!evidence.some(value => (Array.isArray(value.source_element_ids) && value.source_element_ids.length) || value.type === "formula_region")) return;
-  if (evidence.some(value => value.source_slice)) return; // A partial bbox may cross a sibling.
   return {kind: "question_review", reviewId, nodeKey: node.stable_key, itemIndex, revision, expectedSource: expected};
 }

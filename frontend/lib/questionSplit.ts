@@ -235,11 +235,6 @@ function normalizedMatches(haystack: string, needle: string): [number, number][]
   });
 }
 
-function uniqueOriginMatch(rawLine: string, origins: UnlocatedOrigin[] | null): boolean {
-  if (!origins?.length) return false;
-  return normalizedMatches(origins.map(origin => origin.canonicalText).join(""), rawLine).length === 1;
-}
-
 interface TextRangeMapping { origin: UnlocatedOrigin; range: [number, number, number] }
 
 function mappedLinePiece(item: ContentItem, _rawLine: string, displayText: string,
@@ -347,7 +342,10 @@ function textPiece(item: ContentItem, start: number, end: number, value: string,
   const segments: Record<string, unknown>[] = [];
   for (const origin of origins.filter(value => value.segment)) {
     if (origin.segment?.type === "formula_region") {
-      if (Math.max(origin.contentStart, start) < Math.min(origin.contentEnd, end)) segments.push(origin.segment);
+      if (Math.max(origin.contentStart, start) < Math.min(origin.contentEnd, end)) {
+        if (start > origin.contentStart || end < origin.contentEnd) return null;
+        segments.push(origin.segment);
+      }
       continue;
     }
     const range = splitRange(origin, start, end);
@@ -401,11 +399,9 @@ export function suggestSubquestions(node: ReviewNode, canonicalNode?: Pick<Revie
         continue;
       }
       const origins = sourceOrigins(item, node.formula_decisions, canonicalItems);
-      // Explicit, previously verified slices are authoritative. For content
-      // without a slice, resolve each candidate independently so repeated OCR
-      // text cannot inherit an occurrence merely from its surrounding block.
-      const hasExplicitSlice = "source_slice" in item && item.source_slice !== undefined;
-      const located = origins && hasExplicitSlice ? locateOrigins(item, node.formula_decisions, canonicalItems) : null;
+      // A verified ordered block provides occurrence positions, including
+      // repeated short tokens. Otherwise retain the conservative anchor matcher.
+      const located = origins ? locateOrigins(item, node.formula_decisions, canonicalItems) : null;
       lines.forEach(line => {
         if (line.match) {
           current = { label: labelFor(line.match, node.depth > 0), items: [], included: true, mappingStatus: "automatic", contentValid: true, selectedSourceIds: [] };
@@ -415,11 +411,17 @@ export function suggestSubquestions(node: ReviewNode, canonicalNode?: Pick<Revie
         const owner = current ? children.length - 1 : null;
         const displayedStart = line.start + (line.match?.[0].length || 0);
         const exactPiece = located ? textPiece(item, displayedStart, line.end, text, located) : null;
-        const mapped = line.match && !text.trim()
+        let mapped = line.match && !text.trim()
           ? { item: { type: "text", order: item.order, text } as ContentItem, valid: true }
-          : exactPiece && uniqueOriginMatch(text, origins)
+          : exactPiece
             ? { item: exactPiece, valid: true }
             : mappedLinePiece(item, line.value, text, origins);
+        if (!mapped.valid && line.match && text.trim()) {
+          // A teacher-added numbering marker carries no native geometry. The
+          // unchanged body can still be anchored independently and uniquely.
+          const bodyMapped = mappedLinePiece(item, text, text, origins);
+          if (bodyMapped.valid) mapped = bodyMapped;
+        }
         if (!mapped.valid) {
           if (owner !== null) {
             const candidate = children[owner];

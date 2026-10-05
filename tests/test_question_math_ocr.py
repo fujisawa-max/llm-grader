@@ -98,7 +98,8 @@ def test_source_pdf_tamper_rejected_before_inference(workspace):
     engine.assert_not_called()
 
 
-def test_unauthenticated_and_student_rejected_before_inference(workspace):
+@pytest.mark.parametrize("whole_question", [False, True])
+def test_unauthenticated_and_student_rejected_before_inference(workspace, whole_question):
     fixture, data = workspace
     from scoring.domain import DomainService
     from scoring.auth import hash_password
@@ -108,6 +109,10 @@ def test_unauthenticated_and_student_rejected_before_inference(workspace):
             password_hash=hash_password('isolated-student-password'), is_active=True)
         session.commit()
     url, body = body_and_url(data)
+    if whole_question:
+        node = data['snapshot']['nodes'][0]
+        url = url.replace('/items/1', '')
+        body['expected_source'] = {'items': [item_reference(i) for i in node['ordered_content']]}
     fixture.client.cookies.clear()
     with patch('scoring.source_math_ocr.SourceMathOCR.propose') as engine:
         assert fixture.client.post(url, json=body).status_code == 401
@@ -335,3 +340,151 @@ def test_question_japanese_prose_inside_native_math_span_is_not_removed(tmp_path
     assert result['reason_code'] == 'math_identifier_missing'
     assert result['normalized_text'] == text
     assert result['math_regions'][0]['crop_image']
+
+
+def test_split_slices_keep_whole_precision_atoms_and_exclude_sibling():
+    service, observed, item, current = adapter_fixture()
+    native_text = item['text']
+    # Include question prose and a second numeric occurrence after the formula.
+    canonical = deepcopy(item)
+    canonical['text'] = '（1）次の式\n' + native_text + '\n（2）24を説明せよ'
+    # The fixture's automatic and review node share a reference; keep immutable
+    # automatic evidence separate, just as the real artifact store does.
+    draft, store, automatic, ir = service._draft('draft')
+    automatic = deepcopy(automatic)
+    automatic['nodes'][0]['ordered_content'] = [canonical]
+    parent = current.snapshot['nodes'][0]
+    parent['ordered_content'] = []
+    begin = canonical['text'].index(native_text)
+    end = begin + len(native_text)
+    def child(key, a, b):
+        return {**parent, 'stable_key': key, 'review_node_id': key,
+            'source_draft_stable_key': None, 'parent_key': 'q1', 'ordered_content': [
+                {**canonical, 'text': canonical['text'][a:b], 'source_slice': [a, b, len(canonical['text'])]}]}
+    formula = child('teacher-formula', begin, end)
+    sibling = child('teacher-other', end+1, len(canonical['text']))
+    current.snapshot['nodes'] += [formula, sibling]
+    service._draft = lambda _: (draft, store, automatic, ir)
+    source = {'items': [item_reference(i) for i in formula['ordered_content']]}
+    _, segments, metadata, _ = question_math_source(service, 'review', formula['stable_key'], None, 1, source)
+    assert len(segments) == 7
+    assert [s['reading_order'] for s in segments if s['original_text'] == '24'] == [37, 39]
+    assert segments[1]['original_text'] == '𝑇𝑃'
+    assert metadata['target'] == 'question_content'
+    assert metadata['unresolved_source_ids'] == []
+    assert len(source_regions(segments, formula['ordered_content'][0]['text'], alignment_mode='source_fragment')) == 1
+    with pytest.raises(ReviewError, match='math_question_source_missing'):
+        question_math_source(service, 'review', sibling['stable_key'], None, 1,
+            {'items': [item_reference(i) for i in sibling['ordered_content']]})
+
+
+def test_split_inside_native_element_is_unresolved_not_copied():
+    service, _, item, current = adapter_fixture()
+    draft, store, automatic, ir = service._draft('draft')
+    automatic = deepcopy(automatic)
+    item['source_slice'] = [0, 5, len(item['text'])]
+    automatic['nodes'][0]['ordered_content'][0].pop('source_slice', None)
+    service._draft = lambda _: (draft, store, automatic, ir)
+    with pytest.raises(ReviewError, match='math_question_source_boundary'):
+        question_math_source(service, 'review', 'q1', None, 1, {'items': [item_reference(item)]})
+
+
+def test_node_api_reaches_shared_engine_with_all_owned_content(workspace):
+    fixture, data = workspace
+    node = data['snapshot']['nodes'][0]
+    url = f"/api/v1/question-import-reviews/{data['id']}/nodes/{node['stable_key']}/math-ocr"
+    body = {'text': '問題文\nx=1\nx=2', 'expected_revision': data['current_revision'],
+            'expected_source': {'items': [item_reference(i) for i in node['ordered_content']]}}
+    def node_proposal(path, segments, text, **kwargs):
+        # The new endpoint is an adapter into the existing engine; no source
+        # discovery, persistence or whole-page model call occurs here.
+        assert len(segments) >= 2
+        assert {s['original_text'] for s in segments} >= {'x=1', 'x=2'}
+        return {'status': 'no_change', 'original_text': text, 'normalized_text': text,
+                'profile': 'math_ocr', 'model': 'fixture', 'math_regions': []}
+    with patch('scoring.source_math_ocr.SourceMathOCR.propose', side_effect=node_proposal) as engine:
+        response = fixture.client.post(url, json=body)
+    assert response.status_code == 200, response.text
+    assert response.json()['source']['target'] == 'question_content'
+    engine.assert_called_once()
+    assert fixture.client.get(f"/api/v1/question-import-reviews/{data['id']}").json() == data
+
+
+def test_split_save_reload_formula_owner_and_reparented_origin(workspace):
+    fixture, data = workspace
+    snapshot = deepcopy(data['snapshot'])
+    parent = snapshot['nodes'][0]
+    anchor = parent['ordered_content'].pop(1)
+    parent['ordered_content'] = [{**i, 'order': at} for at, i in enumerate(parent['ordered_content'])]
+    child = {**deepcopy(parent), 'stable_key': 'teacher-math-child', 'review_node_id': 'teacher-math-child',
+             'source_draft_stable_key': None, 'source_draft_node_id': None,
+             'parent_key': parent['stable_key'], 'node_type': 'subquestion', 'sort_order': 0,
+             'ordered_content': [{**anchor, 'order': 0}], 'review_flags': [],
+             'score_semantics': 'unset', 'score_points': None, 'formula_decisions': {}, 'figure_decisions': {},
+             'source_mapping_decision': 'automatic'}
+    snapshot['nodes'].append(child)
+    parent.update(score_semantics='sum_children', score_points=None)
+    path = f"/api/v1/question-import-reviews/{data['id']}"
+    saved = fixture.client.post(path+'/revisions', json={'snapshot': snapshot, 'base_revision': 1})
+    assert saved.status_code == 200, saved.text
+    data = saved.json()
+    persisted = fixture.client.get(path).json()
+    assert persisted == data
+    child = next(n for n in data['snapshot']['nodes'] if n['stable_key'] == child['stable_key'])
+    assert child['source_review_owner'] == parent['stable_key']
+    current_metadata = fixture.client.get(path+'/pages/0/metadata').json()
+    previous_metadata = fixture.client.get(path+'/pages/0/metadata?revision=1').json()
+    assert any(r['source_id'] == child['stable_key'] for r in current_metadata['regions'])
+    assert not any(r['source_id'] == child['stable_key'] for r in previous_metadata['regions'])
+    assert fixture.client.get(path+'/pages/0/metadata?revision=-1').status_code == 422
+    url = path+f"/nodes/{child['stable_key']}/math-ocr"
+    body = {'text': 'x=1\nx=2', 'expected_revision': data['current_revision'],
+            'expected_source': {'items': [item_reference(i) for i in child['ordered_content']]}}
+    with patch('scoring.source_math_ocr.SourceMathOCR.propose', side_effect=proposal):
+        result = fixture.client.post(url, json=body)
+    assert result.status_code == 200, result.text
+    assert result.json()['source']['source_segment_ids'] == anchor['source_element_ids']
+    # A formula-only child remains valid after the unified editor turns its
+    # formula into text plus the immutable merged formula anchor.
+    changed = deepcopy(data['snapshot'])
+    formula_child = next(n for n in changed['nodes'] if n['stable_key'] == child['stable_key'])
+    latex = r'\begin{gathered}x=1\\x=2\end{gathered}'
+    formula_child['ordered_content'] = [{'type': 'text', 'order': 0, 'text': '$$\n'+latex+'\n$$',
+        'merged_source_segments': [{k: v for k, v in anchor.items() if k != 'order'}]}]
+    formula_child['formula_decisions'] = {anchor['region_id']: {'decision': 'merged_into_text',
+        'teacher_transcription': latex, 'confirmation_status': 'confirmed', 'confirmation_method': 'bulk'}}
+    merged = fixture.client.post(path+'/revisions', json={'snapshot': changed, 'base_revision': data['current_revision']})
+    assert merged.status_code == 200, merged.text
+    data = merged.json()
+    snapshot = deepcopy(data['snapshot'])
+    new_parent = {**deepcopy(child), 'stable_key': 'teacher-parent', 'review_node_id': 'teacher-parent',
+                  'parent_key': None, 'node_type': 'major_question', 'sort_order': 1,
+                  'ordered_content': [{'type': 'text', 'text': '教師が追加した親設問', 'order': 0}],
+                  'score_semantics': 'sum_children', 'score_points': None}
+    new_parent.pop('source_review_owner')
+    new_parent.pop('source_mapping_decision', None)
+    snapshot['nodes'].append(new_parent)
+    moved = next(n for n in snapshot['nodes'] if n['stable_key'] == child['stable_key'])
+    moved['parent_key'] = new_parent['stable_key']
+    saved = fixture.client.post(path+'/revisions', json={'snapshot': snapshot, 'base_revision': data['current_revision']})
+    assert saved.status_code == 200, saved.text
+    moved = next(n for n in saved.json()['snapshot']['nodes'] if n['stable_key'] == child['stable_key'])
+    assert moved['source_review_owner'] == parent['stable_key']
+    forged = saved.json()['snapshot']
+    next(n for n in forged['nodes'] if n['stable_key'] == child['stable_key'])['source_review_owner'] = 'teacher-parent'
+    rejected = fixture.client.post(path+'/revisions', json={'snapshot': forged, 'base_revision': saved.json()['current_revision']})
+    assert rejected.status_code == 422
+    assert rejected.json()['error']['code'] == 'source_identity_changed'
+
+
+def test_native_anchor_serialization_order_does_not_change_grouping():
+    service, observed, item, _ = adapter_fixture()
+    _, first, metadata, _ = question_math_source(service, 'review', 'q1', None, 1,
+        {'items': [item_reference(item)]})
+    item['source_element_ids'].reverse()
+    _, second, reordered, _ = question_math_source(service, 'review', 'q1', None, 1,
+        {'items': [item_reference(item)]})
+    assert first == second
+    assert metadata['source_segment_ids'] == reordered['source_segment_ids']
+    assert source_regions(first, observed['complete_math_text'], alignment_mode='source_fragment') == source_regions(
+        second, observed['complete_math_text'], alignment_mode='source_fragment')

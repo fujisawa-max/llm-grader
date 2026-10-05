@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ApiRequestError } from "@/lib/api/client";
 import { reviews, type ImportPlan, type Confirmation } from "@/lib/api/reviews";
 import type { Decision, ReviewDocument, ReviewNode, ReviewSnapshot, RevisionInfo } from "@/types/reviews";
-import { questionTypeLabel, reviewIssueLabel, reviewSaveIssueLabel, reviewStateLabel, scoreSemanticsLabel } from "@/lib/reviewLabels";
+import { reviewIssueLabel, reviewSaveIssueLabel, reviewStateLabel, scoreSemanticsLabel } from "@/lib/reviewLabels";
 import { buildQuestionPath, reviewFieldErrors, reviewFieldId, validateReviewFields, type FieldIssues, type ReviewFieldError } from "@/lib/reviewValidation";
 import { PdfPreview } from "./PdfPreview";
 import { NodeEditor } from "./NodeEditor";
@@ -61,13 +61,17 @@ export function ReviewWorkspace({ id }: { id: string }) {
   const [splitMessage, setSplitMessage] = useState("");
   const [pendingUnmappedOverride, setPendingUnmappedOverride] = useState<number | null>(null);
   const dirty = !!data && !!snapshot && JSON.stringify(snapshot) !== JSON.stringify(data.snapshot);
-  const install = useCallback((d: ReviewDocument) => { setData(d); setSnapshot(structuredClone(d.snapshot)); setSelected(prev => prev || d.snapshot.nodes[0]?.stable_key || ""); }, []);
+  const install = useCallback((d: ReviewDocument) => { setData(d); setSnapshot(structuredClone(d.snapshot)); setSelected(prev => {
+    const desired = prev || sessionStorage.getItem(`question-review-selection:${id}`);
+    return d.snapshot.nodes.some(node => node.stable_key === desired) ? desired! : d.snapshot.nodes[0]?.stable_key || "";
+  }); }, [id]);
   const load = useCallback(async (revision?: number) => {
     setBusy(true); setError(""); setFieldIssues({}); setInternalError(null);
     try { install(await reviews.get(id, revision)); setPlan(undefined); setSplitProposal(null); setPendingUnmappedOverride(null); setConfirmation(await reviews.confirmation(id)); setHistorical(!!revision); setHistory((await reviews.history(id)).revisions); }
     catch (e) { setError(message(e)); } finally { setBusy(false); }
   }, [id, install]);
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => {if(selected) sessionStorage.setItem(`question-review-selection:${id}`, selected);}, [id, selected]);
   useEffect(() => {
     if (!dirty) return;
     const unload = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ""; };
@@ -85,6 +89,7 @@ export function ReviewWorkspace({ id }: { id: string }) {
   function sourceKey(target: ReviewNode): string | null {
     let candidate: ReviewNode | undefined = target;
     while (candidate) {
+      if (candidate.source_review_owner) return candidate.source_review_owner;
       if (candidate.source_draft_stable_key) return candidate.source_draft_stable_key;
       candidate = current.nodes.find(entry => entry.stable_key === candidate?.parent_key);
     }
@@ -99,7 +104,7 @@ export function ReviewWorkspace({ id }: { id: string }) {
   const owner = region && (regionOwner(region.region_id) || current.nodes.find(n => n.source_draft_stable_key === region.assigned_question_key));
   function updateNode(next: ReviewNode) {
     setFieldIssues(previous => previous[next.stable_key]
-      ? { ...previous, [next.stable_key]: validateReviewFields([next])[next.stable_key] || {} }
+      ? { ...previous, [next.stable_key]: validateReviewFields(current.nodes.map(n => n.stable_key === next.stable_key ? next : n))[next.stable_key] || {} }
       : previous);
     setError("");
     setSnapshot({ ...current, nodes: current.nodes.map(n => n.review_node_id === next.review_node_id ? next : n) });
@@ -107,7 +112,8 @@ export function ReviewWorkspace({ id }: { id: string }) {
   function jumpToField(issue: ReviewFieldError) {
     setSelected(issue.nodeKey); setRegionId("");
     window.setTimeout(() => {
-      const target = window.document.getElementById(issue.targetId);
+      const target = window.document.getElementById(issue.fieldKey.startsWith("text:") || issue.fieldKey.startsWith("formula:")
+        ? reviewFieldId(issue.nodeKey, "content") : issue.targetId);
       target?.scrollIntoView({ block: "center", behavior: "smooth" });
       const focusable = target?.matches("input,textarea,select") ? target : target?.querySelector("input,textarea,select,button");
       (focusable as HTMLElement | null)?.focus({ preventScroll: true });
@@ -116,7 +122,7 @@ export function ReviewWorkspace({ id }: { id: string }) {
   function chooseNode(n: ReviewNode) {
     setSelected(n.stable_key); setRegionId(""); setSplitProposal(null); setSplitMessage(""); setPendingUnmappedOverride(null);
     const key = sourceKey(n);
-    const first = key && document.source_regions[key]?.[0];
+    const first = document.source_regions[n.stable_key]?.[0] || (key && document.source_regions[key]?.[0]);
     if (first) setPage(first.page_index);
   }
   function chooseRegion(key: string) {
@@ -477,13 +483,15 @@ export function ReviewWorkspace({ id }: { id: string }) {
       {warningCount > 0 && <div className="warn">確認事項が {warningCount} 件あります。{generalWarnings.length > 0 && <ul>{generalWarnings.map(code => <li key={code}>{reviewIssueLabel(code)}</li>)}</ul>}<details><summary>技術情報</summary>{generalWarnings.join(", ")}</details></div>}
     </section>}
     <div className="review-layout">
-      <PdfPreview id={id} page={page} pages={document.page_count} selected={regionId || activeSourceKey || ""} onPage={setPage} />
+      <PdfPreview id={id} page={page} pages={document.page_count} revision={document.revision_number} selected={regionId || node.stable_key} onPage={setPage} />
       <div className="review-panel">
-        <section className="panel"><h2>設問構成</h2><nav className="review-tree" aria-label="設問構成">
-          {ordered(current.nodes).map(({ node: n, depth }) => <button key={n.review_node_id} data-source-key={n.source_draft_stable_key || undefined} aria-pressed={n.stable_key === node.stable_key}
-            className={n.stable_key === node.stable_key ? "active" : ""} style={{ paddingLeft: `${12 + depth * 18}px` }} onClick={() => chooseNode(n)}>
-            {n.label.raw} <small>{questionTypeLabel(n.node_type)} {!n.included && "（除外）"}</small></button>)}
-        </nav><div className="review-toolbar"><button disabled={readonly} onClick={() => add(false)}>大問を追加</button><button disabled={readonly} onClick={() => add(true)}>小問を追加</button></div></section>
+        <section className="panel review-question-selector"><label>対象設問<select aria-label="対象設問" value={node.stable_key} onChange={event => {
+          const next = current.nodes.find(n => n.stable_key === event.target.value); if (next) chooseNode(next);
+        }}>{ordered(current.nodes).map(({node: n}) => <option key={n.stable_key} value={n.stable_key}>
+          {buildQuestionPath(n.stable_key, current.nodes)}{!n.included ? "（除外）" : ""}
+        </option>)}</select></label>
+          <div className="review-toolbar"><button disabled={readonly} onClick={() => add(false)}>大問を追加</button><button disabled={readonly} onClick={() => add(true)}>小問を追加</button></div>
+        </section>
         <section className="panel" aria-label="小問への分割">
           <button type="button" className="button secondary" disabled={readonly} onClick={startSplit}>小問に分割</button>
           {splitMessage && <p className="notice">{splitMessage}</p>}
@@ -542,7 +550,7 @@ export function ReviewWorkspace({ id }: { id: string }) {
             <div className="review-toolbar"><button className="button" type="button" disabled={!splitProposal.children.some(child => child.included && ["automatic", "manual_mapped", "unmapped_override"].includes(child.mappingStatus) && child.contentValid && !!child.label.trim()) || splitProposal.children.some(child => child.included && (child.mappingStatus === "manual_required" || !child.contentValid || !child.label.trim()))} onClick={applySplit}>この内容で分割</button><button type="button" onClick={() => { setSplitProposal(null); setPendingUnmappedOverride(null); }}>キャンセル</button></div>
           </div>}
         </section>
-        <div className="review-toolbar">{[...new Set((document.source_regions[activeSourceKey || ""] || []).map(r => r.page_index))].map(p => <button key={p} onClick={() => { setPage(p); setRegionId(""); }}>元の問題用紙 {p + 1}ページ</button>)}</div>
+        <div className="review-toolbar">{[...new Set((document.source_regions[node.stable_key] || []).map(r => r.page_index))].map(p => <button key={p} onClick={() => { setPage(p); setRegionId(""); }}>元の問題用紙 {p + 1}ページ</button>)}</div>
         {node.source_mapping_decision === "teacher_unmapped_override" && <p className="notice" role="status">この小問は元資料との詳細な対応情報なしで作成されています。</p>}
         {node.source_mapping_decision === "teacher_manual_mapping" && <p className="notice" role="status">この小問の元資料との対応は教師が指定しました。</p>}
         <NodeEditor node={node} nodes={current.nodes} automatic={document.automatic_nodes.find(n => n.stable_key === activeSourceKey)} regions={activeRegions}
