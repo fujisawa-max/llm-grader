@@ -138,7 +138,9 @@ class ModelAnswerDiagramReview:
                     raise
                 result.extend({**r, 'state': 'candidate', 'status': 'unresolved',
                     'reason_code': 'diagram_source_stale', 'crop_sha256': None,
-                    'artifact_ref': None} for r in subset)
+                    'artifact_ref': None, 'trust_state': 'hard_invalid', 'teacher_confirmed': False,
+                    'trust_state_at_accept': None, 'confirmation_reason_code': None,
+                    'acceptance_method': None} for r in subset)
         return result
 
     def check_manual_pdf_bounds(self, review, identifier, final_bbox):

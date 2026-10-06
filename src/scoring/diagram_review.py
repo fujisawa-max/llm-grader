@@ -5,6 +5,7 @@ import re
 
 from .pdf_native import canonical_hash, sha256_file
 from .diagram_regions import write_diagram_json
+from .diagram_trust import diagram_trust
 
 FIELDS = ('id', 'domain', 'target_key', 'material_id', 'source_sha256', 'source_ir_sha256',
     'page_index', 'automatic_bbox', 'final_bbox', 'crop_bbox', 'source_element_ids',
@@ -12,7 +13,9 @@ FIELDS = ('id', 'domain', 'target_key', 'material_id', 'source_sha256', 'source_
     'crop_height', 'crop_sha256', 'artifact_ref', 'context_sha256', 'legacy_region_id',
     'revision', 'state', 'status', 'reason_code', 'ricoh_finish_reason', 'ricoh_response_field',
     'page_width', 'page_height', 'page_rotation', 'legacy_region_ids',
-    'scope', 'source_question_id', 'source_question_path', 'assigned_question_id')
+    'scope', 'source_question_id', 'source_question_path', 'assigned_question_id',
+    'trust_state', 'trust_state_at_accept', 'teacher_confirmed', 'confirmation_reason_code',
+    'acceptance_method')
 
 
 class DiagramReview:
@@ -74,14 +77,28 @@ class DiagramReview:
             raise ValueError('diagram_candidate_not_found')
         return c
 
-    def record(self, identifier, *, state='candidate', final_bbox=None, revision=1):
+    def record(self, identifier, *, state='candidate', final_bbox=None, revision=1, teacher_confirmed=False):
         c = self.candidate(identifier)
         if not isinstance(state, str) or state not in {'candidate', 'accepted', 'excluded'}:
             raise ValueError('diagram_invalid_decision')
-        if c.get('status') == 'unresolved' and state == 'accepted':
-            raise ValueError(c.get('reason_code', 'diagram_geometry_ambiguous'))
+        if type(teacher_confirmed) is not bool:
+            raise ValueError('diagram_invalid_decision')
+        # Integrity, membership and bounds are checked before allowing a human
+        # to override detection uncertainty. Client trust/reason fields are ignored.
         value = self.engine.crop(c, final_bbox=final_bbox)
-        value.update(state=state, context_sha256=self.context, revision=revision)
+        trust = diagram_trust(c)
+        if state == 'accepted':
+            if trust == 'hard_invalid':
+                raise ValueError(c.get('reason_code') or 'diagram_source_stale')
+            if trust == 'teacher_confirmable' and not teacher_confirmed:
+                raise ValueError('diagram_teacher_confirmation_required')
+        confirmed = state == 'accepted' and trust == 'teacher_confirmable' and teacher_confirmed
+        value.update(state=state, context_sha256=self.context, revision=revision,
+            trust_state=trust, teacher_confirmed=confirmed,
+            trust_state_at_accept=trust if state == 'accepted' else None,
+            confirmation_reason_code=c.get('reason_code') if confirmed else None,
+            acceptance_method=('accepted_by_teacher_after_unresolved_detection' if confirmed
+                               else 'accepted_by_teacher' if state == 'accepted' else None))
         from .vision_policy import page_space
         page = next(p for p in self.engine.ir['pages'] if p['page_index'] == c['page_index'])
         bounds = page_space(page).cropbox
@@ -103,17 +120,24 @@ class DiagramReview:
                     'automatic_bbox', 'source_element_ids'))))
             try:
                 r = self.record(c['id'], state=old.get('state', 'candidate') if not stale else 'candidate',
-                    final_bbox=old.get('final_bbox') if not stale else None, revision=revision)
+                    final_bbox=old.get('final_bbox') if not stale else None, revision=revision,
+                    teacher_confirmed=old.get('teacher_confirmed', False) if not stale else False)
             except ValueError as exc:
                 r = {k: deepcopy(c[k]) for k in FIELDS if k in c}
-                r.update(state='candidate', status='unresolved', reason_code=str(exc), context_sha256=self.context)
+                r.update(state='candidate', status='unresolved', reason_code=str(exc), context_sha256=self.context,
+                    trust_state='hard_invalid', teacher_confirmed=False, trust_state_at_accept=None,
+                    confirmation_reason_code=None, acceptance_method=None)
             if stale:
-                r.update(state='candidate', status='unresolved', reason_code='diagram_source_stale')
+                r.update(state='candidate', status='unresolved', reason_code='diagram_source_stale',
+                    trust_state='hard_invalid', teacher_confirmed=False, trust_state_at_accept=None,
+                    confirmation_reason_code=None, acceptance_method=None)
             result.append(r)
         for identifier, old in by_id.items():
             if not any(r['id'] == identifier for r in result):
                 stale = {k: v for k, v in old.items() if k not in {'crop_sha256', 'artifact_ref'}}
-                result.append({**stale, 'state': 'candidate', 'status': 'unresolved', 'reason_code': 'diagram_source_stale'})
+                result.append({**stale, 'state': 'candidate', 'status': 'unresolved', 'reason_code': 'diagram_source_stale',
+                    'trust_state': 'hard_invalid', 'teacher_confirmed': False, 'trust_state_at_accept': None,
+                    'confirmation_reason_code': None, 'acceptance_method': None})
         return result
 
     def validate(self, records, revision):
@@ -133,7 +157,8 @@ class DiagramReview:
                     raise ValueError('diagram_source_stale')
             seen.add(r['id'])
             result.append(self.record(r['id'], state=r.get('state', 'candidate'),
-                                      final_bbox=r.get('final_bbox'), revision=revision))
+                                      final_bbox=r.get('final_bbox'), revision=revision,
+                                      teacher_confirmed=r.get('teacher_confirmed', False)))
         return result
 
     def path(self, record):

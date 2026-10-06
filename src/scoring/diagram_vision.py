@@ -61,7 +61,7 @@ class RicohDiagramGrouping:
             try:
                 value = json.loads(text)
             except ValueError as exc:
-                raise ValueError('diagram_grouping_invalid') from exc
+                raise ValueError('diagram_ricoh_invalid_json') from exc
             validate_grouping(value, set(ids))
             logger.info('diagram grouping profile=%s elements=%s field=%s length=%s',
                 self.profile_id, len(ids), field, len(text))

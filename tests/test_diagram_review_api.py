@@ -443,3 +443,27 @@ def test_diagram_only_registration_revalidates_stale_saved_evidence(workspace):
     assert response.json()['error']['code'] == 'diagram_source_stale'
     with w.sf() as session:
         assert session.scalar(select(func.count()).select_from(ModelAnswer)) == 0
+
+
+def test_question_teacher_confirmation_persists_without_changing_figure_policy(workspace, monkeypatch):
+    from scoring.diagram_regions import DiagramRegionExtractor
+    original = DiagramRegionExtractor.candidates
+    def detected(self, **kwargs):
+        records = original(self, **kwargs)
+        for record in records:
+            record.update(status='unresolved', reason_code='diagram_ricoh_unavailable')
+        return records
+    monkeypatch.setattr(DiagramRegionExtractor, 'candidates', detected)
+    w = workspace
+    record = w.client.get(qpath(w)).json()['diagrams'][0]
+    assert record['trust_state'] == 'teacher_confirmable'
+    snap = deepcopy(w.data['snapshot'])
+    snap['nodes'][0]['diagram_records'] = [{**clean(record), 'state': 'accepted'}]
+    base = f'/api/v1/question-import-reviews/{w.data["id"]}'
+    assert w.client.post(base+'/revisions', json={'base_revision': 1, 'snapshot': snap}).status_code == 422
+    snap['nodes'][0]['diagram_records'][0]['teacher_confirmed'] = True
+    saved = w.client.post(base+'/revisions', json={'base_revision': 1, 'snapshot': snap})
+    assert saved.status_code == 200, saved.text
+    restored = w.client.get(qpath(w)).json()['diagrams'][0]
+    assert restored['state'] == 'accepted' and restored['teacher_confirmed']
+    assert restored['confirmation_reason_code'] == 'diagram_ricoh_unavailable'

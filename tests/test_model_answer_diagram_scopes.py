@@ -285,3 +285,63 @@ def test_parent_candidate_identity_stable_under_region_reorder(shared):
     second = discover(w, path, params, 'parent').json()['diagrams'][0]
     assert before['id'] == first['id'] == second['id']
     assert first['context_sha256'] == second['context_sha256']
+
+
+@pytest.mark.parametrize('scope', ['exact', 'parent', 'pdf'])
+def test_teacher_confirmed_detection_failure_save_resume_and_formal(shared, monkeypatch, scope):
+    from scoring.diagram_regions import DiagramRegionExtractor
+    from scoring.diagram_vision import RicohDiagramGrouping
+    w = shared
+    with w.sf() as s:
+        draft = s.get(ModelAnswerImportDraft, w.answer['id'])
+        snap = deepcopy(draft.snapshot)
+        if scope == 'exact':
+            snap['question_regions'][0]['question_id'] = w.children[0]
+        elif scope == 'pdf':
+            snap['question_regions'] = []
+        draft.snapshot = snap
+        s.commit()
+    original = DiagramRegionExtractor.candidates
+    calls = []
+    def truncated(_self, _elements):
+        calls.append(1)
+        raise ValueError('diagram_ricoh_output_truncated')
+    # Let the shared engine's real error handling preserve the source component.
+    def detected(self, **kwargs):
+        values = original(self, **{k: v for k, v in kwargs.items() if k != 'grouping'})
+        for value in values:
+            value.update(status='unresolved', reason_code='diagram_geometry_ambiguous')
+            if kwargs.get('grouping'):
+                try:
+                    kwargs['grouping']([])
+                except ValueError as exc:
+                    value.update(reason_code=str(exc), ricoh_used=True)
+        return values
+    monkeypatch.setattr(DiagramRegionExtractor, 'candidates', detected)
+    monkeypatch.setattr(RicohDiagramGrouping, '__call__', truncated)
+    eid, path, params = target(w)
+    response = discover(w, path, params, scope)
+    assert response.status_code == 200, response.text
+    record = response.json()['diagrams'][0]
+    assert record['trust_state'] == 'teacher_confirmable'
+    assert record['reason_code'] == 'diagram_ricoh_output_truncated'
+    preview = w.client.post(path+f'/{record["id"]}/crop-preview', params={**params, 'scope': scope},
+        json={'expected_revision': 1, 'final_bbox': [68, 78, 232, 242]})
+    assert preview.status_code == 200, preview.text
+    corrected = clean(preview.json())
+    updates = edits(w)+[{'id': eid, 'question_id': w.children[0], 'answer_text': '', 'disposition': 'include',
+        'diagram_records': [{**corrected, 'state': 'accepted'}]}]
+    assert w.client.put(w.base, json={'expected_revision': 1, 'entries': updates}).status_code == 422
+    updates[-1]['diagram_records'][0]['teacher_confirmed'] = True
+    saved = w.client.put(w.base, json={'expected_revision': 1, 'entries': updates})
+    assert saved.status_code == 200, saved.text
+    call_count = len(calls)
+    restored = w.client.get(path).json()['diagrams'][0]
+    assert restored['state'] == 'accepted' and restored['teacher_confirmed']
+    assert restored['teacher_adjusted'] and restored['trust_state_at_accept'] == 'teacher_confirmable'
+    result = w.client.post(w.base+'/confirm', json={'expected_revision': 2})
+    assert result.status_code == 200, result.text
+    answer = result.json()['model_answers'][0]
+    assert answer['answer_text'] == ''
+    assert answer['provenance_json']['diagrams'][0]['confirmation_reason_code'] == 'diagram_ricoh_output_truncated'
+    assert len(calls) == call_count

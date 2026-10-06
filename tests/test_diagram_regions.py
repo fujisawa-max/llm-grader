@@ -153,7 +153,7 @@ def test_ambiguous_grouping_uses_only_known_ids(source):
     {"groups": [{"element_ids": ["a"], "confidence": float("nan")}]},
 ])
 def test_invalid_grouping_not_trusted(value):
-    with pytest.raises(ValueError, match="diagram_grouping_invalid"):
+    with pytest.raises(ValueError, match="diagram_ricoh_low_confidence" if isinstance(value, dict) and value.get("groups", [{}])[0].get("confidence") == .5 else "diagram_grouping_invalid"):
         validate_grouping(value, {"a"})
 
 

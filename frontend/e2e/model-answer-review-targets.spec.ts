@@ -52,7 +52,8 @@ test("shared breadcrumb resolves nested labels and retains server label when a s
     { id: "nested", parent_id: "q2b", display_label: "2." },
   ];
   expect(questionBreadcrumb(questions[2], questions)).toBe("問題2 > (2) > 2.");
-  expect(questionBreadcrumb({ ...questions[2], label: "問題2 > (2) > 2." }, [questions[2]]))
+  const leaf = {...questions[2], label: "問題2 > (2) > 2."};
+  expect(questionBreadcrumb(leaf, [leaf]))
     .toBe("問題2 > (2) > 2.");
 });
 
@@ -128,4 +129,20 @@ test("blank ignored extraction does not create a target or registration warning 
   } as unknown as ModelAnswerImportDraft;
   expect(buildReviewTargets(draft).map((target) => target.id)).toEqual(["question:q1"]);
   expect(validateModelAnswerRegistration(draft, new Map([["question:q1", "問題1"]]))).toEqual([]);
+});
+
+test("diagram-only readiness allows explicit teacher confirmation and rejects stale/unaccepted content", () => {
+  const diagram = {id: "diagram-id", state: "accepted", status: "unresolved", reason_code: "diagram_ricoh_output_truncated",
+    trust_state: "teacher_confirmable", teacher_confirmed: true, assigned_question_id: "child", target_key: "parent",
+    source_sha256: "source", crop_sha256: "crop"};
+  const draft = {source_sha256: "source", questions: [{id: "child", is_gradable: true}], confirmed_entry_ids: [],
+    entries: [{id: "manual", question_id: "child", source: {kind: "teacher_manual"}, answer_text: "", disposition: "include",
+      diagram_records: [diagram]}]} as unknown as ModelAnswerImportDraft;
+  const labels = new Map([["question:child", "問題3 > (1)"]]);
+  expect(validateModelAnswerRegistration(draft, labels)).toEqual([]);
+  for (const update of [{teacher_confirmed: false}, {state: "candidate"}, {state: "excluded"},
+    {trust_state: "hard_invalid"}, {source_sha256: "foreign"}, {assigned_question_id: "sibling"}]) {
+    const invalid = {...draft, entries: [{...draft.entries[0], diagram_records: [{...diagram, ...update}]}]} as unknown as ModelAnswerImportDraft;
+    expect(validateModelAnswerRegistration(invalid, labels).map(i => i.reasonCode)).toContain("empty_answer_text");
+  }
 });

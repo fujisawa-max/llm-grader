@@ -163,9 +163,11 @@ def validate_grouping(value, known_ids):
         if (not isinstance(ids, list) or not ids or any(not isinstance(i, str) for i in ids)
                 or len(set(ids)) != len(ids) or not set(ids) <= known_ids or seen & set(ids)
                 or type(confidence) not in (float, int) or not math.isfinite(confidence)
-                or not 0.9 <= confidence <= 1):
+                or not 0 <= confidence <= 1):
             raise ValueError("diagram_grouping_invalid")
         seen.update(ids)
+    if any(group['confidence'] < 0.9 for group in groups):
+        raise ValueError('diagram_ricoh_low_confidence')
     return deepcopy(groups)
 
 

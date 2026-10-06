@@ -60,7 +60,7 @@ def test_managed_ricoh_cold_and_warm_and_resume_zero_calls(source, tmp_path, mon
 
 
 @pytest.mark.parametrize('mode,code', [('truncated', 'diagram_ricoh_output_truncated'),
-    ('unknown', 'diagram_grouping_invalid'), ('invalid', 'diagram_grouping_invalid'),
+    ('unknown', 'diagram_grouping_invalid'), ('invalid', 'diagram_ricoh_invalid_json'),
     ('unavailable', 'diagram_ricoh_unavailable'), ('timeout', 'diagram_ricoh_timeout')])
 def test_bad_ricoh_is_untrusted(source, mode, code):
     review = setup_review(source)
@@ -79,7 +79,7 @@ def test_bad_ricoh_is_untrusted(source, mode, code):
     candidate = review.candidates[0]
     assert candidate['status'] == 'unresolved'
     # malformed JSON is still an explicit rejection, never accepted geometry.
-    if mode != 'invalid':
-        assert candidate['reason_code'] == code
+    assert candidate['reason_code'] == code
+    assert review.record(candidate['id'])['trust_state'] == ('hard_invalid' if mode == 'unknown' else 'teacher_confirmable')
     with pytest.raises(ValueError):
         review.record(candidate['id'], state='accepted')

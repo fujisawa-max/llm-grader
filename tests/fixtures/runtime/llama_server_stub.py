@@ -62,7 +62,10 @@ class Handler(BaseHTTPRequestHandler):
                 ids = body["response_format"]["json_schema"]["schema"]["properties"]["groups"]["items"]["properties"]["element_ids"]["items"]["enum"]
                 assert body["temperature"] == 0
                 assert body["chat_template_kwargs"]["enable_thinking"] is False
-                self.send({"choices": [{"finish_reason": "stop", "message": {"content": json.dumps({"groups": [{"element_ids": ids, "confidence": .96}]})}}]})
+                if os.getenv("LLM_GRADER_STUB_DIAGRAM_RESPONSE_MODE") == "truncated":
+                    self.send({"choices": [{"finish_reason": "length", "message": {"reasoning_content": '{"groups":['}}]})
+                else:
+                    self.send({"choices": [{"finish_reason": "stop", "message": {"content": json.dumps({"groups": [{"element_ids": ids, "confidence": .96}]})}}]})
                 return
             if "supplied source segment IDs" in content[0].get("text", ""):
                 metadata = json.loads(content[0]["text"].split("\n", 1)[1])

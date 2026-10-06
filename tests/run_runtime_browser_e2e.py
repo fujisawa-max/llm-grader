@@ -253,7 +253,7 @@ def seed(root):
         # Review state after splitting an originally parent-owned diagram.
         # There is ONE completed diagram, not one fabricated per child.
         from scoring.pdf_native import PyMuPdfNativeExtractor
-        for scope_name in ("parent", "pdf"):
+        for scope_name in ("parent", "pdf", "override"):
             scope_test = domain.test(teacher_offering.id, name=f"Diagram {scope_name} fallback", total_points=30)
             owner = domain.question(scope_test.id, question_number="3", display_label="問題3",
                 sort_order=3, max_points=None, is_gradable=False)
@@ -268,6 +268,13 @@ def seed(root):
                 p.draw_line((80, 285), (215, 150), color=(0, 0, 1))
                 p.draw_rect((160, 230, 205, 280), fill=(.6, .8, 1))
                 p.insert_text((153, 217), "O", fontsize=8)
+                if scope_name == "override":
+                    # A connected grid is genuinely ambiguous; managed Ricoh
+                    # returns truncated JSON in the explicit override scenario.
+                    for v in (140, 180, 260):
+                        p.draw_line((70, v), (230, v))
+                    for v in (70, 110, 190, 230):
+                        p.draw_line((v, 140), (v, 300))
                 scope_source = root / "sources" / f"shared-{scope_name}.pdf"
                 scope_source.write_bytes(shared_pdf.tobytes())
             digest = hashlib.sha256(scope_source.read_bytes()).hexdigest()

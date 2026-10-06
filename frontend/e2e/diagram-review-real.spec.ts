@@ -219,11 +219,11 @@ test("manual empty ModelAnswer discovers, reviews and registers only an accepted
   await page.route(diagramsUrl, async route => {
     const response = await route.fetch();
     const body = await response.json();
-    body.diagrams = body.diagrams.map((r: object) => ({...r, state: "candidate", status: "unresolved", reason_code: "diagram_source_stale"}));
+    body.diagrams = body.diagrams.map((r: object) => ({...r, state: "candidate", status: "unresolved", reason_code: "diagram_source_stale", trust_state: "hard_invalid", teacher_confirmed: false}));
     await route.fulfill({response, json: body});
   });
   await page.reload();
-  await expect(section.getByText(/出典範囲の確認が必要/)).toBeVisible();
+  await expect(section.getByText(/この図は元PDFとの対応を確認できないため使用できません/)).toBeVisible();
   await expect(register).toBeDisabled();
   await page.unroute(diagramsUrl);
   await page.reload();
