@@ -266,10 +266,30 @@ class PyMuPdfNativeExtractor:
                             "review_flags": [],
                         })
                 drawing_boxes = []
-                for drawing in page.get_drawings():
+                vector_elements = []
+                for drawing_index, drawing in enumerate(page.get_drawings()):
                     box = _bbox(drawing.get("rect"))
                     if box:
                         drawing_boxes.append(box)
+                    # Keep line primitives even when their rectangle has zero
+                    # area. Axes are precisely such paths. This separate field
+                    # preserves historical text/image element consumers.
+                    rect = drawing.get("rect")
+                    if rect is not None:
+                        horizontal = vertical = 0
+                        for item in drawing.get("items", []):
+                            if item[0] == "l":
+                                a, b = item[1:3]
+                                horizontal += int(abs(a.y-b.y) < 0.1 and abs(a.x-b.x) >= 1)
+                                vertical += int(abs(a.x-b.x) < 0.1 and abs(a.y-b.y) >= 1)
+                        vector_elements.append({
+                            "element_id": f"page-{page_index+1:04d}-drawing-{drawing_index:04d}",
+                            "type": "drawing", "bbox": [float(v) for v in rect],
+                            "reading_order": drawing_index, "source": "native_vector",
+                            "native": {"path_type": drawing.get("type"),
+                                       "primitive_count": len(drawing.get("items", [])),
+                                       "horizontal_lines": horizontal, "vertical_lines": vertical},
+                        })
                 page_area = float(page.rect.width * page.rect.height) or 1.0
                 image_boxes = [x["bbox"] for x in image_elements if x.get("bbox")]
                 vector_bbox = _union(drawing_boxes)
@@ -298,6 +318,7 @@ class PyMuPdfNativeExtractor:
                     "cropbox": [float(x) for x in page.cropbox],
                     "mediabox": [float(x) for x in page.mediabox],
                     "elements": elements + image_elements,
+                    "vector_elements": vector_elements,
                     "vector_summary": {"count": len(drawing_boxes), "bbox": vector_bbox,
                                         "occupancy": (sum(max(0, b[2]-b[0]) * max(0, b[3]-b[1]) for b in drawing_boxes) / page_area)},
                     "quality_signals": {
@@ -331,6 +352,7 @@ class PyMuPdfNativeExtractor:
                       "math_font_names": list(math_font_names),
                       "math_text_heuristic": "native-math-text-v2",
                       "geometry_heuristic": "vertical-offset-v1"}
+            config["vector_evidence_version"] = "native-vector-paths-v1"
             parser = {"backend": self.backend_name, "library": "PyMuPDF",
                       "version": pymupdf.VersionBind, "config": config,
                       "config_hash": canonical_hash(config)}
