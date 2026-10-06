@@ -212,6 +212,22 @@ def seed(root):
         question_pdf_path.write_bytes(question_pdf.tobytes())
         question_pdf.close()
         geometry_env.update(QUESTION_MATH_TEST_ID=question_math_test.id, QUESTION_MATH_PDF_PATH=str(question_pdf_path), QUESTION_SPLIT_MATH_TEST_ID=question_split_math_test.id)
+        from tests.test_diagram_review_api import diagram_pdf
+        diagram_test = domain.test(teacher_offering.id, name="Diagram review fixture", total_points=20)
+        diagram_split_test = domain.test(teacher_offering.id, name="Diagram split fixture", total_points=20)
+        diagram_answer_test = domain.test(teacher_offering.id, name="Diagram answer fixture", total_points=20)
+        for n in (3, 4):
+            domain.question(diagram_answer_test.id, question_number=str(n), display_label=f"問題{n}",
+                sort_order=n, max_points=10, is_gradable=True, question_text="図の範囲を確認してください。")
+        diagram_path = root / "sources" / "diagram.pdf"
+        diagram_path.write_bytes(diagram_pdf())
+        diagram_answer_path = root / "sources" / "diagram-answer.pdf"
+        diagram_answer_path.write_bytes(diagram_pdf(True))
+        diagram_material = domain.material(diagram_answer_test.id, material_type="model_answer_source",
+            storage_ref=str(diagram_answer_path), original_filename="diagram-answer.pdf", mime_type="application/pdf",
+            sha256=hashlib.sha256(diagram_answer_path.read_bytes()).hexdigest())
+        geometry_env.update(DIAGRAM_TEST_ID=diagram_test.id, DIAGRAM_SPLIT_TEST_ID=diagram_split_test.id, DIAGRAM_PDF_PATH=str(diagram_path),
+            DIAGRAM_ANSWER_TEST_ID=diagram_answer_test.id, DIAGRAM_ANSWER_MATERIAL_ID=diagram_material.id)
         caret_test = domain.test(teacher_offering.id, name="Question caret fixture", total_points=10)
         caret_pdf = pymupdf.open()
         caret_page = caret_pdf.new_page()
@@ -404,12 +420,14 @@ def main():
                         "e2e/question-editor-caret-real.spec.ts",
                         "e2e/review-continuation-real.spec.ts",
                         "e2e/question-completion-real.spec.ts",
+                        "e2e/diagram-review-real.spec.ts",
                         "e2e/model-answer-nested-navigation-real-isolated.spec.ts",
                     ]
                     subprocess.run(["npm", "run", "e2e", "--", *specs, "--workers=1"],
                                    cwd=REPO / "frontend", env=env, check=True)
-                    assert any("POST /v1/chat/completions" in line
-                               for line in manager.logs("ornith_rubric_draft")["lines"])
+                    if any("diagram-review" not in spec for spec in specs):
+                        assert any("POST /v1/chat/completions" in line
+                                   for line in manager.logs("ornith_rubric_draft")["lines"])
                     assert manager.status("ornith_rubric_draft")["state"] in {"ready", "stopped"}
                     manager.stop("ornith_rubric_draft")
                     assert manager.status("ornith_rubric_draft")["pid"] is None

@@ -15,6 +15,7 @@ export type Decision = {
 };
 export type WarningResolution = { state: "unreviewed" | "acknowledged" | "resolved"; note?: string };
 export interface ReviewNode {
+  diagram_records?: import("@/types/diagrams").DiagramRecord[];
   source_review_owner?: string;
   math_ocr_edits?: Record<string, unknown>[];
   review_node_id: string; stable_key: string; source_draft_stable_key: string | null;

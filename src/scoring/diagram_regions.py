@@ -99,12 +99,19 @@ def diagram_groups(page, *, allowed_ids, excluded_ids=(), grouping=None):
         if ambiguous:
             if grouping is None:
                 groups.append({"status": "unresolved", "reason_code": "diagram_geometry_ambiguous",
-                               "bbox": box, "source_element_ids": [e["element_id"] for e in component]})
+                               "bbox": box, "source_element_ids": [e["element_id"] for e in component],
+                               "grouping_method": "geometry_ambiguous", "confidence": None, "ricoh_used": False})
                 continue
-            ricoh_result = grouping(deepcopy(component))
-            selected = validate_grouping(ricoh_result, {e["element_id"] for e in component})
-            if len(selected) != 1:
-                raise ValueError("diagram_grouping_ambiguous")
+            try:
+                ricoh_result = grouping(deepcopy(component))
+                selected = validate_grouping(ricoh_result, {e["element_id"] for e in component})
+                if len(selected) != 1:
+                    raise ValueError("diagram_grouping_ambiguous")
+            except (ValueError, RuntimeError) as exc:
+                groups.append({"status": "unresolved", "reason_code": str(exc), "bbox": box,
+                    "source_element_ids": sorted(e['element_id'] for e in component),
+                    "ricoh_used": True, "grouping_method": "geometry_ambiguous", "confidence": None})
+                continue
             confidence = selected[0]["confidence"]
             component = [e for e in component if e["element_id"] in selected[0]["element_ids"]]
             box = union(component)
@@ -160,6 +167,7 @@ class DiagramRegionExtractor:
         if domain not in {"question", "model_answer"}:
             raise ValueError("diagram_invalid_domain")
         result = []
+        self.discovery_args = dict(domain=domain, target_key=target_key, ownership=ownership, exclusions=exclusions)
         for page in self.ir["pages"]:
             index = page["page_index"]
             by_id = {e["element_id"]: e for e in page.get("elements", []) + visual_elements(page)}
@@ -197,6 +205,13 @@ class DiagramRegionExtractor:
         if not _contains(bounds, box):
             raise ValueError("diagram_crop_outside_page")
         geometry = crop_geometry(page, box, "figure", POLICY)
+        expanded = geometry['expanded_bbox']
+        if hasattr(self, 'allowed_bounds'):
+            if not any(_contains(b, expanded) for b in self.allowed_bounds.get(page['page_index'], [])):
+                raise ValueError('diagram_source_boundary')
+            if any(all(min(expanded[k+2], b[k+2]) > max(expanded[k], b[k]) for k in (0, 1))
+                   for b in getattr(self, 'blocked_bounds', {}).get(page['page_index'], [])):
+                raise ValueError('diagram_source_boundary')
         key = canonical_hash({"source": candidate["source_sha256"], "page": page["page_index"],
                               "crop": geometry})
         ref = f"diagrams/{key}.png"

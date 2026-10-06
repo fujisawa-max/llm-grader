@@ -246,10 +246,10 @@ def validate_snapshot(snapshot, current, draft, pin, *, mark=False):
                           "parent_key", "node_type", "depth", "sort_order", "label", "body_text",
                           "ordered_content", "included", "score_semantics", "score_points",
                           "effective_points_candidate", "review_flags", "formula_decisions",
-                          "figure_decisions", "warning_states", "source_mapping_decision", "math_ocr_edits", "source_review_owner"}
+                          "figure_decisions", "warning_states", "source_mapping_decision", "math_ocr_edits", "source_review_owner", "diagram_records"}
         if set(n) - allowed_fields:
             raise ReviewError("unknown_node_fields", 422)
-        required_fields = allowed_fields - {"effective_points_candidate", "depth", "source_mapping_decision", "math_ocr_edits", "source_review_owner"}
+        required_fields = allowed_fields - {"effective_points_candidate", "depth", "source_mapping_decision", "math_ocr_edits", "source_review_owner", "diagram_records"}
         if not required_fields.issubset(n):
             raise ReviewError("missing_node_fields", 422)
         key, identity = n.get("stable_key"), n.get("review_node_id")
@@ -413,7 +413,7 @@ def validate_snapshot(snapshot, current, draft, pin, *, mark=False):
     for n in nodes:
         for kind, allowed in (("formula", {"unreviewed", "use_native", "use_vision", "teacher_edit",
                                            "excluded", "merged_into_text"}),
-                              ("figure", {"unreviewed", "accepted_as_evidence", "needs_correction"})):
+                              ("figure", {"unreviewed", "accepted_as_evidence", "needs_correction", "excluded"})):
             decisions = n.get(f"{kind}_decisions", {})
             if not isinstance(decisions, dict):
                 raise ReviewError("invalid_decision", 422)

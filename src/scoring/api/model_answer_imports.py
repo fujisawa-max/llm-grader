@@ -10,7 +10,8 @@ from pathlib import Path
 from uuid import UUID, uuid4
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
@@ -61,6 +62,12 @@ class MathOCRRequest(BaseModel):
     text: str = Field(min_length=1, max_length=12000)
 
 
+class DiagramCropRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
+    expected_revision: int = Field(ge=1, strict=True)
+    final_bbox: list[float] = Field(min_length=4, max_length=4)
+
+
 class ImportCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     material_id: str
@@ -106,6 +113,7 @@ class EntryEdit(BaseModel):
     classification_segments: list[ClassificationSegmentEdit] | None = None
     classification_reviewed: bool = False
     latex_normalization: dict | None = None
+    diagram_records: list[dict] | None = Field(default=None, max_length=16)
     manual_alternative_answers: list[AlternativeAnswerEdit] | None = None
     rubric_edits: list[RubricCandidateEdit] | None = None
     rubric_merge_history: list[list[RubricCandidateEdit]] | None = None
@@ -563,6 +571,74 @@ def router(db, artifact_root, classifier=None):
     def get_draft(draft_id: str, session=Depends(db)):
         return view(owned_draft(draft_id, session), session)
 
+    def diagram_review_for(draft, entry, session):
+        from ..diagram_review import DiagramReview
+        from ..diagram_sources import model_answer_diagram_candidates
+        from ..adapters.artifacts import RunArtifactAdapter
+        material = session.get(TestMaterial, draft.material_id)
+        if not material or material.test_id != draft.test_id:
+            raise ValueError('diagram_source_mapping_missing')
+        source = resolve_material_file(material)
+        ir_path = (root / draft.artifact_ref).resolve()
+        if not ir_path.is_relative_to(root) or not ir_path.is_file():
+            raise ValueError('diagram_source_mapping_missing')
+        ir = json.loads(ir_path.read_text())
+        if ir['source']['sha256'] != draft.source_sha256:
+            raise ValueError('diagram_source_stale')
+        engine, candidates = model_answer_diagram_candidates(source, ir,
+            RunArtifactAdapter(ir_path.parent), entry=entry,
+            question_regions=draft.snapshot.get('question_regions', []))
+        return DiagramReview(engine, candidates)
+
+    def diagram_target(draft_id, entry_id, session):
+        draft = owned_draft(draft_id, session)
+        entry = next((e for e in draft.snapshot['entries'] if e['id'] == entry_id), None)
+        if entry is None:
+            fail(404, 'diagram_candidate_not_found', '図の候補が見つかりません')
+        return draft, entry
+
+    def diagram_response(review, records, draft_id, entry_id):
+        for record in records:
+            if record.get('crop_sha256'):
+                review.preview(record)
+                record['preview_url'] = (f'/api/v1/model-answer-import-drafts/{draft_id}/entries/{entry_id}/diagrams/'
+                    f'{record["id"]}/crop?crop_sha={record["crop_sha256"]}')
+        return {'diagrams': records}
+
+    @routes.get('/model-answer-import-drafts/{draft_id}/entries/{entry_id}/diagrams')
+    @routes.post('/model-answer-import-drafts/{draft_id}/entries/{entry_id}/diagrams')
+    def diagrams(draft_id: str, entry_id: str, request: Request, body: ClassificationRequest | None = None, session=Depends(db)):
+        draft, entry = diagram_target(draft_id, entry_id, session)
+        if body:
+            revision_check(draft, body.expected_revision)
+        try:
+            review = diagram_review_for(draft, entry, session)
+            if request.method == 'POST' and body:
+                review.discover(getattr(classifier, 'manager', None))
+            return diagram_response(review, review.records(entry.get('diagram_records', []), revision=draft.revision), draft_id, entry_id)
+        except ValueError as exc:
+            fail(422, str(exc), '図の出典と設問の対応を確認してください')
+
+    @routes.post('/model-answer-import-drafts/{draft_id}/entries/{entry_id}/diagrams/{candidate_id}/crop-preview')
+    def diagram_preview(draft_id: str, entry_id: str, candidate_id: str, body: DiagramCropRequest, session=Depends(db)):
+        draft, entry = diagram_target(draft_id, entry_id, session)
+        revision_check(draft, body.expected_revision)
+        try:
+            review = diagram_review_for(draft, entry, session)
+            record = review.record(candidate_id, final_bbox=body.final_bbox, revision=draft.revision)
+            return diagram_response(review, [record], draft_id, entry_id)['diagrams'][0]
+        except ValueError as exc:
+            fail(422, str(exc), '図の範囲が設問の出典範囲を越えています')
+
+    @routes.get('/model-answer-import-drafts/{draft_id}/entries/{entry_id}/diagrams/{candidate_id}/crop')
+    def diagram_crop(draft_id: str, entry_id: str, candidate_id: str, crop_sha: str | None = None, session=Depends(db)):
+        draft, entry = diagram_target(draft_id, entry_id, session)
+        try:
+            review = diagram_review_for(draft, entry, session)
+            return FileResponse(review.preview_path(candidate_id, crop_sha), media_type='image/png')
+        except ValueError as exc:
+            fail(422, str(exc), '図の出典を確認できません')
+
     @routes.post("/model-answer-import-drafts/{draft_id}/entries/{entry_id}/math-ocr")
     def math_ocr(draft_id: str, entry_id: str, body: MathOCRRequest, session=Depends(db)):
         from ..source_math_ocr import MathOCRError, SourceMathOCR
@@ -592,6 +668,21 @@ def router(db, artifact_root, classifier=None):
         result["source"] = {"material_id": material.id, "source_sha256": draft.source_sha256,
                             "draft_id": draft.id, "entry_id": entry_id, "revision": draft.revision}
         return result
+
+    @routes.get('/model-answers/{answer_id}/diagrams/{candidate_id}/crop')
+    def formal_diagram_crop(answer_id: str, candidate_id: str, session=Depends(db)):
+        from ..adapters.artifacts import RunArtifactAdapter
+        answer = session.get(ModelAnswer, answer_id)
+        if answer is None:
+            fail(404, 'diagram_candidate_not_found', '図が見つかりません')
+        owned_test(answer.test_id, session)
+        record = next((r for r in (answer.provenance_json or {}).get('diagrams', []) if r['id'] == candidate_id), None)
+        if record is None:
+            fail(404, 'diagram_candidate_not_found', '図が見つかりません')
+        path = RunArtifactAdapter(root).path(record['artifact_ref'])
+        if not path.is_file() or sha256_file(path) != record['crop_sha256']:
+            fail(409, 'diagram_artifact_integrity_error', '図の画像を確認できません')
+        return FileResponse(path, media_type='image/png')
 
     @routes.post("/model-answer-import-drafts/{draft_id}/classify")
     def classify_draft(draft_id: str, body: ClassificationRequest, session=Depends(db)):
@@ -664,6 +755,14 @@ def router(db, artifact_root, classifier=None):
             entry["answer_kind"] = answer_kind
             entry["question_id"] = edit.question_id
             entry["answer_text"] = edit.answer_text
+            if edit.diagram_records is not None or entry.get('diagram_records'):
+                try:
+                    records = edit.diagram_records if edit.diagram_records is not None else entry.get('diagram_records', [])
+                    entry['diagram_records'] = (diagram_review_for(draft, entry, session).validate(records, draft.revision+1)
+                                                if records else [])
+                except ValueError as exc:
+                    fail(422, str(exc), '図の出典・範囲が変わっています。候補を再確認してください')
+
             removal = entry.get("question_text_removal") or {}
             if (edit.question_id and removal.get("question_id") != edit.question_id
                     and not entry.get("teacher_correction") and edit.id in original_by_id
@@ -982,6 +1081,16 @@ def router(db, artifact_root, classifier=None):
                          "source": other.get("source"), "teacher_correction": other.get("teacher_correction")}
                         for other in alternatives],
                 }
+
+                if entry.get('diagram_records'):
+                    diagram_review = diagram_review_for(draft, entry, session)
+                    try:
+                        records = diagram_review.validate(entry['diagram_records'], draft.revision)
+                    except ValueError as exc:
+                        raise HTTPException(422, detail={'code': str(exc), 'message': '図の出典を確認してください。'}) from exc
+                    provenance['diagrams'] = [{**r, 'artifact_ref': (
+                        diagram_review.engine.store.path(r['artifact_ref']).relative_to(root).as_posix())}
+                        for r in records if r['state'] == 'accepted']
                 answer = service.model_answer(
                     draft.test_id,
                     question_id=entry["question_id"],

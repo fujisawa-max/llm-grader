@@ -89,6 +89,7 @@ export interface RubricSplitProposal {
 }
 
 export interface ModelAnswerDraftEntry {
+  diagram_records?: import("@/types/diagrams").DiagramRecord[];
   id: string;
   question_id: string | null;
   mapping_state: "automatic" | "manual_mapped" | "needs_review" | string;
@@ -121,6 +122,7 @@ export interface ModelAnswerDraftEntry {
 }
 
 export interface ModelAnswerDraftEntryUpdate {
+  diagram_records?: import("@/types/diagrams").DiagramRecord[];
   latex_normalization?: Record<string, unknown>;
   id: string;
   question_id: string | null;

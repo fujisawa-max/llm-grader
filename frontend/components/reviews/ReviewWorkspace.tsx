@@ -11,6 +11,7 @@ import { buildQuestionPath, reviewFieldErrors, reviewFieldId, validateReviewFiel
 import { ReviewWorkspaceLayout } from "./ReviewWorkspaceLayout";
 import { PdfPreview } from "./PdfPreview";
 import { NodeEditor } from "./NodeEditor";
+import { DiagramReview, type DiagramSelection } from "./DiagramReview";
 import { EvidencePanel } from "./EvidencePanel";
 import { WarningPanel } from "./WarningPanel";
 import { MarkdownMathText } from "@/components/MarkdownMathText";
@@ -55,6 +56,7 @@ export function ReviewWorkspace({ id }: { id: string }) {
   const [snapshot, setSnapshot] = useState<ReviewSnapshot>();
   const [textBuffers, setTextBuffers] = useState<Record<string, QuestionTextBuffer>>({});
   const [selected, setSelected] = useState("");
+  const [diagramSelection, setDiagramSelection] = useState<DiagramSelection>();
   const [regionId, setRegionId] = useState("");
   const [page, setPage] = useState(0);
   const [error, setError] = useState("");
@@ -163,7 +165,7 @@ export function ReviewWorkspace({ id }: { id: string }) {
   }
 
   function chooseNode(n: ReviewNode) {
-    setSelected(n.stable_key); setRegionId(""); setSplitProposal(null); setSplitMessage(""); setPendingUnmappedOverride(null);
+    setSelected(n.stable_key); setRegionId(""); setDiagramSelection(undefined); setSplitProposal(null); setSplitMessage(""); setPendingUnmappedOverride(null);
     const key = sourceKey(n);
     const first = document.source_regions[n.stable_key]?.[0] || (key && document.source_regions[key]?.[0]);
     if (first) setPage(first.page_index);
@@ -175,7 +177,9 @@ export function ReviewWorkspace({ id }: { id: string }) {
   function decision(d: Decision) {
     if (!region || !owner) return;
     const field = region.region_type === "formula" ? "formula_decisions" : "figure_decisions";
-    updateNode({ ...owner, [field]: { ...owner[field], [regionId]: d } });
+    const diagram_records = region.region_type === "figure" ? owner.diagram_records?.map(record => (record.legacy_region_ids || [record.legacy_region_id]).includes(regionId)
+      ? {...record, state: d.decision === "accepted_as_evidence" ? "accepted" as const : d.decision === "excluded" ? "excluded" as const : "candidate" as const} : record) : owner.diagram_records;
+    updateNode({ ...owner, [field]: { ...owner[field], [regionId]: d }, ...(diagram_records ? {diagram_records} : {}) });
   }
   async function save(mark = false) {
     let saving = current;
@@ -519,7 +523,7 @@ export function ReviewWorkspace({ id }: { id: string }) {
       {warningCount > 0 && <div className="warn">確認事項が {warningCount} 件あります。{generalWarnings.length > 0 && <ul>{generalWarnings.map(code => <li key={code}>{reviewIssueLabel(code)}</li>)}</ul>}<details><summary>技術情報</summary>{generalWarnings.join(", ")}</details></div>}
     </section>}
     </>} source={<>
-      <PdfPreview id={id} page={page} pages={document.page_count} revision={document.revision_number} selected={regionId || node.stable_key} onPage={setPage} />
+      <PdfPreview id={id} page={page} pages={document.page_count} revision={document.revision_number} selected={regionId || node.stable_key} diagramSelection={diagramSelection?.record.target_key === node.stable_key ? diagramSelection : undefined} onPage={setPage} />
     </>} selector={<>
         <section className="panel review-question-selector"><label>対象設問<select aria-label="対象設問" value={node.stable_key} onChange={event => {
           const next = current.nodes.find(n => n.stable_key === event.target.value); if (next) chooseNode(next);
@@ -597,6 +601,14 @@ export function ReviewWorkspace({ id }: { id: string }) {
           readonly={readonly} onChange={updateNode} onParent={reparent} onMove={move} onRegion={chooseRegion} activeRegionId={regionId} issues={fieldIssues[node.stable_key]}
           renderEvidence={key => region?.region_id === key && owner ? <EvidencePanel key={key} id={id} regionId={key} ownerLabel={owner.label.raw || "未割当"} readonly={readonly} onDecision={decision}
             decision={owner[region.region_type === "formula" ? "formula_decisions" : "figure_decisions"][key] || { decision: "unreviewed" }} /> : null} />
+        <DiagramReview path={`/question-import-reviews/${id}/nodes/${node.stable_key}/diagrams`}
+          label="図の確認" revision={document.current_revision} records={node.diagram_records} disabled={readonly}
+          sourceStale={!document.snapshot.nodes.some(n => n.stable_key === node.stable_key)
+            || JSON.stringify(node.ordered_content.map(anchor => Object.fromEntries(Object.entries(anchor).filter(([key]) => key !== "text")))) !== JSON.stringify(document.snapshot.nodes.find(n => n.stable_key === node.stable_key)?.ordered_content.map(anchor => Object.fromEntries(Object.entries(anchor).filter(([key]) => key !== "text"))))}
+          onSelect={selection => {setDiagramSelection(selection); setRegionId(""); setPage(selection.record.page_index);}}
+          onChange={records => {const decisions = {...node.figure_decisions};
+            for (const r of records) for (const rid of r.legacy_region_ids || (r.legacy_region_id ? [r.legacy_region_id] : [])) decisions[rid] = {decision: r.state === "accepted" ? "accepted_as_evidence" : r.state === "excluded" ? "excluded" : "unreviewed"};
+            updateNode({...node, diagram_records: records, figure_decisions: decisions});}} />
         <WarningPanel warnings={document.warnings} states={current.warning_states || {}} readonly={readonly}
           onChange={(key, resolution) => setSnapshot({ ...current, warning_states: { ...current.warning_states, [key]: resolution } })} targetLabel={warningTarget} onJump={jumpToWarning} />
     <section className="panel section"><h2>変更履歴</h2>{historical && <p className="notice">過去の修正版を読み取り専用で表示しています。</p>}

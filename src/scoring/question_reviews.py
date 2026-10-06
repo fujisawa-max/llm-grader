@@ -310,6 +310,17 @@ class QuestionReviewService:
         snap = validate_snapshot(payload.get("snapshot"), validation_base.snapshot, value,
                                  current.snapshot["vision_pin"], mark=mark)
         for node in snap['nodes']:
+            if node.get('diagram_records'):
+                from .diagram_review import question_diagram_review
+                try:
+                    if not node['included']:
+                        node['diagram_records'] = []
+                    else:
+                        diagrams = question_diagram_review(self, rid, node['stable_key'], review.current_revision,
+                                                           snapshot_override=snap)
+                        node['diagram_records'] = diagrams.validate(node['diagram_records'], base + 1)
+                except ValueError as exc:
+                    raise ReviewError(str(exc), 422, node_key=node['stable_key'], field_key='diagrams') from exc
             for edit in node.get('math_ocr_edits', []):
                 from .question_math_source import validate_math_edit_source
                 if (edit['source_sha256'] != ir['source']['sha256'] or

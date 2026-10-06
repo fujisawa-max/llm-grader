@@ -10,6 +10,27 @@ import re
 from typing import Any, Protocol
 
 
+def native_vector_elements(drawings, page_index):
+    """Stable native path evidence, including zero-area coordinate axes."""
+    result = []
+    for index, drawing in enumerate(drawings):
+        rect = drawing.get("rect")
+        if rect is None:
+            continue
+        horizontal = vertical = 0
+        for item in drawing.get("items", []):
+            if item[0] == "l":
+                a, b = item[1:3]
+                horizontal += int(abs(a.y-b.y) < 0.1 and abs(a.x-b.x) >= 1)
+                vertical += int(abs(a.x-b.x) < 0.1 and abs(a.y-b.y) >= 1)
+        result.append({"element_id": f"page-{page_index+1:04d}-drawing-{index:04d}",
+            "type": "drawing", "bbox": [float(v) for v in rect], "reading_order": index,
+            "source": "native_vector", "native": {"path_type": drawing.get("type"),
+                "primitive_count": len(drawing.get("items", [])),
+                "horizontal_lines": horizontal, "vertical_lines": vertical}})
+    return result
+
+
 IR_SCHEMA_VERSION = "question-document-ir.v1"
 NORMALIZATION_VERSION = "conservative-v1"
 QUALITY_SIGNAL_VERSION = "native-quality-v2"
@@ -266,30 +287,9 @@ class PyMuPdfNativeExtractor:
                             "review_flags": [],
                         })
                 drawing_boxes = []
-                vector_elements = []
-                for drawing_index, drawing in enumerate(page.get_drawings()):
-                    box = _bbox(drawing.get("rect"))
-                    if box:
-                        drawing_boxes.append(box)
-                    # Keep line primitives even when their rectangle has zero
-                    # area. Axes are precisely such paths. This separate field
-                    # preserves historical text/image element consumers.
-                    rect = drawing.get("rect")
-                    if rect is not None:
-                        horizontal = vertical = 0
-                        for item in drawing.get("items", []):
-                            if item[0] == "l":
-                                a, b = item[1:3]
-                                horizontal += int(abs(a.y-b.y) < 0.1 and abs(a.x-b.x) >= 1)
-                                vertical += int(abs(a.x-b.x) < 0.1 and abs(a.y-b.y) >= 1)
-                        vector_elements.append({
-                            "element_id": f"page-{page_index+1:04d}-drawing-{drawing_index:04d}",
-                            "type": "drawing", "bbox": [float(v) for v in rect],
-                            "reading_order": drawing_index, "source": "native_vector",
-                            "native": {"path_type": drawing.get("type"),
-                                       "primitive_count": len(drawing.get("items", [])),
-                                       "horizontal_lines": horizontal, "vertical_lines": vertical},
-                        })
+                drawings = page.get_drawings()
+                drawing_boxes = [box for d in drawings if (box := _bbox(d.get("rect")))]
+                vector_elements = native_vector_elements(drawings, page_index)
                 page_area = float(page.rect.width * page.rect.height) or 1.0
                 image_boxes = [x["bbox"] for x in image_elements if x.get("bbox")]
                 vector_bbox = _union(drawing_boxes)

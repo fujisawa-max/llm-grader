@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Literal
@@ -19,6 +19,15 @@ class ReviewSave(BaseModel):
 class MarkReviewed(BaseModel):
     model_config = ConfigDict(extra="forbid")
     base_revision: int = Field(ge=1, strict=True)
+
+
+class DiagramRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
+    expected_revision: int = Field(ge=1, strict=True)
+
+
+class DiagramCropRequest(DiagramRequest):
+    final_bbox: list[float] = Field(min_length=4, max_length=4)
 
 
 class QuestionMathRequest(BaseModel):
@@ -83,6 +92,57 @@ class CorrectionRequest(BaseModel):
 
 def router(db, root, classifier=None):
     r = APIRouter(prefix="/api/v1")
+
+    def diagrams_service(s, review_id, node_key, revision=None):
+        from ..diagram_review import question_diagram_review
+        service = QuestionReviewService(s, root)
+        rev = service._review(review_id).current_revision if revision is None else revision
+        return question_diagram_review(service, review_id, node_key, rev), service, rev
+
+    def diagram_error(exc):
+        code = exc.code if isinstance(exc, ReviewError) else str(exc)
+        status = exc.status if isinstance(exc, ReviewError) else (409 if 'stale' in code or 'revision' in code else 422)
+        if 'not_found' in code:
+            status = 404
+        raise HTTPException(status, detail={'error': {'code': code}}) from exc
+
+    def diagram_response(review, records, review_id, node_key):
+        for record in records:
+            if record.get('crop_sha256'):
+                review.preview(record)
+                record['preview_url'] = (f'/api/v1/question-import-reviews/{review_id}/nodes/{node_key}/diagrams/'
+                    f'{record["id"]}/crop?crop_sha={record["crop_sha256"]}')
+        return {'diagrams': records}
+
+    @r.get('/question-import-reviews/{review_id}/nodes/{node_key}/diagrams')
+    @r.post('/question-import-reviews/{review_id}/nodes/{node_key}/diagrams')
+    def diagrams(review_id: str, node_key: str, request: Request, body: DiagramRequest | None = None, s=Depends(db)):
+        try:
+            review, service, revision = diagrams_service(s, review_id, node_key, body.expected_revision if body else None)
+            if request.method == 'POST' and body:
+                review.discover(getattr(classifier, 'manager', None))
+            data = service.get(review_id)
+            node = next(n for n in data['snapshot']['nodes'] if n['stable_key'] == node_key)
+            return diagram_response(review, review.records(node.get('diagram_records', []), revision=revision), review_id, node_key)
+        except (ValueError, ReviewError) as exc:
+            diagram_error(exc)
+
+    @r.post('/question-import-reviews/{review_id}/nodes/{node_key}/diagrams/{candidate_id}/crop-preview')
+    def diagram_preview(review_id: str, node_key: str, candidate_id: str, body: DiagramCropRequest, s=Depends(db)):
+        try:
+            review, _, revision = diagrams_service(s, review_id, node_key, body.expected_revision)
+            record = review.record(candidate_id, final_bbox=body.final_bbox, revision=revision)
+            return diagram_response(review, [record], review_id, node_key)['diagrams'][0]
+        except (ValueError, ReviewError) as exc:
+            diagram_error(exc)
+
+    @r.get('/question-import-reviews/{review_id}/nodes/{node_key}/diagrams/{candidate_id}/crop')
+    def diagram_crop(review_id: str, node_key: str, candidate_id: str, crop_sha: str | None = None, s=Depends(db)):
+        try:
+            review, _, _ = diagrams_service(s, review_id, node_key)
+            return FileResponse(review.preview_path(candidate_id, crop_sha), media_type='image/png')
+        except (ValueError, ReviewError) as exc:
+            diagram_error(exc)
 
     @r.post("/question-import-reviews/{review_id}/nodes/{node_key}/math-ocr")
     @r.post("/question-import-reviews/{review_id}/nodes/{node_key}/items/{item_index}/math-ocr")

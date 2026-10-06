@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { Breadcrumbs, ErrorState, LoadingState, PageHeader } from "@/components/ui";
 import { MathPreview, mathInputHelp } from "@/components/MathText";
+import { DiagramReview, type DiagramSelection } from "@/components/reviews/DiagramReview";
 import { SourcePdfPreview } from "@/components/SourcePdfPreview";
 import { MarkdownMathText } from "@/components/MarkdownMathText";
 import { ReviewIssueList } from "@/components/reviews/ReviewIssueList";
@@ -104,6 +105,7 @@ export default function ModelAnswerImportReviewPage() {
   const [savedDraft, setSavedDraft] = useState<ModelAnswerImportDraft | null>(null);
   const [test, setTest] = useState<Test | null>(null);
   const [material, setMaterial] = useState<Material | null>(null);
+  const [diagramSelection, setDiagramSelection] = useState<DiagramSelection>();
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [classifying, setClassifying] = useState(false);
@@ -175,7 +177,8 @@ export default function ModelAnswerImportReviewPage() {
   const selectedSavedAnswer = savedDraft?.saved_answers?.find((answer) => answer.question_id === selectedQuestionId);
   const pdfEntry = visibleEntries.find((entry) => entry.source.segments.length > 0);
   const pdfSegment = pdfEntry?.source.segments.find((segment) => segment.bbox) || pdfEntry?.source.segments[0];
-  const pdfLocation = pdfSegment ? { id: `${selectedTarget?.id}:${pdfSegment.id || pdfSegment.page_index}`,
+  const visibleDiagram = diagramSelection && visibleEntries.some(e => e.question_id === diagramSelection.record.target_key) ? diagramSelection : undefined;
+  const pdfLocation = visibleDiagram ? {id: visibleDiagram.record.id, page: visibleDiagram.record.page_index+1, bbox: visibleDiagram.record.final_bbox || visibleDiagram.record.automatic_bbox} : pdfSegment ? { id: `${selectedTarget?.id}:${pdfSegment.id || pdfSegment.page_index}`,
     page: pdfSegment.page_index + 1, bbox: pdfSegment.bbox || undefined } : undefined;
 
   function updateEntry(entryId: string, patch: Partial<ModelAnswerDraftEntry>) {
@@ -227,6 +230,7 @@ export default function ModelAnswerImportReviewPage() {
     answer_kind: entry.answer_kind || "primary",
     loaded_model_answer_id: entry.loaded_model_answer?.id || null,
     ...(entry.teacher_correction?.latex_normalization ? {latex_normalization: entry.teacher_correction.latex_normalization as Record<string, unknown>} : {}),
+    ...(entry.diagram_records ? {diagram_records: entry.diagram_records} : {}),
     ...(entry.rubric_edits ? { rubric_edits: entry.rubric_edits } : {}),
     ...(entry.rubric_merge_history ? { rubric_merge_history: entry.rubric_merge_history } : {}),
     ...(entry.semantic_classification ? {
@@ -641,7 +645,7 @@ export default function ModelAnswerImportReviewPage() {
     </>} source={<>
       <aside className="panel model-answer-import-source" aria-label="模範解答PDF">
         <h2>元の模範解答PDF</h2>
-        <SourcePdfPreview testId={test.id} material={material || undefined} label="模範解答PDF" paneZoom targetLocation={pdfLocation} />
+        <SourcePdfPreview testId={test.id} material={material || undefined} label="模範解答PDF" paneZoom targetLocation={pdfLocation} diagramSelection={visibleDiagram} />
       </aside>    </>}>
       <section className="panel model-answer-import-entries" aria-label="模範解答の確認項目">
         {selectedQuestion && <section className="model-answer-question-text" aria-label="登録済み問題文">
@@ -724,6 +728,11 @@ export default function ModelAnswerImportReviewPage() {
               disabled={busy || classifying || draft.state !== "editing" || draft.confirmed_entry_ids?.includes(entry.id)}
               onChange={(event) => updateEntry(entry.id, { answer_text: event.target.value })} />
           </label>
+          {entry.source.kind !== "teacher_manual" && <DiagramReview
+            path={`/model-answer-import-drafts/${draft.id}/entries/${entry.id}/diagrams`} label="模範解答の図"
+            revision={draft.revision} records={entry.diagram_records} disabled={busy || classifying || draft.state !== "editing" || !!draft.confirmed_entry_ids?.includes(entry.id)}
+            sourceStale={entry.question_id !== savedDraft?.entries.find(e => e.id === entry.id)?.question_id}
+            onSelect={setDiagramSelection} onChange={records => updateEntry(entry.id, {diagram_records: records})} />}
           <LatexNormalizationControl source={entry.source?.segments?.some(segment => !!segment.original_text && entry.answer_text.split("\n").includes(segment.original_text) && /[=+^_]|\b(TP|FP|TN|FN)\b/.test(segment.original_text)) ? {draftId: draft.id, entryId: entry.id, revision: draft.revision} : undefined} text={entry.answer_text} contextType="model_answer" contextLabel={questionLabels.get(entry.question_id || "") || ""}
             disabled={busy || classifying || draft.state !== "editing" || draft.confirmed_entry_ids?.includes(entry.id)}
             onApply={(text, proposal) => updateEntry(entry.id, { answer_text: text, teacher_correction: {

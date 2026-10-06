@@ -58,6 +58,12 @@ class Handler(BaseHTTPRequestHandler):
         content = body["messages"][-1]["content"]
         if isinstance(content, list):
             assert any(item.get("type") == "image_url" for item in content)
+            if body.get("response_format", {}).get("json_schema", {}).get("name") == "diagram_grouping":
+                ids = body["response_format"]["json_schema"]["schema"]["properties"]["groups"]["items"]["properties"]["element_ids"]["items"]["enum"]
+                assert body["temperature"] == 0
+                assert body["chat_template_kwargs"]["enable_thinking"] is False
+                self.send({"choices": [{"finish_reason": "stop", "message": {"content": json.dumps({"groups": [{"element_ids": ids, "confidence": .96}]})}}]})
+                return
             if "supplied source segment IDs" in content[0].get("text", ""):
                 metadata = json.loads(content[0]["text"].split("\n", 1)[1])
                 self.send({"choices": [{"message": {"content": json.dumps({"groups": [{"segment_ids": [s["id"] for s in metadata["segments"]], "confidence": .96}]})}}]})

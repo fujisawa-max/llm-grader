@@ -159,3 +159,15 @@
   .review-workspace-source .pdf-pane-viewer{display:block}
   .review-workspace-source .pdf-pane-viewport,.review-preview-viewport{height:480px;flex:none}
 }
+
+/* Source-backed diagram review shares the existing PDF and workspace panes. */
+.pdf-pane-canvas{position:relative;width:max-content;line-height:0;flex-shrink:0}
+.diagram-overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:4}
+.diagram-overlay rect{stroke:#a66200;stroke-width:1.5;fill:rgba(244,183,55,.14);vector-effect:non-scaling-stroke}
+.diagram-overlay.diagram-selecting{pointer-events:auto;cursor:crosshair;touch-action:none}
+.diagram-overlay.diagram-selecting rect{stroke-dasharray:5 3}
+.diagram-bounds{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:12px 0}
+.diagram-bounds input{width:100%}
+.diagram-review article{border-top:1px solid var(--border,#ddd);margin-top:16px;padding-top:8px}
+.diagram-review .review-crop{max-height:360px;object-fit:contain;display:block}
+@media(max-width:600px){.diagram-bounds{grid-template-columns:repeat(2,minmax(0,1fr))}}

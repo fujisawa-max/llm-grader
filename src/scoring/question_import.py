@@ -160,6 +160,16 @@ class QuestionImportPlanner:
             content = []
             formula_dec = n.get("formula_decisions") or {}
             figure_dec = n.get("figure_decisions") or {}
+            diagram_records = n.get('diagram_records', [])
+            if diagram_records:
+                from .diagram_review import question_diagram_review
+                try:
+                    diagram_review = question_diagram_review(svc, review_id, key, rev.revision_number)
+                    diagram_records = diagram_review.validate(diagram_records, rev.revision_number)
+                except ValueError as exc:
+                    blockers.append(str(exc))
+                    diagram_records = []
+            used_diagrams = set()
             for it in _items(n):
                 typ = it.get("type")
                 if typ == "text":
@@ -216,6 +226,15 @@ class QuestionImportPlanner:
                     rid = it.get("region_id")
                     d = figure_dec.get(rid, {}) if isinstance(figure_dec, dict) else {}
                     decision = d.get("decision", "unreviewed")
+                    diagram = next((r for r in diagram_records if rid in r.get('legacy_region_ids', [r.get('legacy_region_id')])), None)
+                    if decision == 'excluded' or diagram and diagram['state'] == 'excluded':
+                        continue
+                    if diagram and diagram['state'] == 'accepted':
+                        if diagram['id'] not in used_diagrams:
+                            content.append({'type': 'figure', 'source_region_id': rid,
+                                'asset_key': diagram['crop_sha256'], 'diagram': diagram})
+                            used_diagrams.add(diagram['id'])
+                        continue
                     if decision != "accepted_as_evidence":
                         blockers.append(f"figure_unresolved:{rid}")
                     content.append(
@@ -236,6 +255,9 @@ class QuestionImportPlanner:
                     )
                 else:
                     content.append(deepcopy(it))
+            content.extend({'type': 'figure', 'source_region_id': r['id'],
+                'asset_key': r['crop_sha256'], 'diagram': r} for r in diagram_records
+                if r['state'] == 'accepted' and not r.get('legacy_region_id'))
             qnum = path.get(key, key)
             if qnum in existing_nums:
                 qnum = f"import-{key}"[:32]
@@ -490,6 +512,22 @@ class QuestionImportConfirmationService(QuestionImportPlanner):
                 if item["type"] != "figure":
                     continue
                 rid = item["source_region_id"]
+                if item.get('diagram'):
+                    record = item['diagram']
+                    source = svc._artifact(store, record['artifact_ref'], record['crop_sha256'], 'diagrams/')
+                    aid = str(uuid4())
+                    ref = f'confirmations/{cid}/assets/{aid}.png'
+                    copy_asset(source, store.path(ref), record['crop_sha256'])
+                    provenance = {**record, 'confirmation_id': cid, 'extraction_id': draft.extraction_id,
+                        'review_id': review_id, 'revision': expected_revision,
+                        'revision_sha256': expected_revision_sha256, 'domain': 'question'}
+                    asset = TestQuestionAsset(id=aid, question_id=q.id, asset_type='figure',
+                        artifact_ref=ref, sha256=record['crop_sha256'], mime_type='image/png', provenance=provenance)
+                    self.s.add(asset)
+                    assets.append({'id': aid, 'question_id': q.id, 'artifact_ref': ref,
+                                   'sha256': asset.sha256, 'provenance': provenance})
+                    item['asset_id'] = aid
+                    continue
                 pin = pins[rid]
                 source = svc._artifact(
                     store,

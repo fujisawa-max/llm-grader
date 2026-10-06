@@ -78,7 +78,7 @@ export function EvidencePanel({ id, regionId, ownerLabel, decision, readonly, on
         {formula ? <><option value="use_native" disabled={!region.text_fragments?.length}>{reviewDecisionLabel("use_native")}</option>
           <option value="use_vision" disabled={!pin?.has_candidate}>{reviewDecisionLabel("use_vision")}</option><option value="teacher_edit">{reviewDecisionLabel("teacher_edit")}</option>
           {["excluded", "merged_into_text"].includes(decision.decision) && <option value={decision.decision}>{reviewDecisionLabel(decision.decision)}</option>}</>
-          : <><option value="accepted_as_evidence">{reviewDecisionLabel("accepted_as_evidence")}</option><option value="needs_correction">{reviewDecisionLabel("needs_correction")}</option></>}
+          : <><option value="accepted_as_evidence">{reviewDecisionLabel("accepted_as_evidence")}</option><option value="needs_correction">{reviewDecisionLabel("needs_correction")}</option><option value="excluded">対象外</option></>}
       </select></label>
       {formula && <FormulaConfirmation label="教師による数式確認" decision={decision} disabled={readonly}
         onChange={status => onDecision(setFormulaConfirmation(decision, status, "individual"))} />}

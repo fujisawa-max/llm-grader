@@ -2,10 +2,12 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { PDFDocumentLoadingTask, PDFDocumentProxy } from "pdfjs-dist";
+import { DiagramOverlay } from './reviews/DiagramOverlay';
+import type { DiagramSelection } from './reviews/DiagramReview';
 
 type ZoomMode = "manual" | "width" | "page";
 
-export function PdfPaneViewer({ url, label, targetLocation }: { url: string; label: string; targetLocation?: { id: string; page: number; bbox?: number[] } }) {
+export function PdfPaneViewer({ url, label, targetLocation, diagramSelection }: { diagramSelection?: DiagramSelection; url: string; label: string; targetLocation?: { id: string; page: number; bbox?: number[] } }) {
   const [document, setDocument] = useState<PDFDocumentProxy | null>(null);
   const [page, setPage] = useState(1);
   const [mode, setMode] = useState<ZoomMode>("width");
@@ -148,7 +150,9 @@ export function PdfPaneViewer({ url, label, targetLocation }: { url: string; lab
         event.currentTarget.scrollTop = origin.top - dy;
       }}
       onPointerUp={(event) => endPan(event.pointerId)} onPointerCancel={(event) => endPan(event.pointerId)}>
-      <canvas ref={canvasRef} aria-label={`${label} ${page}ページ`} role="img" />
+      <div className="pdf-pane-canvas"><canvas ref={canvasRef} aria-label={`${label} ${page}ページ`} role="img" />
+        {diagramSelection?.record.page_index === page-1 && <DiagramOverlay key={`${diagramSelection.record.id}:${diagramSelection.manual}:${diagramSelection.record.final_bbox}`} selection={diagramSelection} />}
+      </div>
     </div>
   </section>;
 }

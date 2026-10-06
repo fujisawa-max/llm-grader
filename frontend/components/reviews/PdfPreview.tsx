@@ -2,8 +2,11 @@
 import { useEffect, useState } from "react";
 import { reviews } from "@/lib/api/reviews";
 import type { PreviewMetadata } from "@/types/reviews";
+import { DiagramOverlay } from './DiagramOverlay';
+import type { DiagramSelection } from './DiagramReview';
 
-export function PdfPreview({ id, page, pages, selected, onPage, revision }: {
+export function PdfPreview({ id, page, pages, selected, onPage, revision, diagramSelection }: {
+  diagramSelection?: DiagramSelection;
   revision?: number; id: string; page: number; pages: number; selected: string; onPage: (page: number) => void;
 }) {
   const [meta, setMeta] = useState<PreviewMetadata>();
@@ -31,6 +34,7 @@ export function PdfPreview({ id, page, pages, selected, onPage, revision }: {
           x={r.pixel_bbox[0]} y={r.pixel_bbox[1]} width={r.pixel_bbox[2] - r.pixel_bbox[0]} height={r.pixel_bbox[3] - r.pixel_bbox[1]}
           className={r.source_type === "node" ? "highlight-node" : "highlight-region"} />)}
       </svg>
+      {diagramSelection?.record.page_index === page && <DiagramOverlay key={`${diagramSelection.record.id}:${diagramSelection.manual}:${diagramSelection.record.final_bbox}`} selection={diagramSelection} />}
     </div>}</div>
     <p className="muted">選択した問題・数式・図の原文位置。出典情報を持たない追加問題には原文位置がありません。</p>
   </section>;
