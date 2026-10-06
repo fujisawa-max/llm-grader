@@ -715,7 +715,8 @@ export default function ModelAnswerImportReviewPage() {
             <summary>保存済み下書き模範解答・revision {savedDraft?.revision || "—"}</summary>
             {savedDraft?.entries.some(saved => saved.id === entry.id) ? <MarkdownMathText source={savedDraft.entries.find(saved => saved.id === entry.id)?.answer_text || "本文なし"} /> : <p>なし</p>}
           </details>
-          {entry.answer_text !== savedDraft?.entries.find(saved => saved.id === entry.id)?.answer_text && <p role="status">未保存の変更があります</p>}
+          {(entry.answer_text !== savedDraft?.entries.find(saved => saved.id === entry.id)?.answer_text
+            || JSON.stringify(entry.diagram_records || []) !== JSON.stringify(savedDraft?.entries.find(saved => saved.id === entry.id)?.diagram_records || [])) && <p role="status">未保存の変更があります</p>}
           <label className="field">編集中の下書き本文
             <textarea aria-label={`模範解答本文 ${index + 1}`} value={entry.answer_text} maxLength={100000} rows={6}
               disabled={busy || classifying || draft.state !== "editing" || draft.confirmed_entry_ids?.includes(entry.id)}

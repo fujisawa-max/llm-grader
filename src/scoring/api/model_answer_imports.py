@@ -587,7 +587,8 @@ def router(db, artifact_root, classifier=None):
             raise ValueError('diagram_source_stale')
         _, questions = choices_for(draft.test_id, session)
         return ModelAnswerDiagramReview(source, ir, RunArtifactAdapter(ir_path.parent), entry=entry,
-            question_regions=draft.snapshot.get('question_regions', []), questions=questions)
+            question_regions=draft.snapshot.get('question_regions', []), questions=questions,
+            reuse_context={'draft_id': draft.id, 'entries': draft.snapshot['entries']})
 
     def diagram_target(draft_id, entry_id, session, question_id=None):
         draft = owned_draft(draft_id, session)
@@ -614,17 +615,39 @@ def router(db, artifact_root, classifier=None):
                 record['preview_url'] = (f'/api/v1/model-answer-import-drafts/{draft_id}/entries/{entry_id}/diagrams/'
                     f'{record["id"]}/crop?crop_sha={record["crop_sha256"]}'
                     + (f'&question_id={question_id}' if question_id else "")
-                    + f'&scope={record.get("scope", "exact")}')
+                    + f'&scope={record.get("scope", "exact")}'
+                    + (f'&reuse_ref={record["reuse_ref"]}' if record.get('scope') == 'reuse' else ''))
+        if records and all(r.get('scope') == 'reuse' for r in records):
+            return {'diagrams': records, 'fallback': None}
         return {'diagrams': records, 'fallback': review.fallback(), 'diagnostics': review.diagnostics()}
+
+    def diagram_response_reuse(review, records, draft_id, entry_id, question_id):
+        # Reuse is source validation/cache lookup, not exact/parent discovery.
+        for record in records:
+            review.preview(record)
+            record['preview_url'] = (f'/api/v1/model-answer-import-drafts/{draft_id}/entries/{entry_id}/diagrams/'
+                f'{record["id"]}/crop?crop_sha={record["crop_sha256"]}&scope=reuse&reuse_ref={record["reuse_ref"]}'
+                + (f'&question_id={question_id}' if question_id else ''))
+        return {'diagrams': [], 'reusable_diagrams': records}
 
     @routes.get('/model-answer-import-drafts/{draft_id}/entries/{entry_id}/diagrams')
     @routes.post('/model-answer-import-drafts/{draft_id}/entries/{entry_id}/diagrams')
-    def diagrams(draft_id: str, entry_id: str, request: Request, body: ClassificationRequest | None = None, question_id: str | None = None, scope: Literal["exact", "parent", "pdf"] | None = None, session=Depends(db)):
+    def diagrams(draft_id: str, entry_id: str, request: Request, body: ClassificationRequest | None = None, question_id: str | None = None, scope: Literal["exact", "parent", "pdf", "reuse"] | None = None, reuse_ref: str | None = None, session=Depends(db)):
         draft, entry = diagram_target(draft_id, entry_id, session, question_id)
         if body:
             revision_check(draft, body.expected_revision)
         try:
+            if scope == 'reuse' and request.method == 'GET' and not any(
+                    r.get('state') == 'accepted' for e in draft.snapshot.get('entries', [])
+                    if e.get('disposition', 'include') == 'include'
+                    for r in e.get('diagram_records', [])):
+                return {'diagrams': [], 'reusable_diagrams': []}
             review = diagram_review_for(draft, entry, session)
+            if scope == 'reuse':
+                if request.method != 'GET':
+                    raise ValueError('diagram_invalid_scope')
+                response = diagram_response_reuse(review, review.reuse().available(draft.revision), draft_id, entry_id, question_id)
+                return response
             if request.method == 'POST' and body:
                 review.discover(getattr(classifier, 'manager', None), scope or 'exact')
             return diagram_response(review, review.records(entry.get('diagram_records', []), revision=draft.revision, scope=scope or ('exact' if request.method == 'POST' else None)), draft_id, entry_id, question_id)
@@ -632,22 +655,22 @@ def router(db, artifact_root, classifier=None):
             fail(422, str(exc), '図の出典と設問の対応を確認してください')
 
     @routes.post('/model-answer-import-drafts/{draft_id}/entries/{entry_id}/diagrams/{candidate_id}/crop-preview')
-    def diagram_preview(draft_id: str, entry_id: str, candidate_id: str, body: DiagramCropRequest, question_id: str | None = None, scope: Literal["exact", "parent", "pdf"] | None = None, session=Depends(db)):
+    def diagram_preview(draft_id: str, entry_id: str, candidate_id: str, body: DiagramCropRequest, question_id: str | None = None, scope: Literal["exact", "parent", "pdf", "reuse"] | None = None, reuse_ref: str | None = None, session=Depends(db)):
         draft, entry = diagram_target(draft_id, entry_id, session, question_id)
         revision_check(draft, body.expected_revision)
         try:
             review = diagram_review_for(draft, entry, session)
-            record = review.record(candidate_id, final_bbox=body.final_bbox, revision=draft.revision, scope=scope or 'exact')
+            record = review.record(candidate_id, final_bbox=body.final_bbox, revision=draft.revision, scope=scope or 'exact', reuse_ref=reuse_ref)
             return diagram_response(review, [record], draft_id, entry_id, question_id)['diagrams'][0]
         except ValueError as exc:
             fail(422, str(exc), '図の範囲が設問の出典範囲を越えています')
 
     @routes.get('/model-answer-import-drafts/{draft_id}/entries/{entry_id}/diagrams/{candidate_id}/crop')
-    def diagram_crop(draft_id: str, entry_id: str, candidate_id: str, crop_sha: str | None = None, question_id: str | None = None, scope: Literal["exact", "parent", "pdf"] | None = None, session=Depends(db)):
+    def diagram_crop(draft_id: str, entry_id: str, candidate_id: str, crop_sha: str | None = None, question_id: str | None = None, scope: Literal["exact", "parent", "pdf", "reuse"] | None = None, reuse_ref: str | None = None, session=Depends(db)):
         draft, entry = diagram_target(draft_id, entry_id, session, question_id)
         try:
             review = diagram_review_for(draft, entry, session)
-            return FileResponse(review.preview_path(candidate_id, crop_sha, scope=scope or 'exact'), media_type='image/png')
+            return FileResponse(review.preview_path(candidate_id, crop_sha, scope=scope or 'exact', reuse_ref=reuse_ref), media_type='image/png')
         except ValueError as exc:
             fail(422, str(exc), '図の出典を確認できません')
 

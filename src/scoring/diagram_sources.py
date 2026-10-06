@@ -132,7 +132,7 @@ def question_diagram_candidates(service, review_id, node_key, revision, *, snaps
                                      ownership=ownership, exclusions=exclusions, grouping=grouping)
 
 
-def model_answer_diagram_candidates(source, ir, store, *, entry, question_regions, grouping=None, allow_missing=False):
+def model_answer_diagram_candidates(source, ir, store, *, entry, question_regions, grouping=None, allow_missing=False, discover=True):
     """Only persisted spatial assignment, never a nearest-text/sibling guess."""
     qid = entry.get('question_id')
     if not qid:
@@ -165,5 +165,5 @@ def model_answer_diagram_candidates(source, ir, store, *, entry, question_region
     engine.allowed_bounds, engine.blocked_bounds = bounds, blocked
     engine.ownership_key = {'bounds': bounds, 'blocked': blocked, 'entry_id': entry.get('id', qid)}
     engine.legacy_figures = []
-    return engine, engine.candidates(domain='model_answer', target_key=qid,
-                                     ownership=ownership, exclusions=exclusions, grouping=grouping)
+    engine.discovery_args = dict(domain='model_answer', target_key=qid, ownership=ownership, exclusions=exclusions)
+    return engine, engine.candidates(**engine.discovery_args, grouping=grouping) if discover else []

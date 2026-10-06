@@ -17,9 +17,11 @@ ASSIGNMENT_FIELDS = ('scope', 'source_question_id', 'source_question_path', 'ass
 
 
 class ModelAnswerDiagramReview:
-    def __init__(self, source, ir, store, *, entry, question_regions, questions):
+    def __init__(self, source, ir, store, *, entry, question_regions, questions, reuse_context=None):
         self.source, self.ir, self.store = source, ir, store
         self.entry, self.regions = entry, question_regions
+        self.reuse_context = reuse_context
+        self._reuse = None
         self.questions = {q.id: q for q in questions}
         self.assigned = entry.get('question_id')
         if self.assigned not in self.questions or not self.questions[self.assigned].is_gradable:
@@ -39,6 +41,14 @@ class ModelAnswerDiagramReview:
         self.reviews = {}
         # Registration uses this store only; no page-wide discovery is performed.
         self.engine = SimpleNamespace(store=store)
+
+    def reuse(self):
+        if not self.reuse_context:
+            raise ValueError('diagram_reuse_not_found')
+        if self._reuse is None:
+            from .model_answer_diagram_reuse import ConfirmedDiagramReuse
+            self._reuse = ConfirmedDiagramReuse(self)
+        return self._reuse
 
     def owner_review(self, owner):
         if owner not in self.reviews:
@@ -125,6 +135,9 @@ class ModelAnswerDiagramReview:
         for selected in scopes:
             subset = [r for r in saved if r.get('scope', 'exact') == selected]
             try:
+                if selected == 'reuse':
+                    result.extend(self.reuse().records(subset, revision))
+                    continue
                 review, owner = self.scoped_review(selected)
                 for r in subset:
                     if selected == 'pdf':
@@ -154,7 +167,9 @@ class ModelAnswerDiagramReview:
         expanded = crop_geometry(page, final_bbox, 'figure', POLICY)['expanded_bbox']
         owner = self.decorate(candidate, 'pdf', None)['source_question_id']
         if owner:
-            source_engine = self.owner_review(owner).engine
+            source_engine, _ = model_answer_diagram_candidates(self.source, self.ir, self.store,
+                entry={'id': f'diagram-source-owner:{owner}', 'question_id': owner, 'source': {'segments': []}},
+                question_regions=self.regions, allow_missing=True, discover=False)
             if (not any(_contains(b, expanded) for b in source_engine.allowed_bounds.get(candidate['page_index'], []))
                     or any(all(min(expanded[k+2], b[k+2]) > max(expanded[k], b[k]) for k in (0, 1))
                            for b in source_engine.blocked_bounds.get(candidate['page_index'], []))):
@@ -171,7 +186,9 @@ class ModelAnswerDiagramReview:
                     for other in review.candidates):
                 raise ValueError('diagram_source_boundary')
 
-    def record(self, identifier, *, final_bbox=None, revision=1, scope='exact'):
+    def record(self, identifier, *, final_bbox=None, revision=1, scope='exact', reuse_ref=None):
+        if scope == 'reuse':
+            return self.reuse().record(identifier, reuse_ref, final_bbox=final_bbox, revision=revision)
         review, owner = self.scoped_review(scope)
         if scope == 'pdf':
             self.check_manual_pdf_bounds(review, identifier, final_bbox)
@@ -185,6 +202,21 @@ class ModelAnswerDiagramReview:
             if not isinstance(r, dict) or not isinstance(r.get('id'), str) or r['id'] in seen:
                 raise ValueError('diagram_invalid_decision')
             scope = r.get('scope', 'exact')
+            if scope == 'reuse':
+                result.append(self.reuse().validate(r, revision))
+                seen.add(r['id'])
+                continue
+            previous = next((old for old in self.entry.get('diagram_records', [])
+                if old.get('id') == r['id'] and old.get('scope', 'exact') == scope
+                and old.get('context_sha256') == r.get('context_sha256')
+                and old.get('source_question_id') == r.get('source_question_id')), None)
+            if previous:
+                from .model_answer_diagram_reuse import ConfirmedDiagramReuse
+                _, _, canonical = ConfirmedDiagramReuse(self).source_review(self.entry, r)
+                canonical['revision'] = revision
+                result.append(canonical)
+                seen.add(r['id'])
+                continue
             review, owner = self.scoped_review(scope)
             canonical = self.record(r['id'], final_bbox=r.get('final_bbox'), revision=revision, scope=scope)
             if any(key in r and r[key] != canonical[key] for key in ASSIGNMENT_FIELDS):
@@ -195,9 +227,13 @@ class ModelAnswerDiagramReview:
         return result
 
     def preview(self, record):
+        if record.get('scope') == 'reuse':
+            return self.reuse().preview(record)
         review, _ = self.scoped_review(record.get('scope', 'exact'))
         return review.preview(record)
 
-    def preview_path(self, identifier, crop_sha=None, scope='exact'):
+    def preview_path(self, identifier, crop_sha=None, scope='exact', reuse_ref=None):
+        if scope == 'reuse':
+            return self.reuse().preview_path(identifier, reuse_ref, crop_sha)
         review, _ = self.scoped_review(scope)
         return review.preview_path(identifier, crop_sha)

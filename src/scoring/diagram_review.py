@@ -15,15 +15,20 @@ FIELDS = ('id', 'domain', 'target_key', 'material_id', 'source_sha256', 'source_
     'page_width', 'page_height', 'page_rotation', 'legacy_region_ids',
     'scope', 'source_question_id', 'source_question_path', 'assigned_question_id',
     'trust_state', 'trust_state_at_accept', 'teacher_confirmed', 'confirmation_reason_code',
-    'acceptance_method')
+    'acceptance_method', 'reuse_ref', 'reused_from_assignment_id', 'reused_from_entry_id',
+    'reused_from_question_id', 'reused_from_question_path', 'reuse_source_scope',
+    'source_teacher_confirmed', 'source_trust_state_at_accept', 'source_confirmation_reason_code')
 
 
 class DiagramReview:
-    def __init__(self, engine, candidates):
+    def __init__(self, engine, candidates, *, _saved_context=None):
         self.engine = engine
+        self.context_candidates = [{k: c[k] for k in ('id', 'source_element_ids', 'bbox')} for c in candidates]
         self.context = canonical_hash({'source': engine.ir['source']['sha256'],
             'ownership': getattr(engine, 'ownership_key', {}),
-            'candidates': [{k: c[k] for k in ('id', 'source_element_ids', 'bbox')} for c in candidates]})
+            'candidates': self.context_candidates})
+        if _saved_context is not None:
+            self.context = _saved_context
         self.ref = f'diagrams/reviews/{self.context}.json'
         self.candidates = candidates
         path = engine.store.path(self.ref)
@@ -54,8 +59,33 @@ class DiagramReview:
         else:
             self._cache()
 
+    @classmethod
+    def from_cache(cls, engine, context):
+        """Validate saved native membership/ownership without geometry discovery."""
+        if not isinstance(context, str) or not re.fullmatch(r'[0-9a-f]{64}', context):
+            raise ValueError('diagram_source_stale')
+        path = engine.store.path(f'diagrams/reviews/{context}.json')
+        if not path.is_file():
+            raise ValueError('diagram_source_stale')
+        cached = json.loads(path.read_text())
+        candidates = cached.get('candidates', [])
+        expected = canonical_hash({'source': engine.ir['source']['sha256'],
+            'ownership': getattr(engine, 'ownership_key', {}),
+            'candidates': cached.get('context_candidates', [{k: c[k] for k in ('id', 'source_element_ids', 'bbox')} for c in candidates])})
+        legacy = 'context_candidates' not in cached
+        if (not legacy and expected != context) or cached.get('context_sha256') != context:
+            raise ValueError('diagram_source_stale')
+        initial = cached.get('context_candidates', candidates)
+        # Historical caches stored only the pre-grouping context hash. Validate
+        # every native ID, union, SHA, current owner and crop bounds below; do
+        # not rerun geometry or vision just to recover the old hash input.
+        review = cls(engine, initial, _saved_context=context if legacy else None)
+        if review.context != context:
+            raise ValueError('diagram_source_stale')
+        return review
+
     def _cache(self):
-        write_diagram_json(self.engine.store, self.ref, {'context_sha256': self.context, 'candidates': self.candidates})
+        write_diagram_json(self.engine.store, self.ref, {'context_sha256': self.context, 'context_candidates': self.context_candidates, 'candidates': self.candidates})
 
     def discover(self, manager):
         from .diagram_vision import RicohDiagramGrouping
