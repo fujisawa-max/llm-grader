@@ -11,6 +11,7 @@ import { SourcePdfPreview } from "@/components/SourcePdfPreview";
 import { MarkdownMathText } from "@/components/MarkdownMathText";
 import { ReviewIssueList } from "@/components/reviews/ReviewIssueList";
 import { focusReviewIssue, type ReviewIssueTarget } from "@/lib/reviewIssues";
+import { ReviewWorkspaceLayout } from "@/components/reviews/ReviewWorkspaceLayout";
 import { ModelAnswerQuestionSelector } from "@/components/ModelAnswerQuestionSelector";
 import { questionBreadcrumb } from "@/lib/modelAnswerQuestionNavigation";
 import {
@@ -108,18 +109,6 @@ export default function ModelAnswerImportReviewPage() {
   const [classifying, setClassifying] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const reviewRoot = useRef<HTMLElement>(null);
-  const reviewControls = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const controls = reviewControls.current;
-    const root = reviewRoot.current;
-    if (!controls || !root) return;
-    const measure = () => root.style.setProperty("--answer-review-controls-height", `${controls.getBoundingClientRect().height}px`);
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(controls);
-    return () => observer.disconnect();
-  }, [loading]);
   const splitCursors = useRef<Record<string, number>>({});
   const [splittingCandidateId, setSplittingCandidateId] = useState<string | null>(null);
   const splitting = splittingCandidateId !== null;
@@ -601,7 +590,7 @@ export default function ModelAnswerImportReviewPage() {
   const runtime = draft.entries.find((entry) => entry.semantic_classification?.runtime_type)?.semantic_classification?.runtime_type;
   const pages = (entry: ModelAnswerDraftEntry) => [...new Set(entry.source.segments.map((segment) => segment.page_index + 1))];
 
-  return <main ref={reviewRoot} className="container section model-answer-import-review">
+  return <main className="container section model-answer-import-review">
     <Breadcrumbs items={[
       { label: "試験", href: `/tests/${test.id}` },
       { label: test.name, href: `/tests/${test.id}?section=answers` },
@@ -616,26 +605,6 @@ export default function ModelAnswerImportReviewPage() {
         {draft.pipeline.profile_id && `　/　使用profile: ${draft.pipeline.profile_id}`} {runtime && ` / runtime: ${runtime}`}　/　位置優先の設問対応</p>
       {draft.pipeline.semantic_classification_fallback && <p className="warn">意味分類を利用できなかった項目は、位置情報と機械抽出結果を使用しています。元の文章は分類欄に保持されています。</p>}
     </section>}
-    <div className="model-answer-review-controls" ref={reviewControls}>
-    {draft.state === "editing" && <div className="model-answer-review-toolbar" role="toolbar" aria-label="模範解答の操作">
-      <button type="button" className="button secondary" disabled={busy || classifying} onClick={() => void save()}>下書き保存</button>
-      <button type="button" className="button" disabled={busy || classifying || registrationValidation.length > 0}
-        onClick={() => void confirm()}>{busy ? "登録中…" : "模範解答として登録"}</button>
-      <button type="button" className="button secondary" disabled={busy || classifying || rubricRegistering || !draft.entries.some((entry) => rubricRows(entry).length)}
-        onClick={() => void registerRubric()}>{rubricRegistering ? "採点基準を登録中…" : "採点基準として登録"}</button>
-      <button type="button" className="button secondary" disabled={busy || classifying || draft.entries.length === 0} onClick={() => void classify()}>
-        {classifying ? "意味分類中…" : "意味分類を再実行"}</button>
-      <Link className="button secondary" href={`/tests/${test.id}?section=answers`}>戻る</Link>
-    </div>}
-    <div id="model-answer-target-selector" tabIndex={-1}><ModelAnswerQuestionSelector label="編集対象" options={targets} selectedId={selectedTarget?.id || ""} onChange={id => { setSelectedTargetId(id); setSplitPreview(null); }}>
-          <optgroup label="設問">{targets.filter((target) => target.kind === "question").map((target) =>
-            <option key={target.id} value={target.id}>{questionLabels.get(target.questionId || "") || target.label}</option>)}</optgroup>
-          {targets.some((target) => target.kind === "unassigned") && <optgroup label="対応する設問なし">{targets.filter((target) => target.kind === "unassigned").map((target) =>
-            <option key={target.id} value={target.id}>{target.label}</option>)}</optgroup>}
-          {targets.some((target) => target.kind === "excluded") && <optgroup label="除外済み">{targets.filter((target) => target.kind === "excluded").map((target) =>
-            <option key={target.id} value={target.id}>{target.label}</option>)}</optgroup>}
-    </ModelAnswerQuestionSelector></div>
-    </div>
     {draft.state === "editing" && registrationValidation.length > 0 && <section className="warn" aria-label="登録できない理由" role="status">
       <strong>登録前に確認が必要な項目が{registrationValidation.length}件あります</strong>
       <ReviewIssueList issues={registrationIssues} onNavigate={navigateIssue} label="模範解答の登録確認項目" />
@@ -649,7 +618,31 @@ export default function ModelAnswerImportReviewPage() {
     {draft.entries.length === 0 && <p className="warn" role="status">PDFから読み取れる本文がありません。PDFの文字データを確認するか、設問別編集欄で手入力してください。</p>}
     {error && <p className="error" role="alert">{error}</p>}
     {notice && <p role="status">{notice}</p>}
-    <div className="model-answer-import-layout">
+    <ReviewWorkspaceLayout actions={<>
+    {draft.state === "editing" && <div className="model-answer-review-toolbar" role="toolbar" aria-label="模範解答の操作">
+      <button type="button" className="button secondary" disabled={busy || classifying} onClick={() => void save()}>下書き保存</button>
+      <button type="button" className="button" disabled={busy || classifying || registrationValidation.length > 0}
+        onClick={() => void confirm()}>{busy ? "登録中…" : "模範解答として登録"}</button>
+      <button type="button" className="button secondary" disabled={busy || classifying || rubricRegistering || !draft.entries.some((entry) => rubricRows(entry).length)}
+        onClick={() => void registerRubric()}>{rubricRegistering ? "採点基準を登録中…" : "採点基準として登録"}</button>
+      <button type="button" className="button secondary" disabled={busy || classifying || draft.entries.length === 0} onClick={() => void classify()}>
+        {classifying ? "意味分類中…" : "意味分類を再実行"}</button>
+      <Link className="button secondary" href={`/tests/${test.id}?section=answers`}>戻る</Link>
+    </div>}
+    </>} selector={<>
+    <div id="model-answer-target-selector" tabIndex={-1}><ModelAnswerQuestionSelector label="編集対象" options={targets} selectedId={selectedTarget?.id || ""} onChange={id => { setSelectedTargetId(id); setSplitPreview(null); }}>
+          <optgroup label="設問">{targets.filter((target) => target.kind === "question").map((target) =>
+            <option key={target.id} value={target.id}>{questionLabels.get(target.questionId || "") || target.label}</option>)}</optgroup>
+          {targets.some((target) => target.kind === "unassigned") && <optgroup label="対応する設問なし">{targets.filter((target) => target.kind === "unassigned").map((target) =>
+            <option key={target.id} value={target.id}>{target.label}</option>)}</optgroup>}
+          {targets.some((target) => target.kind === "excluded") && <optgroup label="除外済み">{targets.filter((target) => target.kind === "excluded").map((target) =>
+            <option key={target.id} value={target.id}>{target.label}</option>)}</optgroup>}
+    </ModelAnswerQuestionSelector></div>
+    </>} source={<>
+      <aside className="panel model-answer-import-source" aria-label="模範解答PDF">
+        <h2>元の模範解答PDF</h2>
+        <SourcePdfPreview testId={test.id} material={material || undefined} label="模範解答PDF" paneZoom targetLocation={pdfLocation} />
+      </aside>    </>}>
       <section className="panel model-answer-import-entries" aria-label="模範解答の確認項目">
         {selectedQuestion && <section className="model-answer-question-text" aria-label="登録済み問題文">
           <h2>{questionLabels.get(selectedQuestion.id)}</h2><h3>問題文</h3>
@@ -909,10 +902,7 @@ export default function ModelAnswerImportReviewPage() {
         </article> : null)}
         {draft.state === "confirmed" && <p className="review-confirmed">登録済み</p>}
       </section>
-      <aside className="panel model-answer-import-source" aria-label="模範解答PDF">
-        <h2>元の模範解答PDF</h2>
-        <SourcePdfPreview testId={test.id} material={material || undefined} label="模範解答PDF" paneZoom targetLocation={pdfLocation} />
-      </aside>
-    </div>
+    </ReviewWorkspaceLayout>
+
   </main>;
 }

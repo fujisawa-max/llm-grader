@@ -21,7 +21,7 @@ export function PdfPreview({ id, page, pages, selected, onPage, revision }: {
       <span>{page + 1} / {pages} ページ</span><button disabled={page + 1 === pages} onClick={() => onPage(page + 1)}>次のページ</button></div>
     {error && <p role="alert" className="error">{error}</p>}
     {!loaded && !error && <p role="status">ページを読み込み中…</p>}
-    {meta && <div className="review-preview-image">
+    <div className="review-preview-viewport">{meta && <div className="review-preview-image">
       {/* Native PNG uses the hash-checked review endpoint, not Next image optimization. */}
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img src={reviews.previewUrl(id, page)} alt={`原PDF ${page + 1}ページ`} width={meta.preview_width} height={meta.preview_height}
@@ -31,7 +31,7 @@ export function PdfPreview({ id, page, pages, selected, onPage, revision }: {
           x={r.pixel_bbox[0]} y={r.pixel_bbox[1]} width={r.pixel_bbox[2] - r.pixel_bbox[0]} height={r.pixel_bbox[3] - r.pixel_bbox[1]}
           className={r.source_type === "node" ? "highlight-node" : "highlight-region"} />)}
       </svg>
-    </div>}
+    </div>}</div>
     <p className="muted">選択した問題・数式・図の原文位置。出典情報を持たない追加問題には原文位置がありません。</p>
   </section>;
 }

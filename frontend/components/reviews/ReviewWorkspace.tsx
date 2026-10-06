@@ -8,6 +8,7 @@ import { reviews, type ImportPlan, type Confirmation } from "@/lib/api/reviews";
 import type { Decision, ReviewDocument, ReviewNode, ReviewSnapshot, RevisionInfo } from "@/types/reviews";
 import { reviewIssueLabel, reviewSaveIssueLabel, reviewStateLabel, scoreSemanticsLabel } from "@/lib/reviewLabels";
 import { buildQuestionPath, reviewFieldErrors, reviewFieldId, validateReviewFields, type FieldIssues, type ReviewFieldError } from "@/lib/reviewValidation";
+import { ReviewWorkspaceLayout } from "./ReviewWorkspaceLayout";
 import { PdfPreview } from "./PdfPreview";
 import { NodeEditor } from "./NodeEditor";
 import { EvidencePanel } from "./EvidencePanel";
@@ -461,6 +462,7 @@ export function ReviewWorkspace({ id }: { id: string }) {
     </section>}
     {current.state === "reviewed" && !historical && <p className="notice">確認済みのため編集操作は停止しています。内容を直す場合は「新しい修正版で編集を再開」を押してください。</p>}
     {historical && <p className="notice">過去の修正版は編集できません。最新版を再読み込みすると編集できます。</p>}
+    <ReviewWorkspaceLayout actions={<>
     <div className="review-toolbar">
       <button className="button" disabled={readonly || !dirty} onClick={() => save()}>変更を保存</button>
       <button className="button secondary" disabled={readonly || dirty} onClick={() => save(true)}>確認済みにする</button>
@@ -471,6 +473,7 @@ export function ReviewWorkspace({ id }: { id: string }) {
       {confirmation && <span className="badge badge-success">問題登録済み</span>}
       {busy && <span role="status">処理中…</span>}
     </div>
+    </>} beforeWorkspace={<>
     {plan && !confirmation && current.state === "reviewed" && !dirty && !historical && <section className="panel final-question-check" aria-label="問題登録前の最終確認">
       <h2>問題登録前の最終確認</h2>
       <p>確認・編集した設問構成、配点、確認事項をチェックし、問題として確定する前の最終確認を行います。</p>
@@ -515,9 +518,9 @@ export function ReviewWorkspace({ id }: { id: string }) {
       </article>)}
       {warningCount > 0 && <div className="warn">確認事項が {warningCount} 件あります。{generalWarnings.length > 0 && <ul>{generalWarnings.map(code => <li key={code}>{reviewIssueLabel(code)}</li>)}</ul>}<details><summary>技術情報</summary>{generalWarnings.join(", ")}</details></div>}
     </section>}
-    <div className="review-layout">
+    </>} source={<>
       <PdfPreview id={id} page={page} pages={document.page_count} revision={document.revision_number} selected={regionId || node.stable_key} onPage={setPage} />
-      <div className="review-panel">
+    </>} selector={<>
         <section className="panel review-question-selector"><label>対象設問<select aria-label="対象設問" value={node.stable_key} onChange={event => {
           const next = current.nodes.find(n => n.stable_key === event.target.value); if (next) chooseNode(next);
         }}>{ordered(current.nodes).map(({node: n}) => <option key={n.stable_key} value={n.stable_key}>
@@ -525,6 +528,7 @@ export function ReviewWorkspace({ id }: { id: string }) {
         </option>)}</select></label>
           <div className="review-toolbar"><button disabled={readonly} onClick={() => add(false)}>大問を追加</button><button disabled={readonly} onClick={() => add(true)}>小問を追加</button></div>
         </section>
+    </>}>
         <section className="panel" aria-label="小問への分割">
           <button type="button" className="button secondary" disabled={readonly} onClick={startSplit}>小問に分割</button>
           {splitMessage && <p className="notice">{splitMessage}</p>}
@@ -595,11 +599,10 @@ export function ReviewWorkspace({ id }: { id: string }) {
             decision={owner[region.region_type === "formula" ? "formula_decisions" : "figure_decisions"][key] || { decision: "unreviewed" }} /> : null} />
         <WarningPanel warnings={document.warnings} states={current.warning_states || {}} readonly={readonly}
           onChange={(key, resolution) => setSnapshot({ ...current, warning_states: { ...current.warning_states, [key]: resolution } })} targetLabel={warningTarget} onJump={jumpToWarning} />
-      </div>
-    </div>
     <section className="panel section"><h2>変更履歴</h2>{historical && <p className="notice">過去の修正版を読み取り専用で表示しています。</p>}
       <ul>{history.map(r => <li key={r.revision_number}><button disabled={busy} onClick={() => { if (!dirty || window.confirm("未保存内容を破棄して履歴を表示しますか？")) void load(r.revision_number); }}>修正版 {r.revision_number}</button> {r.created_at} · {reviewStateLabel(r.state)} <details><summary>変更の技術情報</summary>{r.change_metadata.changed_nodes?.join(", ") || "状態または警告の変更"}</details></li>)}</ul>
     </section>
     <details className="section"><summary>技術情報</summary><pre>{JSON.stringify({ draft: current.source_draft_sha256, pdf: document.source_pdf_sha256, ir: document.source_ir_sha256, revision: document.revision_sha256, vision_run: current.vision_pin.run_id }, null, 2)}</pre></details>
+    </ReviewWorkspaceLayout>
   </div>;
 }

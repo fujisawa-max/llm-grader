@@ -166,7 +166,7 @@ test("sticky Question selection preserves local edits and split children keep ex
   const control = page.getByRole("region", {name:"LaTeX変換", exact:true});
   await expect(selector).toBeVisible();
   expect(await selector.locator("option").allTextContents()).toEqual(expect.arrayContaining([expect.stringContaining("問題1"), expect.stringContaining("問題2")]));
-  expect(await page.locator(".review-question-selector").evaluate(e => getComputedStyle(e).position)).toBe("sticky");
+  expect(await page.locator(".review-workspace-selector").evaluate(e => getComputedStyle(e).position)).toBe("sticky");
   const original = await editor.inputValue();
   expect(original).toContain("Precision=");
   await expect(page.locator('[data-content-type="formula"]')).toHaveCount(0);

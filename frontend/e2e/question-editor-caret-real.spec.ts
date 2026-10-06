@@ -1,8 +1,10 @@
 import {test, expect} from "@playwright/test";
 import {readFile} from "node:fs/promises";
+import {assertDesktopReviewLayout, assertNarrowReviewLayout} from "./review-layout-assertions";
 test.skip(!process.env.QUESTION_CARET_TEST_ID, "isolated Question source fixture required");
 
 test("Question newline joining keeps the edit location and editor DOM identity", async ({page}) => {
+  await page.setViewportSize({width:1920,height:1080});
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
   page.on("dialog", dialog => dialog.accept());
@@ -31,6 +33,8 @@ test("Question newline joining keeps the edit location and editor DOM identity",
   await page.goto(`/question-import-reviews/${initial.id}`);
   const editor = page.getByLabel("問題文", {exact:true});
   await expect(editor).toBeEditable();
+  await assertDesktopReviewLayout(page, "対象設問");
+  await assertNarrowReviewLayout(page, "対象設問");
   const original = await editor.inputValue();
   expect(original.split("\n").length).toBeGreaterThanOrEqual(3);
   const join = original.indexOf("\n",original.indexOf("2変数"));

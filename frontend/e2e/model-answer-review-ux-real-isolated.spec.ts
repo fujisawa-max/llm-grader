@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import {assertDesktopReviewLayout} from "./review-layout-assertions";
 
 const testId = process.env.REVIEW_UX_TEST_ID;
 const questionIds: string[] = JSON.parse(process.env.REVIEW_UX_QUESTION_IDS || "[]");
@@ -39,7 +40,8 @@ test("review disposition, manual answer, navigation and in-pane PDF zoom persist
   await expect(page.locator(".model-answer-review-toolbar").getByRole("button", { name: "下書き保存" })).toBeVisible();
   const viewer = page.getByRole("region", { name: "模範解答PDF" });
   const targetPicker = page.getByLabel("編集対象", {exact: true});
-  const stickyControls = page.locator(".model-answer-review-controls");
+  const stickyControls = page.locator(".review-workspace-actions");
+  await assertDesktopReviewLayout(page, "編集対象");
   await expect(targetPicker).toHaveCount(1);
   await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
   await expect(targetPicker).toBeInViewport();
@@ -51,7 +53,7 @@ test("review disposition, manual answer, navigation and in-pane PDF zoom persist
   await expect(page.getByLabel("模範解答本文 2", {exact:true})).toBeVisible();
   await targetPicker.selectOption(`question:${questionIds[0]}`);
   await expect(page.getByLabel("模範解答本文 1", {exact:true})).toBeVisible();
-  const source = page.locator(".model-answer-import-source");
+  const source = page.locator(".review-workspace-source");
   await expect.poll(async () => {
     const controls = (await stickyControls.boundingBox())!;
     const pdf = (await source.boundingBox())!;
