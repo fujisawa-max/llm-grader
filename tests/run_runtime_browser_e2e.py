@@ -228,6 +228,28 @@ def seed(root):
             sha256=hashlib.sha256(diagram_answer_path.read_bytes()).hexdigest())
         geometry_env.update(DIAGRAM_TEST_ID=diagram_test.id, DIAGRAM_SPLIT_TEST_ID=diagram_split_test.id, DIAGRAM_PDF_PATH=str(diagram_path),
             DIAGRAM_ANSWER_TEST_ID=diagram_answer_test.id, DIAGRAM_ANSWER_MATERIAL_ID=diagram_material.id)
+        manual_diagram_test = domain.test(teacher_offering.id, name="Manual diagram-only answers", total_points=30)
+        major = domain.question(manual_diagram_test.id, question_number="3", display_label="問題3",
+            sort_order=3, max_points=None, is_gradable=False)
+        for n in (1, 2, 3):
+            domain.question(manual_diagram_test.id, question_number=f"3.{n}", display_label=f"({n})",
+                sort_order=n, parent_id=major.id, max_points=10, is_gradable=True)
+        with pymupdf.open() as manual_pdf:
+            p = manual_pdf.new_page(width=400, height=800)
+            p.insert_text((25, 30), "問題3", fontname="japan", fontsize=12)
+            for n, y in ((1, 60), (2, 300), (3, 540)):
+                p.insert_text((25, y), f"({n}) (10点)", fontname="japan", fontsize=12)
+                p.draw_line((70, y+100), (230, y+100))
+                p.draw_line((150, y+30), (150, y+170))
+                p.draw_line((80, y+150), (215, y+45), color=(0, 0, 1))
+                p.draw_rect((160, y+110, 205, y+150), fill=(.6, .8, 1))
+                p.insert_text((153, y+97), "O", fontsize=8)
+            manual_source = root / "sources" / "manual-diagram-answer.pdf"
+            manual_source.write_bytes(manual_pdf.tobytes())
+        manual_material = domain.material(manual_diagram_test.id, material_type="model_answer_source",
+            storage_ref=str(manual_source), original_filename="manual-diagram-answer.pdf", mime_type="application/pdf",
+            sha256=hashlib.sha256(manual_source.read_bytes()).hexdigest())
+        geometry_env.update(MANUAL_DIAGRAM_TEST_ID=manual_diagram_test.id, MANUAL_DIAGRAM_MATERIAL_ID=manual_material.id)
         caret_test = domain.test(teacher_offering.id, name="Question caret fixture", total_points=10)
         caret_pdf = pymupdf.open()
         caret_page = caret_pdf.new_page()

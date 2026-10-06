@@ -156,7 +156,8 @@ export interface ModelAnswerImportDraft {
   state: "editing" | "confirmed" | string;
   revision: number;
   entries: ModelAnswerDraftEntry[];
-  saved_answers?: Array<{ id: string; question_id: string | null; answer_text: string | null; version: number }>;
+  diagram_question_ids?: string[];
+  saved_answers?: Array<{ diagram_count?: number; id: string; question_id: string | null; answer_text: string | null; version: number }>;
   confirmed_entry_ids?: string[];
   questions: ModelAnswerQuestionChoice[];
   page_count: number;

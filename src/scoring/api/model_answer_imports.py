@@ -240,7 +240,8 @@ def router(db, artifact_root, classifier=None):
             ModelAnswer.test_id == draft.test_id, ModelAnswer.is_current.is_(True))))
         return {**draft_view(draft, choices), "saved_answers": [
             {"id": answer.id, "question_id": answer.question_id, "answer_text": answer.answer_text,
-             "version": answer.version} for answer in saved],
+             "version": answer.version, "diagram_count": len((answer.provenance_json or {}).get("diagrams", []))} for answer in saved],
+            "diagram_question_ids": sorted({r["question_id"] for r in draft.snapshot.get("question_regions", [])}),
             "confirmed_entry_ids": draft.snapshot.get("confirmed_entry_ids", [])}
 
     def question_context(question, label):
@@ -590,49 +591,61 @@ def router(db, artifact_root, classifier=None):
             question_regions=draft.snapshot.get('question_regions', []))
         return DiagramReview(engine, candidates)
 
-    def diagram_target(draft_id, entry_id, session):
+    def diagram_target(draft_id, entry_id, session, question_id=None):
         draft = owned_draft(draft_id, session)
         entry = next((e for e in draft.snapshot['entries'] if e['id'] == entry_id), None)
         if entry is None:
-            fail(404, 'diagram_candidate_not_found', '図の候補が見つかりません')
+            try:
+                if not entry_id.startswith('teacher-entry-'):
+                    raise ValueError()
+                UUID(entry_id.removeprefix('teacher-entry-'))
+            except ValueError:
+                fail(404, 'diagram_candidate_not_found', '図の候補が見つかりません')
+            _, questions = choices_for(draft.test_id, session)
+            if draft.state != 'editing' or not any(q.id == question_id and q.is_gradable for q in questions):
+                fail(422, 'diagram_source_mapping_missing', '対応先の採点対象設問を選択してください')
+            entry = {'id': entry_id, 'question_id': question_id, 'source': {'kind': 'teacher_manual', 'segments': []}}
+        elif question_id is not None and question_id != entry.get('question_id'):
+            fail(409, 'diagram_source_stale', '対応先の変更を保存してください')
         return draft, entry
 
-    def diagram_response(review, records, draft_id, entry_id):
+    def diagram_response(review, records, draft_id, entry_id, question_id=None):
         for record in records:
             if record.get('crop_sha256'):
                 review.preview(record)
                 record['preview_url'] = (f'/api/v1/model-answer-import-drafts/{draft_id}/entries/{entry_id}/diagrams/'
-                    f'{record["id"]}/crop?crop_sha={record["crop_sha256"]}')
+                    f'{record["id"]}/crop?crop_sha={record["crop_sha256"]}'
+                    + (f'&question_id={question_id}' if question_id else ""))
         return {'diagrams': records}
 
     @routes.get('/model-answer-import-drafts/{draft_id}/entries/{entry_id}/diagrams')
     @routes.post('/model-answer-import-drafts/{draft_id}/entries/{entry_id}/diagrams')
-    def diagrams(draft_id: str, entry_id: str, request: Request, body: ClassificationRequest | None = None, session=Depends(db)):
-        draft, entry = diagram_target(draft_id, entry_id, session)
+    def diagrams(draft_id: str, entry_id: str, request: Request, body: ClassificationRequest | None = None, question_id: str | None = None, session=Depends(db)):
+        draft, entry = diagram_target(draft_id, entry_id, session, question_id)
         if body:
             revision_check(draft, body.expected_revision)
         try:
             review = diagram_review_for(draft, entry, session)
             if request.method == 'POST' and body:
                 review.discover(getattr(classifier, 'manager', None))
-            return diagram_response(review, review.records(entry.get('diagram_records', []), revision=draft.revision), draft_id, entry_id)
+            return diagram_response(review, review.records(entry.get('diagram_records', []), revision=draft.revision), draft_id, entry_id, question_id)
         except ValueError as exc:
             fail(422, str(exc), '図の出典と設問の対応を確認してください')
 
     @routes.post('/model-answer-import-drafts/{draft_id}/entries/{entry_id}/diagrams/{candidate_id}/crop-preview')
-    def diagram_preview(draft_id: str, entry_id: str, candidate_id: str, body: DiagramCropRequest, session=Depends(db)):
-        draft, entry = diagram_target(draft_id, entry_id, session)
+    def diagram_preview(draft_id: str, entry_id: str, candidate_id: str, body: DiagramCropRequest, question_id: str | None = None, session=Depends(db)):
+        draft, entry = diagram_target(draft_id, entry_id, session, question_id)
         revision_check(draft, body.expected_revision)
         try:
             review = diagram_review_for(draft, entry, session)
             record = review.record(candidate_id, final_bbox=body.final_bbox, revision=draft.revision)
-            return diagram_response(review, [record], draft_id, entry_id)['diagrams'][0]
+            return diagram_response(review, [record], draft_id, entry_id, question_id)['diagrams'][0]
         except ValueError as exc:
             fail(422, str(exc), '図の範囲が設問の出典範囲を越えています')
 
     @routes.get('/model-answer-import-drafts/{draft_id}/entries/{entry_id}/diagrams/{candidate_id}/crop')
-    def diagram_crop(draft_id: str, entry_id: str, candidate_id: str, crop_sha: str | None = None, session=Depends(db)):
-        draft, entry = diagram_target(draft_id, entry_id, session)
+    def diagram_crop(draft_id: str, entry_id: str, candidate_id: str, crop_sha: str | None = None, question_id: str | None = None, session=Depends(db)):
+        draft, entry = diagram_target(draft_id, entry_id, session, question_id)
         try:
             review = diagram_review_for(draft, entry, session)
             return FileResponse(review.preview_path(candidate_id, crop_sha), media_type='image/png')
@@ -1020,7 +1033,7 @@ def router(db, artifact_root, classifier=None):
                      "semantic_classification": {**(entry.get("semantic_classification") or {}),
                                                   "status": "ignored", "reason": "blank_or_whitespace"}}
                     if (is_effectively_blank(entry.get("answer_text")) and is_effectively_blank(entry.get("candidate_text"))
-                        and not entry.get("teacher_correction")
+                        and not entry.get("teacher_correction") and not entry.get("diagram_records")
                         and entry.get("source", {}).get("kind") != "teacher_manual")
                     else entry) for entry in entries]
         if not entries:
@@ -1029,7 +1042,7 @@ def router(db, artifact_root, classifier=None):
         included = [entry for entry in entries
                     if entry.get("disposition", "include" if entry.get("question_id") else "unassigned") == "include"
                     and entry.get("id") not in confirmed_ids
-                    and not ((not str(entry.get("answer_text") or "").strip())
+                    and not ((not entry.get("diagram_records")) and (not str(entry.get("answer_text") or "").strip())
                              and (entry.get("semantic_classification") or {}).get("segments")
                              and {segment.get("category") for segment in
                                   entry["semantic_classification"]["segments"]}.issubset({"rubric", "question", "note"}))]
@@ -1046,11 +1059,27 @@ def router(db, artifact_root, classifier=None):
             fail(422, "PRIMARY_ANSWER_REQUIRED", "別解を登録する設問には主な模範解答も必要です")
         if any(question_id not in question_by_id or not question_by_id[question_id].is_gradable for question_id in mapped):
             fail(422, "INVALID_QUESTION_MAPPING", "対応先にはこの試験の採点対象設問を選択してください")
-        if any(is_effectively_blank(entry.get("answer_text")) for entry in included):
-            count = sum(1 for entry in included if is_effectively_blank(entry.get("answer_text")))
-            fail(422, "EMPTY_ANSWER_TEXT", f"模範解答本文が空の項目が{count}件あります")
+        validated_diagrams = {}
+        diagram_reviews = {}
+        for entry in included:
+            if entry.get('diagram_records'):
+                try:
+                    diagram_reviews[entry['id']] = diagram_review_for(draft, entry, session)
+                    validated_diagrams[entry['id']] = diagram_reviews[entry['id']].validate(
+                        entry['diagram_records'], draft.revision)
+                except ValueError as exc:
+                    fail(422, str(exc), '図の出典を確認してください。')
+        if any(is_effectively_blank(entry.get('answer_text')) and not any(
+                r['state'] == 'accepted' for r in validated_diagrams.get(entry['id'], [])) for entry in included):
+            fail(422, 'EMPTY_ANSWER_TEXT', '模範解答本文が空で、使用する図も登録されていません。本文を入力するか、模範解答の図を選択してください。')
         # Classification confidence is advisory. Registration is guarded by
-        # mapped, non-empty, deduplicated formal answer content above.
+        # mapped, source-validated text/diagram content above.
+
+        def formal_diagrams(entry_id):
+            review = diagram_reviews.get(entry_id)
+            return [{**record, 'artifact_ref': review.engine.store.path(
+                record['artifact_ref']).relative_to(root).as_posix()}
+                for record in validated_diagrams.get(entry_id, []) if record['state'] == 'accepted']
 
         service = DomainService(session)
         created = []
@@ -1059,11 +1088,13 @@ def router(db, artifact_root, classifier=None):
                 alternatives = [other for other in included if other.get("question_id") == entry["question_id"]
                                 and other.get("answer_kind") == "alternative"]
                 manual = entry.get("source", {}).get("kind") == "teacher_manual"
+                source_backed = not manual or any(
+                    r["state"] == "accepted" for r in validated_diagrams.get(entry["id"], []))
                 provenance = {
                     "kind": "teacher_manual_model_answer_import" if manual else "native_pdf_model_answer_import",
                     "draft_id": draft.id,
-                    "material_id": None if manual else material.id,
-                    "source_sha256": None if manual else actual_sha,
+                    "material_id": material.id if source_backed else None,
+                    "source_sha256": actual_sha if source_backed else None,
                     "review_material_id": material.id,
                     "parser": draft.snapshot.get("parser", {}),
                     "segments": entry.get("source", {}).get("segments", []),
@@ -1078,24 +1109,18 @@ def router(db, artifact_root, classifier=None):
                     "loaded_model_answer": entry.get("loaded_model_answer"),
                     "review_alternatives": [
                         {"id": other["id"], "answer_text": other["answer_text"],
-                         "source": other.get("source"), "teacher_correction": other.get("teacher_correction")}
+                         "source": other.get("source"), "teacher_correction": other.get("teacher_correction"),
+                         "diagrams": formal_diagrams(other["id"])}
                         for other in alternatives],
                 }
 
                 if entry.get('diagram_records'):
-                    diagram_review = diagram_review_for(draft, entry, session)
-                    try:
-                        records = diagram_review.validate(entry['diagram_records'], draft.revision)
-                    except ValueError as exc:
-                        raise HTTPException(422, detail={'code': str(exc), 'message': '図の出典を確認してください。'}) from exc
-                    provenance['diagrams'] = [{**r, 'artifact_ref': (
-                        diagram_review.engine.store.path(r['artifact_ref']).relative_to(root).as_posix())}
-                        for r in records if r['state'] == 'accepted']
+                    provenance['diagrams'] = formal_diagrams(entry['id'])
                 answer = service.model_answer(
                     draft.test_id,
                     question_id=entry["question_id"],
                     answer_text=entry["answer_text"],
-                    material_id=None if manual else material.id,
+                    material_id=material.id if source_backed else None,
                     provenance_json=provenance,
                 )
                 created.append(answer)

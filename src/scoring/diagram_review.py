@@ -95,7 +95,10 @@ class DiagramReview:
         result = []
         for c in self.candidates:
             old = by_id.get(c['id'], {})
-            stale = bool(old and old.get('context_sha256') != self.context)
+            stale = bool(old and (old.get('context_sha256') != self.context or any(
+                key in old and old[key] != c[key] for key in (
+                    'source_sha256', 'domain', 'target_key', 'page_index',
+                    'automatic_bbox', 'source_element_ids'))))
             try:
                 r = self.record(c['id'], state=old.get('state', 'candidate') if not stale else 'candidate',
                     final_bbox=old.get('final_bbox') if not stale else None, revision=revision)
@@ -119,6 +122,13 @@ class DiagramReview:
             if (not isinstance(r, dict) or not isinstance(r.get('id'), str) or set(r)-set(FIELDS) or r.get('id') in seen
                     or r.get('context_sha256') != self.context):
                 raise ValueError('diagram_source_stale')
+            candidate = self.candidate(r['id'])
+            # A canonical context alone must not legitimize stale source identity
+            # carried by a saved decision. Paths/crop bytes are still re-derived.
+            for key in ('source_sha256', 'domain', 'target_key', 'page_index',
+                        'automatic_bbox', 'source_element_ids'):
+                if key in r and r[key] != candidate[key]:
+                    raise ValueError('diagram_source_stale')
             seen.add(r['id'])
             result.append(self.record(r['id'], state=r.get('state', 'candidate'),
                                       final_bbox=r.get('final_bbox'), revision=revision))

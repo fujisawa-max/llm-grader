@@ -334,3 +334,112 @@ def test_changed_ownership_lists_old_decision_without_serving_old_crop(workspace
         assert len(listed) == 1
         assert listed[0]['reason_code'] == 'diagram_source_stale'
         assert 'crop_sha256' not in listed[0] and 'artifact_ref' not in listed[0]
+
+
+@pytest.mark.parametrize('state', ['accepted', 'candidate', 'excluded', None])
+def test_manual_diagram_only_content_and_transient_discovery(workspace, state):
+    from uuid import uuid4
+    w = workspace
+    _, automatic = apath(w)
+    entry_id = f'teacher-entry-{uuid4()}'
+    base = f'/api/v1/model-answer-import-drafts/{w.answer["id"]}'
+    path = f'{base}/entries/{entry_id}/diagrams'
+    params = {'question_id': automatic['question_id']}
+    response = w.client.post(path, params=params, json={'expected_revision': 1})
+    assert response.status_code == 200, response.text
+    record = response.json()['diagrams'][0]
+    assert record['automatic_bbox'] == [70, 80, 230, 240]
+    assert not record['ricoh_used']
+    assert w.client.get(record['preview_url']).status_code == 200
+    untouched = w.client.get(base).json()
+    assert untouched['revision'] == 1 and not any(e['id'] == entry_id for e in untouched['entries'])
+    updates = [{'id': e['id'], 'question_id': e['question_id'], 'answer_text': e['answer_text'],
+                'disposition': 'excluded'} for e in w.answer['entries']]
+    manual = {'id': entry_id, 'question_id': automatic['question_id'], 'answer_text': '',
+              'disposition': 'include', 'answer_kind': 'primary'}
+    if state:
+        manual['diagram_records'] = [{**clean(record), 'state': state}]
+    updates.append(manual)
+    saved = w.client.put(base, json={'expected_revision': 1, 'entries': updates})
+    assert saved.status_code == 200, saved.text
+    restored = next(e for e in w.client.get(base).json()['entries'] if e['id'] == entry_id)
+    assert restored['answer_text'] == ''
+    if state:
+        assert w.client.get(path).json()['diagrams'][0]['state'] == state
+    registered = w.client.post(base+'/confirm', json={'expected_revision': 2})
+    if state != 'accepted':
+        assert registered.status_code == 422, registered.text
+        assert registered.json()['error']['code'] == 'EMPTY_ANSWER_TEXT'
+    else:
+        assert registered.status_code == 200, registered.text
+        answer = registered.json()['model_answers'][0]
+        assert answer['answer_text'] == ''
+        assert answer['material_id'] == w.answer['material_id']
+        assert answer['provenance_json']['diagrams'][0]['state'] == 'accepted'
+        assert w.client.get(f'/api/v1/model-answers/{answer["id"]}/diagrams/{record["id"]}/crop').status_code == 200
+        assert w.client.get(base).json()['saved_answers'][0]['diagram_count'] == 1
+
+
+def test_manual_diagram_mapping_missing_and_stale_record_rejected(workspace):
+    from uuid import uuid4
+    w = workspace
+    _, entry = apath(w)
+    base = f'/api/v1/model-answer-import-drafts/{w.answer["id"]}'
+    eid = f'teacher-entry-{uuid4()}'
+    path = f'{base}/entries/{eid}/diagrams'
+    assert w.client.post(path, json={'expected_revision': 1}).status_code == 422
+    record = w.client.post(path, params={'question_id': entry['question_id']}, json={'expected_revision': 1}).json()['diagrams'][0]
+    updates = [{'id': e['id'], 'question_id': e['question_id'], 'answer_text': e['answer_text'], 'disposition': 'excluded'} for e in w.answer['entries']]
+    updates.append({'id': eid, 'question_id': entry['question_id'], 'answer_text': '', 'disposition': 'include',
+                    'diagram_records': [{**clean(record), 'state': 'accepted', 'context_sha256': '0'*64}]})
+    assert w.client.put(base, json={'expected_revision': 1, 'entries': updates}).status_code == 422
+
+
+def test_manual_candidate_sibling_scope_and_auth(workspace):
+    from uuid import uuid4
+    w = workspace
+    base = f'/api/v1/model-answer-import-drafts/{w.answer["id"]}'
+    eid = f'teacher-entry-{uuid4()}'
+    path = f'{base}/entries/{eid}/diagrams'
+    for question in w.answer['questions']:
+        records = w.client.post(path, params={'question_id': question['id']}, json={'expected_revision': 1}).json()['diagrams']
+        assert len(records) == 1
+        expected = [70, 80, 230, 240] if question['id'] == w.answer['questions'][0]['id'] else [70, 330, 230, 455]
+        assert records[0]['automatic_bbox'] == expected
+    assert w.client.post(path, params={'question_id': str(uuid4())}, json={'expected_revision': 1}).status_code == 422
+    w.client.post('/api/v1/auth/logout')
+    assert w.client.get(path, params={'question_id': w.answer['questions'][0]['id']}).status_code == 401
+
+
+def test_diagram_only_registration_revalidates_stale_saved_evidence(workspace):
+    from scoring.db.models import ModelAnswerImportDraft
+    from uuid import uuid4
+    w = workspace
+    _, original = apath(w)
+    base = f'/api/v1/model-answer-import-drafts/{w.answer["id"]}'
+    eid = f'teacher-entry-{uuid4()}'
+    path = f'{base}/entries/{eid}/diagrams'
+    record = w.client.post(path, params={'question_id': original['question_id']}, json={'expected_revision': 1}).json()['diagrams'][0]
+    corrected = w.client.post(path+f'/{record["id"]}/crop-preview', params={'question_id': original['question_id']},
+        json={'expected_revision': 1, 'final_bbox': [65, 75, 235, 245]})
+    assert corrected.status_code == 200, corrected.text
+    accepted = {**clean(corrected.json()), 'state': 'accepted'}
+    updates = [{'id': e['id'], 'question_id': e['question_id'], 'answer_text': e['answer_text'], 'disposition': 'excluded'} for e in w.answer['entries']]
+    updates.append({'id': eid, 'question_id': original['question_id'], 'answer_text': '', 'disposition': 'include', 'diagram_records': [accepted]})
+    assert w.client.put(base, json={'expected_revision': 1, 'entries': updates}).status_code == 200
+    assert w.client.get(path).json()['diagrams'][0]['teacher_adjusted']
+    # Simulate a historical/corrupted record after Save: formal registration must
+    # independently check it, not trust accepted state from persisted JSON.
+    with w.sf() as session:
+        draft = session.get(ModelAnswerImportDraft, w.answer['id'])
+        snapshot = deepcopy(draft.snapshot)
+        next(e for e in snapshot['entries'] if e['id'] == eid)['diagram_records'][0]['source_sha256'] = '0'*64
+        draft.snapshot = snapshot
+        session.commit()
+    stale = w.client.get(path).json()['diagrams'][0]
+    assert stale['status'] == 'unresolved' and stale['state'] == 'candidate'
+    response = w.client.post(base+'/confirm', json={'expected_revision': 2})
+    assert response.status_code == 422, response.text
+    assert response.json()['error']['code'] == 'diagram_source_stale'
+    with w.sf() as session:
+        assert session.scalar(select(func.count()).select_from(ModelAnswer)) == 0

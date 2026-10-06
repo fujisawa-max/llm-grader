@@ -27,7 +27,7 @@ import {
 import { testData, tests } from "@/lib/api/domain";
 import type { Material, Test } from "@/types/domain";
 import { buildReviewTargets, dispositionOf, resolveReviewTarget } from "@/lib/modelAnswerReviewTargets";
-import { isEffectivelyBlank, isModelAnswerRegistrationEntry, validateModelAnswerRegistration } from "@/lib/modelAnswerRegistrationValidation";
+import { validateModelAnswerRegistration } from "@/lib/modelAnswerRegistrationValidation";
 
 const categoryLabels: Record<ModelAnswerContentCategory, string> = {
   question: "問題文",
@@ -205,7 +205,7 @@ export default function ModelAnswerImportReviewPage() {
         source: { kind: "teacher_manual", material_id: null, source_sha256: null, segments: [] },
       }] };
     });
-    setNotice("手入力の模範解答候補を追加しました。本文を入力して保存してください。");
+    setNotice("手入力の模範解答候補を追加しました。本文を入力するか図を選択し、保存してください。");
     setSelectedTargetId(`question:${questionId}`);
   }
 
@@ -498,16 +498,9 @@ export default function ModelAnswerImportReviewPage() {
 
   async function confirm() {
     if (!draft) return;
-    const active = draft.entries.filter((entry) => (entry.disposition || (entry.question_id ? "include" : "unassigned")) === "include" && !draft.confirmed_entry_ids?.includes(entry.id)
-      && isModelAnswerRegistrationEntry(entry)
-      && (entry.source.kind === "teacher_manual"
-        || !(isEffectivelyBlank(entry.answer_text) && isEffectivelyBlank(entry.candidate_text))));
-    const empty = active.filter((entry) => isEffectivelyBlank(entry.answer_text)).length;
-    if (!active.length || empty) {
-      setError([
-        !active.length ? "登録する模範解答候補を選んでください。" : "",
-        empty ? `模範解答本文が空の項目が${empty}件あります。` : "",
-      ].filter(Boolean).join(" "));
+    const blockers = validateModelAnswerRegistration(draft, targetLabels);
+    if (blockers.length) {
+      setError(blockers.map(item => item.message).join(" "));
       return;
     }
     setBusy(true);
@@ -654,7 +647,7 @@ export default function ModelAnswerImportReviewPage() {
         </section>}
         {selectedQuestionId && <details className="saved-model-answers" aria-label="登録済み模範解答">
           <summary>登録済み模範解答{selectedSavedAnswer ? `・版 ${selectedSavedAnswer.version}` : "・未登録"}</summary>
-          {selectedSavedAnswer ? <><MarkdownMathText source={selectedSavedAnswer.answer_text || ""} />
+          {selectedSavedAnswer ? <>{!selectedSavedAnswer.answer_text?.trim() && <p>本文: なし</p>}{!!selectedSavedAnswer.diagram_count && <p>模範解答の図: {selectedSavedAnswer.diagram_count}件</p>}<MarkdownMathText source={selectedSavedAnswer.answer_text || ""} />
           {draft.state === "editing" && <button type="button" className="button secondary" disabled={busy || classifying}
             onClick={() => loadSavedAnswer(selectedQuestionId)}>登録済み模範解答を読み込む</button>}</> : <p>未登録</p>}
         </details>}
@@ -728,11 +721,13 @@ export default function ModelAnswerImportReviewPage() {
               disabled={busy || classifying || draft.state !== "editing" || draft.confirmed_entry_ids?.includes(entry.id)}
               onChange={(event) => updateEntry(entry.id, { answer_text: event.target.value })} />
           </label>
-          {entry.source.kind !== "teacher_manual" && <DiagramReview
+          <DiagramReview
             path={`/model-answer-import-drafts/${draft.id}/entries/${entry.id}/diagrams`} label="模範解答の図"
             revision={draft.revision} records={entry.diagram_records} disabled={busy || classifying || draft.state !== "editing" || !!draft.confirmed_entry_ids?.includes(entry.id)}
-            sourceStale={entry.question_id !== savedDraft?.entries.find(e => e.id === entry.id)?.question_id}
-            onSelect={setDiagramSelection} onChange={records => updateEntry(entry.id, {diagram_records: records})} />}
+            targetQuestionId={entry.question_id || undefined}
+            disabledReason={!entry.question_id ? "対応先の設問を選択してください。" : !draft.diagram_question_ids?.includes(entry.question_id) ? "この設問の元PDF範囲が未確定です。" : undefined}
+            sourceStale={!!savedDraft?.entries.some(e => e.id === entry.id && e.question_id !== entry.question_id)}
+            onSelect={setDiagramSelection} onChange={records => updateEntry(entry.id, {diagram_records: records})} />
           <LatexNormalizationControl source={entry.source?.segments?.some(segment => !!segment.original_text && entry.answer_text.split("\n").includes(segment.original_text) && /[=+^_]|\b(TP|FP|TN|FN)\b/.test(segment.original_text)) ? {draftId: draft.id, entryId: entry.id, revision: draft.revision} : undefined} text={entry.answer_text} contextType="model_answer" contextLabel={questionLabels.get(entry.question_id || "") || ""}
             disabled={busy || classifying || draft.state !== "editing" || draft.confirmed_entry_ids?.includes(entry.id)}
             onApply={(text, proposal) => updateEntry(entry.id, { answer_text: text, teacher_correction: {

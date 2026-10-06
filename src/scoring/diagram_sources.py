@@ -135,7 +135,7 @@ def question_diagram_candidates(service, review_id, node_key, revision, *, snaps
 def model_answer_diagram_candidates(source, ir, store, *, entry, question_regions, grouping=None):
     """Only persisted spatial assignment, never a nearest-text/sibling guess."""
     qid = entry.get('question_id')
-    if not qid or entry.get('source', {}).get('kind') == 'teacher_manual':
+    if not qid:
         raise ValueError('diagram_source_mapping_missing')
     regions = [r for r in question_regions if r.get('question_id') == qid]
     if not regions:
@@ -155,6 +155,10 @@ def model_answer_diagram_candidates(source, ir, store, *, entry, question_region
             and not any(_near(b, e['bbox']) for b in blocked[index])]
         labels = {i for s in entry.get('source', {}).get('segments', [])
                   if s.get('page_index') == index for i in s.get('element_ids', [])}
+        if not entry.get('source', {}).get('segments'):
+            labels = {e['element_id'] for e in page['elements'] if e.get('bbox')
+                      and sum(_contains(b, e['bbox']) for b in bounds[index]) == 1
+                      and not any(_near(b, e['bbox']) for b in blocked[index])}
         ownership[index] = ids + sorted(labels)
         exclusions[index] = [e['element_id'] for e in visual_elements(page) if e['element_id'] not in ids]
     engine = DiagramRegionExtractor(source, ir, store)

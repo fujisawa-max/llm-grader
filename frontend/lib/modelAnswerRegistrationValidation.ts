@@ -16,21 +16,26 @@ export function isEffectivelyBlank(value: string | null | undefined): boolean {
   return ![...(value || "")].some((char) => !/[\s\u00a0\u1680\u2000-\u200f\u2028\u2029\u202f\u205f\u2060\u3000\ufeff\u0000-\u001f\u007f-\u009f]/u.test(char));
 }
 
+export function hasAcceptedDiagram(entry: ModelAnswerDraftEntry, sourceSha?: string): boolean {
+  return !!entry.diagram_records?.some(record => record.state === "accepted" && record.status !== "unresolved"
+    && !record.reason_code && (!sourceSha || record.source_sha256 === sourceSha) && record.target_key === entry.question_id && !!record.crop_sha256);
+}
+
 export function isModelAnswerRegistrationEntry(entry: ModelAnswerDraftEntry): boolean {
-  if (entry.source?.kind === "teacher_manual" || !entry.semantic_classification?.segments?.length) return true;
+  if (entry.diagram_records?.length || entry.source?.kind === "teacher_manual" || !entry.semantic_classification?.segments?.length) return true;
   const categories = new Set(entry.semantic_classification.segments.map((segment) => segment.category));
   return categories.has("model_answer") || categories.has("alternative_answer") || categories.has("uncertain");
 }
 
 export function validateModelAnswerRegistration(
-  draft: Pick<ModelAnswerImportDraft, "entries" | "questions" | "confirmed_entry_ids">,
+  draft: Pick<ModelAnswerImportDraft, "entries" | "questions" | "confirmed_entry_ids"> & Partial<Pick<ModelAnswerImportDraft, "source_sha256">>,
   targetLabels: Map<string, string>,
 ): RegistrationValidationItem[] {
   const items: RegistrationValidationItem[] = [];
   const confirmed = new Set(draft.confirmed_entry_ids || []);
   const included = draft.entries.filter((entry) => dispositionOf(entry) === "include" && !confirmed.has(entry.id)
     && isModelAnswerRegistrationEntry(entry)
-    && (entry.source?.kind === "teacher_manual"
+    && (entry.diagram_records?.length || entry.source?.kind === "teacher_manual"
       || !(isEffectivelyBlank(entry.answer_text) && isEffectivelyBlank(entry.candidate_text))));
   const unresolvedOrder = new Map(draft.entries
     .filter((entry) => dispositionOf(entry) === "unassigned" || !entry.question_id || !draft.questions.some((question) => question.id === entry.question_id))
@@ -60,7 +65,7 @@ export function validateModelAnswerRegistration(
     else if (!draft.questions.some((question) => question.id === entry.question_id && question.is_gradable)) {
       add(entry, "invalid_question_mapping", "登録できる採点対象の設問を選び直してください。");
     }
-    if (isEffectivelyBlank(entry.answer_text)) add(entry, "empty_answer_text", "模範解答本文が空です。本文を入力してください。");
+    if (isEffectivelyBlank(entry.answer_text) && !hasAcceptedDiagram(entry, draft.source_sha256)) add(entry, "empty_answer_text", "模範解答本文が空で、使用する図も登録されていません。本文を入力するか、模範解答の図を選択してください。");
   }
 
   const primaries = included.filter((entry) => (entry.answer_kind || "primary") === "primary" && entry.question_id);

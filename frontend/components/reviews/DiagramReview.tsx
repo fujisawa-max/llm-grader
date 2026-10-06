@@ -10,11 +10,12 @@ function errorMessage(e: unknown) {
   return `図の出典または範囲を確認できません。${code ? `（${code}）` : "再試行してください。"}`;
 }
 
-export function DiagramReview({path, revision, records = [], disabled, sourceStale, label, onChange, onSelect}: {
-  path: string; revision: number; records?: DiagramRecord[]; disabled: boolean; sourceStale?: boolean; label: string;
+export function DiagramReview({path, revision, records = [], disabled, sourceStale, targetQuestionId, disabledReason, label, onChange, onSelect}: {
+  path: string; revision: number; records?: DiagramRecord[]; disabled: boolean; sourceStale?: boolean; targetQuestionId?: string; disabledReason?: string; label: string;
   onChange: (records: DiagramRecord[]) => void; onSelect: (selection: DiagramSelection) => void;
 }) {
-  const scope = `${path}:${revision}:${sourceStale}`;
+  const requestPath = (suffix = "") => `${path}${suffix}${targetQuestionId ? `?question_id=${encodeURIComponent(targetQuestionId)}` : ""}`;
+  const scope = `${path}:${revision}:${sourceStale}:${targetQuestionId}`;
   const currentScope = useRef(scope); currentScope.current = scope;
   const [candidates, setCandidates] = useState<DiagramRecord[]>([]);
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
@@ -24,17 +25,25 @@ export function DiagramReview({path, revision, records = [], disabled, sourceSta
     let active = true;
     setBusy(false); setCandidates(sourceStale ? records.map(r => ({...r, state: "candidate", status: "unresolved", reason_code: "diagram_source_stale"})) : []); setLoaded(false); setEditing(undefined); setPreview(undefined); setError("");
     // Resuming saved review never requests discovery/vision.
-    if (records.length && !sourceStale) apiFetch<{diagrams: DiagramRecord[]}>(path).then(r => {
-      if (active) { setCandidates(r.diagrams); setLoaded(true); }
+    if (records.length && !sourceStale) apiFetch<{diagrams: DiagramRecord[]}>(requestPath()).then(r => {
+      if (active) {
+        setCandidates(r.diagrams); setLoaded(true);
+        // Server revalidation can invalidate a saved accepted record. Keep
+        // registration readiness in sync without persisting or rediscovering.
+        const invalid = r.diagrams.filter(record => record.status === "unresolved");
+        if (records.some(record => record.state === "accepted" && invalid.some(value => value.id === record.id))) {
+          onChange(records.map(record => clean(invalid.find(value => value.id === record.id) || record)));
+        }
+      }
     }).catch(e => { if (active) setError(errorMessage(e)); });
     return () => {active = false;};
     // Each explicit revision/target transition reloads saved source state only.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [path, revision, sourceStale]);
+  }, [path, revision, sourceStale, targetQuestionId]);
   async function discover() {
     setBusy(true); setError("");
     try {
-      const result = await apiFetch<{diagrams: DiagramRecord[]}>(path, json({expected_revision: revision}));
+      const result = await apiFetch<{diagrams: DiagramRecord[]}>(requestPath(), json({expected_revision: revision}));
       if (currentScope.current !== scope) return;
       setCandidates(result.diagrams.map(c => ({...c, ...records.find(r => r.id === c.id && r.context_sha256 === c.context_sha256), preview_url: c.preview_url})));
       setLoaded(true);
@@ -57,7 +66,7 @@ export function DiagramReview({path, revision, records = [], disabled, sourceSta
     if (!editing) return;
     setBusy(true); setError("");
     try {
-      const result = await apiFetch<DiagramRecord>(`${path}/${editing.id}/crop-preview`, json({expected_revision: revision, final_bbox: box}));
+      const result = await apiFetch<DiagramRecord>(requestPath(`/${editing.id}/crop-preview`), json({expected_revision: revision, final_bbox: box}));
       if (currentScope.current !== scope) return;
       setPreview(result); onSelect({record: result, manual: true, onBounds: value => {setBox(value); setPreview(undefined);}});
     } catch (e) {if (currentScope.current === scope) setError(errorMessage(e));} finally {if (currentScope.current === scope) setBusy(false);}
@@ -65,7 +74,9 @@ export function DiagramReview({path, revision, records = [], disabled, sourceSta
   return <section className="panel section diagram-review" aria-label={label} aria-busy={busy} tabIndex={-1}>
     <h3>{label}</h3>
     <p className="muted">図の出典・範囲を確認して選択します。保存・登録は上部の操作から行います。</p>
-    <button type="button" disabled={disabled || busy || sourceStale} onClick={discover}>{busy ? "図の範囲を確認中…" : "図候補を確認"}</button>
+    <button type="button" disabled={disabled || busy || sourceStale || !!disabledReason} onClick={discover}>{busy ? "図の範囲を確認中…" : "図候補を確認"}</button>
+    {!loaded && !records.length && <p className="muted">まだ図候補を確認していません。</p>}
+    {disabledReason && <p className="muted">{disabledReason}</p>}
     {sourceStale && <p className="notice">設問の構造・対応先の変更を保存してから、図候補を確認してください。</p>}
     {error && <p role="alert" className="error">{error}</p>}
     {loaded && !candidates.length && <p>この設問の出典範囲には図候補が見つかりませんでした。</p>}

@@ -164,3 +164,82 @@ test("saved reviewed split keeps vector diagram exclusive to its source-owning c
   expect(sibling.diagrams[0].source_element_ids.some((id: string) => result.diagrams[0].source_element_ids.includes(id))).toBe(false);
   expect(await calls(page)).toEqual(before);
 });
+
+test("manual empty ModelAnswer discovers, reviews and registers only an accepted diagram", async ({page}) => {
+  await login(page);
+  const errors: string[] = [];
+  page.on("pageerror", e => errors.push(e.message));
+  const tid = process.env.MANUAL_DIAGRAM_TEST_ID!;
+  const created = await page.request.post(`/api/v1/tests/${tid}/model-answer-imports`, {data: {material_id: process.env.MANUAL_DIAGRAM_MATERIAL_ID}});
+  expect(created.status()).toBe(201);
+  const draft = await created.json();
+  const base = `/api/v1/model-answer-import-drafts/${draft.id}`;
+  const prepared = await page.request.put(base, {data: {expected_revision: draft.revision, entries: draft.entries.map((e: {id: string; question_id: string; answer_text: string}) => ({id: e.id, question_id: e.question_id, answer_text: e.answer_text, disposition: "excluded"}))}});
+  expect(prepared.status()).toBe(200);
+  // All three nested subquestions have exclusive spatial regions, never sibling crops.
+  const ready = await prepared.json();
+  const children = ready.questions.filter((q: {is_gradable: boolean}) => q.is_gradable);
+  expect(children).toHaveLength(3);
+  for (const [index, question] of children.entries()) {
+    const entryId = `teacher-entry-${crypto.randomUUID()}`;
+    const response = await page.request.post(`${base}/entries/${entryId}/diagrams?question_id=${question.id}`, {data: {expected_revision: ready.revision}});
+    expect(response.status()).toBe(200);
+    const records = (await response.json()).diagrams;
+    expect(records).toHaveLength(1);
+    expect(records[0].automatic_bbox).toEqual([70, 90 + 240*index, 230, 230 + 240*index]);
+    expect(records[0].ricoh_used).toBe(false);
+  }
+  const before = await calls(page);
+  await page.goto(`/model-answer-import-reviews/${draft.id}`);
+  await page.getByRole("button", {name: /に模範解答を追加$/}).click();
+  const candidate = page.locator('[data-entry-id^="teacher-entry-"]');
+  const text = candidate.getByRole("textbox", {name: /模範解答本文/});
+  await expect(text).toHaveValue("");
+  const register = page.getByRole("button", {name: "模範解答として登録", exact: true});
+  await expect(register).toBeDisabled();
+  const section = candidate.getByRole("region", {name: "模範解答の図", exact: true});
+  await section.getByRole("button", {name: "図候補を確認"}).click();
+  await expect(section.getByAltText("図1の切り出し範囲")).toBeVisible();
+  await expect(page.locator(".diagram-overlay")).toBeVisible();
+  await expect(register).toBeDisabled();
+  await section.getByRole("button", {name: "対象外にする"}).click();
+  await expect(register).toBeDisabled();
+  await section.getByRole("button", {name: "この図を使用"}).click();
+  await expect(register).toBeEnabled();
+  const saved = page.waitForResponse(r => r.url().endsWith(draft.id) && r.request().method() === "PUT");
+  await page.getByRole("button", {name: "下書き保存", exact: true}).click();
+  expect((await saved).status()).toBe(200);
+  await page.reload();
+  await expect(text).toHaveValue("");
+  await expect(section.getByText(/使用中 ·/)).toBeVisible();
+  await expect(register).toBeEnabled();
+  // A stale result from authorized server revalidation must also invalidate
+  // local readiness. The persisted valid fixture stays unchanged here.
+  const diagramsUrl = "**/entries/*/diagrams?question_id=*";
+  await page.route(diagramsUrl, async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.diagrams = body.diagrams.map((r: object) => ({...r, state: "candidate", status: "unresolved", reason_code: "diagram_source_stale"}));
+    await route.fulfill({response, json: body});
+  });
+  await page.reload();
+  await expect(section.getByText(/出典範囲の確認が必要/)).toBeVisible();
+  await expect(register).toBeDisabled();
+  await page.unroute(diagramsUrl);
+  await page.reload();
+  await expect(section.getByText(/使用中 ·/)).toBeVisible();
+  await expect(register).toBeEnabled();
+  const registered = page.waitForResponse(r => r.url().endsWith("/confirm"));
+  await register.click();
+  const result = await registered;
+  expect(result.status()).toBe(200);
+  const answer = (await result.json()).model_answers[0];
+  expect(answer.answer_text).toBe("");
+  expect(answer.provenance_json.diagrams).toHaveLength(1);
+  await page.goto(`/model-answer-import-reviews/${draft.id}`);
+  await page.getByRole("group", {name: "登録済み模範解答"}).click();
+  await expect(page.getByText("本文: なし", {exact: true})).toBeVisible();
+  await expect(page.getByText("模範解答の図: 1件", {exact: true})).toBeVisible();
+  expect(await calls(page)).toEqual(before);
+  expect(errors).toEqual([]);
+});
