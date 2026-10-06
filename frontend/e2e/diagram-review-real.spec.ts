@@ -243,3 +243,78 @@ test("manual empty ModelAnswer discovers, reviews and registers only an accepted
   expect(await calls(page)).toEqual(before);
   expect(errors).toEqual([]);
 });
+
+for (const diagramScope of ["parent", "pdf"] as const) {
+  test(`${diagramScope} fallback keeps source ownership and explicitly assigns one shared diagram`, async ({page}) => {
+    await login(page);
+    const errors: string[] = [];
+    page.on("pageerror", e => errors.push(e.message));
+    page.on("console", e => {if (e.type() === "error") errors.push(e.text());});
+    const before = await calls(page);
+    const upper = diagramScope.toUpperCase();
+    const did = process.env[`DIAGRAM_${upper}_DRAFT_ID`]!;
+    const children = JSON.parse(process.env[`DIAGRAM_${upper}_CHILD_IDS`]!) as string[];
+    const owner = process.env[`DIAGRAM_${upper}_OWNER_ID`]!;
+    const base = `/api/v1/model-answer-import-drafts/${did}`;
+    await page.goto(`/model-answer-import-reviews/${did}`);
+    const selector = page.getByLabel("編集対象", {exact: true});
+    const register = page.getByRole("button", {name: "模範解答として登録", exact: true});
+    for (const qid of children.slice(0, 2)) {
+      await selector.selectOption(`question:${qid}`);
+      await page.getByRole("button", {name: /に模範解答を追加$/}).click();
+      const candidate = page.locator('[data-entry-id^="teacher-entry-"]');
+      const section = candidate.getByRole("region", {name: "模範解答の図", exact: true});
+      await expect(candidate.getByRole("textbox", {name: /模範解答本文/})).toHaveValue("");
+      await section.getByRole("button", {name: "図候補を確認", exact: true}).click();
+      await expect(register).toBeDisabled();
+      if (diagramScope === "parent") {
+        await expect(section.getByText('親設問「問題3」に図候補があります。', {exact: true})).toBeVisible();
+        await section.getByRole("button", {name: "親設問の図候補を表示", exact: true}).click();
+      } else {
+        await expect(section.getByRole("button", {name: "親設問の図候補を表示"})).toHaveCount(0);
+        await section.getByRole("button", {name: "このPDFのすべての図候補を表示", exact: true}).click();
+      }
+      await expect(section.getByAltText("図1の切り出し範囲")).toBeVisible();
+      await expect(page.locator(".diagram-overlay")).toBeVisible();
+      await expect(selector).toHaveValue(`question:${qid}`);
+      await expect(register).toBeDisabled();
+      await section.getByRole("button", {name: "この図を使用", exact: true}).click();
+      await expect(register).toBeEnabled();
+      if (qid === children[0]) {
+        await section.getByRole("button", {name: "範囲を修正", exact: true}).click();
+        for (const [label, value] of [["左", "68"], ["上", "138"], ["右", "232"], ["下", "302"]])
+          await section.getByLabel(`図の範囲 ${label}`).fill(value);
+        await section.getByRole("button", {name: "プレビューを更新"}).click();
+        await expect(section.getByAltText("修正後の図の範囲")).toBeVisible();
+        await section.getByRole("button", {name: "範囲を適用", exact: true}).click();
+      }
+      const saved = page.waitForResponse(r => r.url().endsWith(did) && r.request().method() === "PUT");
+      await page.getByRole("button", {name: "下書き保存", exact: true}).click();
+      expect((await saved).status()).toBe(200);
+      await page.reload();
+      await selector.selectOption(`question:${qid}`);
+      await expect(section.getByText(/使用中 ·/)).toBeVisible();
+    }
+    const savedDraft = await (await page.request.get(base)).json();
+    const assigned = savedDraft.entries.flatMap((e: {diagram_records?: {id: string; scope: string; source_question_id: string | null; assigned_question_id: string}[]}) => e.diagram_records || []);
+    expect(assigned).toHaveLength(2);
+    expect(assigned[0].id).toBe(assigned[1].id);
+    expect(assigned.every((d: {scope: string}) => d.scope === diagramScope)).toBe(true);
+    expect(assigned.map((d: {assigned_question_id: string}) => d.assigned_question_id)).toEqual(children.slice(0, 2));
+    if (diagramScope === "parent") expect(assigned.every((d: {source_question_id: string}) => d.source_question_id === owner)).toBe(true);
+    // Formal transfer preserves source owner and assigned child independently.
+    const confirmed = page.waitForResponse(r => r.url().endsWith("/confirm"));
+    await register.click();
+    const response = await confirmed;
+    expect(response.status()).toBe(200);
+    const answers = (await response.json()).model_answers;
+    expect(answers).toHaveLength(2);
+    for (const answer of answers) {
+      expect(answer.answer_text).toBe("");
+      expect(answer.provenance_json.diagrams[0].assigned_question_id).toBe(answer.question_id);
+      expect(answer.provenance_json.diagrams[0].scope).toBe(diagramScope);
+    }
+    expect(await calls(page)).toEqual(before);
+    expect(errors).toEqual([]);
+  });
+}

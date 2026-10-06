@@ -132,13 +132,13 @@ def question_diagram_candidates(service, review_id, node_key, revision, *, snaps
                                      ownership=ownership, exclusions=exclusions, grouping=grouping)
 
 
-def model_answer_diagram_candidates(source, ir, store, *, entry, question_regions, grouping=None):
+def model_answer_diagram_candidates(source, ir, store, *, entry, question_regions, grouping=None, allow_missing=False):
     """Only persisted spatial assignment, never a nearest-text/sibling guess."""
     qid = entry.get('question_id')
     if not qid:
         raise ValueError('diagram_source_mapping_missing')
     regions = [r for r in question_regions if r.get('question_id') == qid]
-    if not regions:
+    if not regions and not allow_missing:
         raise ValueError('diagram_source_mapping_missing')
     ir = visual_ir(source, ir)
     ownership, exclusions, bounds, blocked = {}, {}, {}, {}

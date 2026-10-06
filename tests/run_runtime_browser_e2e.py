@@ -250,6 +250,41 @@ def seed(root):
             storage_ref=str(manual_source), original_filename="manual-diagram-answer.pdf", mime_type="application/pdf",
             sha256=hashlib.sha256(manual_source.read_bytes()).hexdigest())
         geometry_env.update(MANUAL_DIAGRAM_TEST_ID=manual_diagram_test.id, MANUAL_DIAGRAM_MATERIAL_ID=manual_material.id)
+        # Review state after splitting an originally parent-owned diagram.
+        # There is ONE completed diagram, not one fabricated per child.
+        from scoring.pdf_native import PyMuPdfNativeExtractor
+        for scope_name in ("parent", "pdf"):
+            scope_test = domain.test(teacher_offering.id, name=f"Diagram {scope_name} fallback", total_points=30)
+            owner = domain.question(scope_test.id, question_number="3", display_label="問題3",
+                sort_order=3, max_points=None, is_gradable=False)
+            children = [domain.question(scope_test.id, question_number=f"3.{n}", display_label=f"({n})",
+                sort_order=n, parent_id=owner.id, max_points=10, is_gradable=True) for n in (1, 2, 3)]
+            with pymupdf.open() as shared_pdf:
+                p = shared_pdf.new_page(width=400, height=500)
+                p.insert_text((25, 30), "問題3 決定境界", fontname="japan", fontsize=12)
+                p.insert_text((25, 55), "(1) 境界 (2) 領域 (3) 点", fontname="japan", fontsize=10)
+                p.draw_line((70, 220), (230, 220))
+                p.draw_line((150, 140), (150, 300))
+                p.draw_line((80, 285), (215, 150), color=(0, 0, 1))
+                p.draw_rect((160, 230, 205, 280), fill=(.6, .8, 1))
+                p.insert_text((153, 217), "O", fontsize=8)
+                scope_source = root / "sources" / f"shared-{scope_name}.pdf"
+                scope_source.write_bytes(shared_pdf.tobytes())
+            digest = hashlib.sha256(scope_source.read_bytes()).hexdigest()
+            scope_material = domain.material(scope_test.id, material_type="model_answer_source",
+                storage_ref=str(scope_source), original_filename=f"shared-{scope_name}.pdf", mime_type="application/pdf", sha256=digest)
+            native_dir = root / f"diagram-{scope_name}-native"
+            PyMuPdfNativeExtractor().extract(scope_source, source_sha256=digest,
+                material_id=scope_material.id, output_dir=native_dir)
+            scope_draft = ModelAnswerImportDraft(id=str(uuid4()), test_id=scope_test.id, material_id=scope_material.id,
+                source_sha256=digest, artifact_ref=f"diagram-{scope_name}-native/document-ir.json", state="editing", revision=1,
+                snapshot={"schema": "model-answer-review.v1", "page_count": 1, "entries": [],
+                    "question_regions": [{"question_id": owner.id, "page_index": 0, "left": 20,
+                        "top": 80, "right": 250, "bottom": 330, "depth": 1}] if scope_name == "parent" else []})
+            session.add(scope_draft)
+            geometry_env.update({f"DIAGRAM_{scope_name.upper()}_DRAFT_ID": scope_draft.id,
+                                 f"DIAGRAM_{scope_name.upper()}_CHILD_IDS": json.dumps([q.id for q in children]),
+                                 f"DIAGRAM_{scope_name.upper()}_OWNER_ID": owner.id})
         caret_test = domain.test(teacher_offering.id, name="Question caret fixture", total_points=10)
         caret_pdf = pymupdf.open()
         caret_page = caret_pdf.new_page()

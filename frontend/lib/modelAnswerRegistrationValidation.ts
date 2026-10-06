@@ -18,7 +18,7 @@ export function isEffectivelyBlank(value: string | null | undefined): boolean {
 
 export function hasAcceptedDiagram(entry: ModelAnswerDraftEntry, sourceSha?: string): boolean {
   return !!entry.diagram_records?.some(record => record.state === "accepted" && record.status !== "unresolved"
-    && !record.reason_code && (!sourceSha || record.source_sha256 === sourceSha) && record.target_key === entry.question_id && !!record.crop_sha256);
+    && !record.reason_code && (!sourceSha || record.source_sha256 === sourceSha) && (record.assigned_question_id || record.target_key) === entry.question_id && !!record.crop_sha256);
 }
 
 export function isModelAnswerRegistrationEntry(entry: ModelAnswerDraftEntry): boolean {

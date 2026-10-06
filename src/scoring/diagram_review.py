@@ -4,13 +4,15 @@ import json
 import re
 
 from .pdf_native import canonical_hash, sha256_file
+from .diagram_regions import write_diagram_json
 
 FIELDS = ('id', 'domain', 'target_key', 'material_id', 'source_sha256', 'source_ir_sha256',
     'page_index', 'automatic_bbox', 'final_bbox', 'crop_bbox', 'source_element_ids',
     'grouping_method', 'confidence', 'ricoh_used', 'teacher_adjusted', 'crop_width',
     'crop_height', 'crop_sha256', 'artifact_ref', 'context_sha256', 'legacy_region_id',
     'revision', 'state', 'status', 'reason_code', 'ricoh_finish_reason', 'ricoh_response_field',
-    'page_width', 'page_height', 'page_rotation', 'legacy_region_ids')
+    'page_width', 'page_height', 'page_rotation', 'legacy_region_ids',
+    'scope', 'source_question_id', 'source_question_path', 'assigned_question_id')
 
 
 class DiagramReview:
@@ -50,7 +52,7 @@ class DiagramReview:
             self._cache()
 
     def _cache(self):
-        self.engine.store.write(self.ref, {'context_sha256': self.context, 'candidates': self.candidates})
+        write_diagram_json(self.engine.store, self.ref, {'context_sha256': self.context, 'candidates': self.candidates})
 
     def discover(self, manager):
         from .diagram_vision import RicohDiagramGrouping
@@ -97,7 +99,7 @@ class DiagramReview:
             old = by_id.get(c['id'], {})
             stale = bool(old and (old.get('context_sha256') != self.context or any(
                 key in old and old[key] != c[key] for key in (
-                    'source_sha256', 'domain', 'target_key', 'page_index',
+                    'source_sha256', 'material_id', 'domain', 'target_key', 'page_index',
                     'automatic_bbox', 'source_element_ids'))))
             try:
                 r = self.record(c['id'], state=old.get('state', 'candidate') if not stale else 'candidate',
@@ -125,7 +127,7 @@ class DiagramReview:
             candidate = self.candidate(r['id'])
             # A canonical context alone must not legitimize stale source identity
             # carried by a saved decision. Paths/crop bytes are still re-derived.
-            for key in ('source_sha256', 'domain', 'target_key', 'page_index',
+            for key in ('source_sha256', 'material_id', 'domain', 'target_key', 'page_index',
                         'automatic_bbox', 'source_element_ids'):
                 if key in r and r[key] != candidate[key]:
                     raise ValueError('diagram_source_stale')
@@ -143,7 +145,7 @@ class DiagramReview:
         return path
 
     def preview(self, record):
-        self.engine.store.write(f'diagrams/previews/{self.context}/{record["id"]}/{record["crop_sha256"]}.json', record)
+        write_diagram_json(self.engine.store, f'diagrams/previews/{self.context}/{record["id"]}/{record["crop_sha256"]}.json', record)
         return record
 
     def preview_path(self, identifier, crop_sha=None):

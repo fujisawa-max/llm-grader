@@ -241,7 +241,7 @@ def router(db, artifact_root, classifier=None):
         return {**draft_view(draft, choices), "saved_answers": [
             {"id": answer.id, "question_id": answer.question_id, "answer_text": answer.answer_text,
              "version": answer.version, "diagram_count": len((answer.provenance_json or {}).get("diagrams", []))} for answer in saved],
-            "diagram_question_ids": sorted({r["question_id"] for r in draft.snapshot.get("question_regions", [])}),
+            "diagram_question_ids": [q["id"] for q in choices],
             "confirmed_entry_ids": draft.snapshot.get("confirmed_entry_ids", [])}
 
     def question_context(question, label):
@@ -573,8 +573,7 @@ def router(db, artifact_root, classifier=None):
         return view(owned_draft(draft_id, session), session)
 
     def diagram_review_for(draft, entry, session):
-        from ..diagram_review import DiagramReview
-        from ..diagram_sources import model_answer_diagram_candidates
+        from ..model_answer_diagram_review import ModelAnswerDiagramReview
         from ..adapters.artifacts import RunArtifactAdapter
         material = session.get(TestMaterial, draft.material_id)
         if not material or material.test_id != draft.test_id:
@@ -586,10 +585,9 @@ def router(db, artifact_root, classifier=None):
         ir = json.loads(ir_path.read_text())
         if ir['source']['sha256'] != draft.source_sha256:
             raise ValueError('diagram_source_stale')
-        engine, candidates = model_answer_diagram_candidates(source, ir,
-            RunArtifactAdapter(ir_path.parent), entry=entry,
-            question_regions=draft.snapshot.get('question_regions', []))
-        return DiagramReview(engine, candidates)
+        _, questions = choices_for(draft.test_id, session)
+        return ModelAnswerDiagramReview(source, ir, RunArtifactAdapter(ir_path.parent), entry=entry,
+            question_regions=draft.snapshot.get('question_regions', []), questions=questions)
 
     def diagram_target(draft_id, entry_id, session, question_id=None):
         draft = owned_draft(draft_id, session)
@@ -615,40 +613,41 @@ def router(db, artifact_root, classifier=None):
                 review.preview(record)
                 record['preview_url'] = (f'/api/v1/model-answer-import-drafts/{draft_id}/entries/{entry_id}/diagrams/'
                     f'{record["id"]}/crop?crop_sha={record["crop_sha256"]}'
-                    + (f'&question_id={question_id}' if question_id else ""))
-        return {'diagrams': records}
+                    + (f'&question_id={question_id}' if question_id else "")
+                    + f'&scope={record.get("scope", "exact")}')
+        return {'diagrams': records, 'fallback': review.fallback(), 'diagnostics': review.diagnostics()}
 
     @routes.get('/model-answer-import-drafts/{draft_id}/entries/{entry_id}/diagrams')
     @routes.post('/model-answer-import-drafts/{draft_id}/entries/{entry_id}/diagrams')
-    def diagrams(draft_id: str, entry_id: str, request: Request, body: ClassificationRequest | None = None, question_id: str | None = None, session=Depends(db)):
+    def diagrams(draft_id: str, entry_id: str, request: Request, body: ClassificationRequest | None = None, question_id: str | None = None, scope: Literal["exact", "parent", "pdf"] | None = None, session=Depends(db)):
         draft, entry = diagram_target(draft_id, entry_id, session, question_id)
         if body:
             revision_check(draft, body.expected_revision)
         try:
             review = diagram_review_for(draft, entry, session)
             if request.method == 'POST' and body:
-                review.discover(getattr(classifier, 'manager', None))
-            return diagram_response(review, review.records(entry.get('diagram_records', []), revision=draft.revision), draft_id, entry_id, question_id)
+                review.discover(getattr(classifier, 'manager', None), scope or 'exact')
+            return diagram_response(review, review.records(entry.get('diagram_records', []), revision=draft.revision, scope=scope or ('exact' if request.method == 'POST' else None)), draft_id, entry_id, question_id)
         except ValueError as exc:
             fail(422, str(exc), '図の出典と設問の対応を確認してください')
 
     @routes.post('/model-answer-import-drafts/{draft_id}/entries/{entry_id}/diagrams/{candidate_id}/crop-preview')
-    def diagram_preview(draft_id: str, entry_id: str, candidate_id: str, body: DiagramCropRequest, question_id: str | None = None, session=Depends(db)):
+    def diagram_preview(draft_id: str, entry_id: str, candidate_id: str, body: DiagramCropRequest, question_id: str | None = None, scope: Literal["exact", "parent", "pdf"] | None = None, session=Depends(db)):
         draft, entry = diagram_target(draft_id, entry_id, session, question_id)
         revision_check(draft, body.expected_revision)
         try:
             review = diagram_review_for(draft, entry, session)
-            record = review.record(candidate_id, final_bbox=body.final_bbox, revision=draft.revision)
+            record = review.record(candidate_id, final_bbox=body.final_bbox, revision=draft.revision, scope=scope or 'exact')
             return diagram_response(review, [record], draft_id, entry_id, question_id)['diagrams'][0]
         except ValueError as exc:
             fail(422, str(exc), '図の範囲が設問の出典範囲を越えています')
 
     @routes.get('/model-answer-import-drafts/{draft_id}/entries/{entry_id}/diagrams/{candidate_id}/crop')
-    def diagram_crop(draft_id: str, entry_id: str, candidate_id: str, crop_sha: str | None = None, question_id: str | None = None, session=Depends(db)):
+    def diagram_crop(draft_id: str, entry_id: str, candidate_id: str, crop_sha: str | None = None, question_id: str | None = None, scope: Literal["exact", "parent", "pdf"] | None = None, session=Depends(db)):
         draft, entry = diagram_target(draft_id, entry_id, session, question_id)
         try:
             review = diagram_review_for(draft, entry, session)
-            return FileResponse(review.preview_path(candidate_id, crop_sha), media_type='image/png')
+            return FileResponse(review.preview_path(candidate_id, crop_sha, scope=scope or 'exact'), media_type='image/png')
         except ValueError as exc:
             fail(422, str(exc), '図の出典を確認できません')
 

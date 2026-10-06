@@ -177,7 +177,7 @@ export default function ModelAnswerImportReviewPage() {
   const selectedSavedAnswer = savedDraft?.saved_answers?.find((answer) => answer.question_id === selectedQuestionId);
   const pdfEntry = visibleEntries.find((entry) => entry.source.segments.length > 0);
   const pdfSegment = pdfEntry?.source.segments.find((segment) => segment.bbox) || pdfEntry?.source.segments[0];
-  const visibleDiagram = diagramSelection && visibleEntries.some(e => e.question_id === diagramSelection.record.target_key) ? diagramSelection : undefined;
+  const visibleDiagram = diagramSelection && visibleEntries.some(e => e.question_id === (diagramSelection.record.assigned_question_id || diagramSelection.record.target_key)) ? diagramSelection : undefined;
   const pdfLocation = visibleDiagram ? {id: visibleDiagram.record.id, page: visibleDiagram.record.page_index+1, bbox: visibleDiagram.record.final_bbox || visibleDiagram.record.automatic_bbox} : pdfSegment ? { id: `${selectedTarget?.id}:${pdfSegment.id || pdfSegment.page_index}`,
     page: pdfSegment.page_index + 1, bbox: pdfSegment.bbox || undefined } : undefined;
 

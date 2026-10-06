@@ -21,6 +21,19 @@ GAP = 4.0
 POLICY = {**DEFAULT_POLICY, "figure_margin": 6.0, "max_figure_page_ratio": 0.55}
 
 
+def write_diagram_json(store, relative, value):
+    """Atomic unique temporary files for concurrent shared-crop requests."""
+    target = store.path(relative)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f'.{uuid4()}.json.tmp')
+    try:
+        temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2)+'\n', encoding='utf-8')
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return target
+
+
 def _box(value, *, degenerate=False):
     if (not isinstance(value, (list, tuple)) or len(value) != 4
             or any(type(v) not in (int, float) or not math.isfinite(v) for v in value)
@@ -230,7 +243,7 @@ class DiagramRegionExtractor:
                 {"page_index": page["page_index"], "region_id": candidate["id"],
                  "region_type": "figure", "crop": geometry}, POLICY, temp)
             temp.replace(output)
-            self.store.write(f"diagrams/{key}.json", render)
+            write_diagram_json(self.store, f"diagrams/{key}.json", render)
         return {**candidate, "final_bbox": box, "crop_bbox": geometry["expanded_bbox"],
                 "teacher_adjusted": box != candidate["automatic_bbox"],
                 "crop_width": render["width"], "crop_height": render["height"],

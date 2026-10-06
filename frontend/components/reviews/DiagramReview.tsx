@@ -4,6 +4,8 @@ import { apiFetch, json, ApiRequestError } from "@/lib/api/client";
 
 import type { DiagramRecord, DiagramSelection } from "@/types/diagrams";
 export type { DiagramRecord, DiagramSelection } from "@/types/diagrams";
+type DiagramScope = "exact" | "parent" | "pdf";
+type Discovery = {diagrams: DiagramRecord[]; diagnostics?: Record<string, unknown>; fallback?: {scope: "parent" | "pdf"; source_question_path?: string} | null};
 const clean = (record: DiagramRecord) => {const value = {...record}; delete value.preview_url; return value;};
 function errorMessage(e: unknown) {
   const code = e instanceof ApiRequestError ? e.code : undefined;
@@ -14,20 +16,29 @@ export function DiagramReview({path, revision, records = [], disabled, sourceSta
   path: string; revision: number; records?: DiagramRecord[]; disabled: boolean; sourceStale?: boolean; targetQuestionId?: string; disabledReason?: string; label: string;
   onChange: (records: DiagramRecord[]) => void; onSelect: (selection: DiagramSelection) => void;
 }) {
-  const requestPath = (suffix = "") => `${path}${suffix}${targetQuestionId ? `?question_id=${encodeURIComponent(targetQuestionId)}` : ""}`;
+  const requestPath = (suffix = "", selectedScope?: DiagramScope) => {
+    const params = new URLSearchParams();
+    if (targetQuestionId) params.set("question_id", targetQuestionId);
+    if (targetQuestionId && selectedScope) params.set("scope", selectedScope);
+    return `${path}${suffix}${params.size ? `?${params}` : ""}`;
+  };
   const scope = `${path}:${revision}:${sourceStale}:${targetQuestionId}`;
   const currentScope = useRef(scope); currentScope.current = scope;
+  const [diagnostics, setDiagnostics] = useState<Discovery["diagnostics"]>();
+  const [fallback, setFallback] = useState<Discovery["fallback"]>();
+  const [discoveryScope, setDiscoveryScope] = useState<DiagramScope>("exact");
   const [candidates, setCandidates] = useState<DiagramRecord[]>([]);
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   const [loaded, setLoaded] = useState(false), [editing, setEditing] = useState<DiagramRecord>();
   const [box, setBox] = useState<number[]>([]), [preview, setPreview] = useState<DiagramRecord>();
   useEffect(() => {
     let active = true;
+    setDiagnostics(undefined); setFallback(undefined); setDiscoveryScope("exact");
     setBusy(false); setCandidates(sourceStale ? records.map(r => ({...r, state: "candidate", status: "unresolved", reason_code: "diagram_source_stale"})) : []); setLoaded(false); setEditing(undefined); setPreview(undefined); setError("");
     // Resuming saved review never requests discovery/vision.
-    if (records.length && !sourceStale) apiFetch<{diagrams: DiagramRecord[]}>(requestPath()).then(r => {
+    if (records.length && !sourceStale) apiFetch<Discovery>(requestPath()).then(r => {
       if (active) {
-        setCandidates(r.diagrams); setLoaded(true);
+        setCandidates(r.diagrams); setLoaded(true); setFallback(r.fallback); setDiagnostics(r.diagnostics); setDiscoveryScope(r.diagrams[0]?.scope || "exact");
         // Server revalidation can invalidate a saved accepted record. Keep
         // registration readiness in sync without persisting or rediscovering.
         const invalid = r.diagrams.filter(record => record.status === "unresolved");
@@ -40,13 +51,13 @@ export function DiagramReview({path, revision, records = [], disabled, sourceSta
     // Each explicit revision/target transition reloads saved source state only.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path, revision, sourceStale, targetQuestionId]);
-  async function discover() {
+  async function discover(selectedScope: DiagramScope = "exact") {
     setBusy(true); setError("");
     try {
-      const result = await apiFetch<{diagrams: DiagramRecord[]}>(requestPath(), json({expected_revision: revision}));
+      const result = await apiFetch<Discovery>(requestPath("", selectedScope), json({expected_revision: revision}));
       if (currentScope.current !== scope) return;
       setCandidates(result.diagrams.map(c => ({...c, ...records.find(r => r.id === c.id && r.context_sha256 === c.context_sha256), preview_url: c.preview_url})));
-      setLoaded(true);
+      setLoaded(true); setFallback(result.fallback); setDiagnostics(result.diagnostics); setDiscoveryScope(selectedScope);
       if (result.diagrams[0]) onSelect({record: result.diagrams[0], manual: false});
     } catch (e) { if (currentScope.current === scope) setError(errorMessage(e)); }
     finally {if (currentScope.current === scope) setBusy(false);}
@@ -66,7 +77,7 @@ export function DiagramReview({path, revision, records = [], disabled, sourceSta
     if (!editing) return;
     setBusy(true); setError("");
     try {
-      const result = await apiFetch<DiagramRecord>(requestPath(`/${editing.id}/crop-preview`), json({expected_revision: revision, final_bbox: box}));
+      const result = await apiFetch<DiagramRecord>(requestPath(`/${editing.id}/crop-preview`, editing.scope || "exact"), json({expected_revision: revision, final_bbox: box}));
       if (currentScope.current !== scope) return;
       setPreview(result); onSelect({record: result, manual: true, onBounds: value => {setBox(value); setPreview(undefined);}});
     } catch (e) {if (currentScope.current === scope) setError(errorMessage(e));} finally {if (currentScope.current === scope) setBusy(false);}
@@ -74,14 +85,23 @@ export function DiagramReview({path, revision, records = [], disabled, sourceSta
   return <section className="panel section diagram-review" aria-label={label} aria-busy={busy} tabIndex={-1}>
     <h3>{label}</h3>
     <p className="muted">図の出典・範囲を確認して選択します。保存・登録は上部の操作から行います。</p>
-    <button type="button" disabled={disabled || busy || sourceStale || !!disabledReason} onClick={discover}>{busy ? "図の範囲を確認中…" : "図候補を確認"}</button>
+    <button type="button" disabled={disabled || busy || sourceStale || !!disabledReason} onClick={() => discover()}>{busy ? "図の範囲を確認中…" : "図候補を確認"}</button>
     {!loaded && !records.length && <p className="muted">まだ図候補を確認していません。</p>}
     {disabledReason && <p className="muted">{disabledReason}</p>}
     {sourceStale && <p className="notice">設問の構造・対応先の変更を保存してから、図候補を確認してください。</p>}
     {error && <p role="alert" className="error">{error}</p>}
-    {loaded && !candidates.length && <p>この設問の出典範囲には図候補が見つかりませんでした。</p>}
+    {loaded && !candidates.length && <>
+      <p>{fallback?.scope === "pdf" ? "この設問および親設問には図候補が見つかりませんでした。" : "この設問の出典範囲には図候補が見つかりませんでした。"}</p>
+      {fallback?.scope === "parent" && <>
+        <p>親設問「{fallback.source_question_path}」に図候補があります。</p>
+        <button type="button" disabled={disabled || busy || sourceStale} onClick={() => discover("parent")}>親設問の図候補を表示</button>
+      </>}
+      {fallback?.scope === "pdf" && <button type="button" disabled={disabled || busy || sourceStale} onClick={() => discover("pdf")}>このPDFのすべての図候補を表示</button>}
+    </>}
+    {!!candidates.length && discoveryScope !== "exact" && <p className="muted">図の出典: {discoveryScope === "parent" ? `親設問 ${candidates[0].source_question_path || ""}` : "PDF全体"}（編集対象は変わりません）</p>}
     {candidates.map(c => ({...c, ...records.find(r => r.id === c.id && r.context_sha256 === c.context_sha256), preview_url: c.preview_url})).map((candidate, index) => <article key={candidate.id} data-diagram-id={candidate.id}>
       <h4><button type="button" onClick={() => onSelect({record: candidate, manual: false})}>図{index+1} · ページ {candidate.page_index+1}</button></h4>
+      {candidate.scope && candidate.scope !== "exact" && <p>出典: {candidate.scope === "parent" ? `親設問 ${candidate.source_question_path}` : `PDF全体${candidate.source_question_path ? ` · ${candidate.source_question_path}` : ""}`} · p.{candidate.page_index + 1}</p>}
       <p>{candidate.state === "accepted" ? "使用中" : candidate.state === "excluded" ? "対象外" : "候補"} · {candidate.teacher_adjusted ? "教師が範囲を修正" : "自動検出"}</p>
       {candidate.preview_url && <img className="review-crop" src={candidate.preview_url} alt={`図${index+1}の切り出し範囲`} /> /* eslint-disable-line @next/next/no-img-element */}
       {candidate.status === "unresolved" && <p className="notice">出典範囲の確認が必要です。（{candidate.reason_code}）</p>}
@@ -93,6 +113,7 @@ export function DiagramReview({path, revision, records = [], disabled, sourceSta
       </div>
       <details><summary>図の出典情報</summary><pre>{JSON.stringify(clean(candidate), null, 2)}</pre></details>
     </article>)}
+    {diagnostics && <details><summary>図の探索情報</summary><pre>{JSON.stringify(diagnostics, null, 2)}</pre></details>}
     {editing && <fieldset disabled={disabled || busy} aria-label="図の範囲を修正">
       <legend>図の範囲を修正</legend>
       <p>左のPDF上で範囲をドラッグしてください。座標でも調整できます。</p>
