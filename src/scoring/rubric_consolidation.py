@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import hashlib
 import re
 from typing import Any
@@ -124,3 +125,32 @@ def mechanically_premerge_rubric_segments(segments: list[dict[str, Any]]) -> lis
                                 max(item["bbox"][2] for item in group if item.get("bbox")),
                                 max(item["bbox"][3] for item in group if item.get("bbox"))]})
     return result
+
+
+def consolidate_rubrics(classification, classifier, deadline):
+    from .model_answer_classification import is_effectively_blank
+    source = [dict(segment) for segment in classification.get("segments", [])
+              if segment.get("category") == "rubric" and not is_effectively_blank(segment.get("source_text", segment.get("text", "")))]
+    if not source:
+        return [], "none"
+    if len(source) == 1:
+        group = {"group_id": f"single-{source[0]['id']}", "segment_ids": [source[0]["id"]],
+                 "kind": "rubric", "confidence": float(source[0].get("confidence", 1.0))}
+        return reconstruct_rubric_groups(source, [group], method="mechanical_premerge"), "mechanical_premerge"
+    premerged = mechanically_premerge_rubric_segments(source)
+    grouper = getattr(classifier, "group_rubric_segments", None)
+    try:
+        if not callable(grouper):
+            raise RuntimeError("rubric grouping is unsupported by classifier")
+        compact_groups = grouper(segments=premerged, deadline_monotonic=deadline)
+        compact_groups = validate_rubric_groups({"groups": compact_groups}, premerged)
+        members = {item["id"]: item.get("member_ids", [item["id"]]) for item in premerged}
+        groups = [{**group, "segment_ids": [source_id for compact_id in group["segment_ids"]
+                                                for source_id in members[compact_id]]}
+                  for group in compact_groups]
+        groups = validate_rubric_groups({"groups": groups}, source)
+        return reconstruct_rubric_groups(source, groups, method="llm_group"), "llm_group"
+    except Exception as exc:
+        logging.getLogger(__name__).info("Rubric semantic grouping fell back: %s", type(exc).__name__)
+        groups = mechanical_rubric_groups(source)
+        return reconstruct_rubric_groups(source, groups, method="mechanical_fallback"), "mechanical_fallback"

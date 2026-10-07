@@ -29,12 +29,15 @@ export function normalizeLatex(text: string, context_type: TextContext, context_
   return apiFetch<LatexProposal>("/text-tools/latex-normalize", json({text, context_type, context_label}));
 }
 
-export type MathSource = {kind?: "model_answer"; draftId: string; entryId: string; revision: number} |
-  {kind: "question_review"; reviewId: string; nodeKey: string; itemIndex?: number; revision: number; expectedSource: Record<string, unknown>};
+export type MathSource = ({kind?: "model_answer"; draftId: string; entryId: string; revision: number} |
+  {kind: "question_review"; reviewId: string; nodeKey: string; itemIndex?: number; revision: number; expectedSource: Record<string, unknown>}) & {authoringTestId?: string};
 export function mathOCR(source: MathSource, text: string) {
   if (source.kind === "question_review") {
+    if (source.authoringTestId) return apiFetch<LatexProposal>(`/tests/${encodeURIComponent(source.authoringTestId)}/authoring/nodes/${encodeURIComponent(source.nodeKey)}/math-ocr`,
+      json({text, expected_revision: source.revision, expected_source: source.expectedSource}));
     return apiFetch<LatexProposal>(`/question-import-reviews/${encodeURIComponent(source.reviewId)}/nodes/${encodeURIComponent(source.nodeKey)}${source.itemIndex === undefined ? "" : `/items/${source.itemIndex}`}/math-ocr`,
       json({text, expected_revision: source.revision, expected_source: source.expectedSource}));
   }
+  if (source.authoringTestId) return apiFetch<LatexProposal>(`/tests/${encodeURIComponent(source.authoringTestId)}/authoring/entries/${encodeURIComponent(source.entryId)}/math-ocr`, json({text, expected_revision:source.revision}));
   return apiFetch<LatexProposal>(`/model-answer-import-drafts/${encodeURIComponent(source.draftId)}/entries/${encodeURIComponent(source.entryId)}/math-ocr`, json({text, expected_revision: source.revision}));
 }

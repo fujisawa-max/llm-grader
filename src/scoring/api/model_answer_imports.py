@@ -44,12 +44,6 @@ from ..model_answer_classification import (
     is_effectively_blank,
     validate_classifier_result,
 )
-from ..rubric_consolidation import (
-    mechanically_premerge_rubric_segments,
-    mechanical_rubric_groups,
-    reconstruct_rubric_groups,
-    validate_rubric_groups,
-)
 from ..pdf_native import PyMuPdfNativeExtractor, sha256_file
 
 logger = logging.getLogger(__name__)
@@ -259,31 +253,8 @@ def router(db, artifact_root, classifier=None):
         return {"label": label, "body": body}
 
     def consolidate_rubrics(classification, deadline):
-        source = [dict(segment) for segment in classification.get("segments", [])
-                  if segment.get("category") == "rubric" and not is_effectively_blank(segment.get("source_text", segment.get("text", "")))]
-        if not source:
-            return [], "none"
-        if len(source) == 1:
-            group = {"group_id": f"single-{source[0]['id']}", "segment_ids": [source[0]["id"]],
-                     "kind": "rubric", "confidence": float(source[0].get("confidence", 1.0))}
-            return reconstruct_rubric_groups(source, [group], method="mechanical_premerge"), "mechanical_premerge"
-        premerged = mechanically_premerge_rubric_segments(source)
-        grouper = getattr(classifier, "group_rubric_segments", None)
-        try:
-            if not callable(grouper):
-                raise RuntimeError("rubric grouping is unsupported by classifier")
-            compact_groups = grouper(segments=premerged, deadline_monotonic=deadline)
-            compact_groups = validate_rubric_groups({"groups": compact_groups}, premerged)
-            members = {item["id"]: item.get("member_ids", [item["id"]]) for item in premerged}
-            groups = [{**group, "segment_ids": [source_id for compact_id in group["segment_ids"]
-                                                    for source_id in members[compact_id]]}
-                      for group in compact_groups]
-            groups = validate_rubric_groups({"groups": groups}, source)
-            return reconstruct_rubric_groups(source, groups, method="llm_group"), "llm_group"
-        except Exception as exc:
-            logger.info("Rubric semantic grouping fell back: %s", type(exc).__name__)
-            groups = mechanical_rubric_groups(source)
-            return reconstruct_rubric_groups(source, groups, method="mechanical_fallback"), "mechanical_fallback"
+        from ..rubric_consolidation import consolidate_rubrics as shared_consolidation
+        return shared_consolidation(classification, classifier, deadline)
 
     def classify_entries(entries, questions, choices):
         deadline = time.monotonic() + AUTOMATIC_CLASSIFICATION_BUDGET_SECONDS
@@ -412,11 +383,10 @@ def router(db, artifact_root, classifier=None):
         if draft.revision != expected:
             fail(409, "REVISION_CONFLICT", "別の画面で内容が更新されています。最新の内容を再読み込みしてください")
 
-    @routes.post("/tests/{test_id}/model-answer-imports", status_code=201)
-    def create(test_id: str, body: ImportCreate, session=Depends(db)):
+    def create_native(test_id, body, session, *, questions_override=None, commit=True):
         owned_test(test_id, session)
         material = session.get(TestMaterial, body.material_id)
-        if not material or material.test_id != test_id or material.material_type != "model_answer_source":
+        if not material or material.test_id != test_id or (material.material_type != "model_answer_source" if questions_override is None else material.material_type not in {"model_answer_source", "rubric_source", "question_sheet", "supplementary_source"}):
             fail(404, "MODEL_ANSWER_MATERIAL_NOT_FOUND", "この試験の模範解答PDFを選択してください")
         if material.mime_type != "application/pdf" or Path(material.original_filename or "").suffix.lower() != ".pdf":
             fail(422, "PDF_REQUIRED", "解析には登録済みのPDFを選択してください")
@@ -434,7 +404,7 @@ def router(db, artifact_root, classifier=None):
                 material_id=material.id,
                 output_dir=output_dir,
             ).as_dict()
-            questions = list(session.scalars(select(TestQuestion).where(TestQuestion.test_id == test_id)))
+            questions = questions_override if questions_override is not None else list(session.scalars(select(TestQuestion).where(TestQuestion.test_id == test_id)))
             question_materials = list(session.scalars(select(TestMaterial).where(
                 TestMaterial.test_id == test_id,
                 TestMaterial.material_type == "question_sheet",
@@ -526,10 +496,15 @@ def router(db, artifact_root, classifier=None):
                 revision=1,
                 snapshot=snapshot,
             )
+            if questions_override is not None:
+                draft.snapshot = {**snapshot, "authoring_only": True}
             session.add(draft)
-            session.commit()
-            session.refresh(draft)
-            return view(draft, session)
+            if commit:
+                session.commit()
+                session.refresh(draft)
+            else:
+                session.flush()
+            return draft
         except HTTPException:
             session.rollback()
             shutil.rmtree(output_dir.parent, ignore_errors=True)
@@ -539,6 +514,12 @@ def router(db, artifact_root, classifier=None):
             session.rollback()
             shutil.rmtree(output_dir.parent, ignore_errors=True)
             fail(422, "NATIVE_EXTRACTION_FAILED", "PDFから文字を読み取れませんでした。PDF形式と文字データを確認してください")
+
+    @routes.post("/tests/{test_id}/model-answer-imports", status_code=201)
+    def create(test_id: str, body: ImportCreate, session=Depends(db)):
+        return view(create_native(test_id, body, session), session)
+
+    routes.authoring_create = create_native
 
     @routes.get("/tests/{test_id}/model-answer-import-drafts")
     def list_drafts(test_id: str, material_id: str | None = None, session=Depends(db)):
@@ -932,6 +913,8 @@ def router(db, artifact_root, classifier=None):
     @routes.post("/model-answer-import-drafts/{draft_id}/register-rubric")
     def register_rubric(draft_id: str, body: RubricRegistrationRequest, session=Depends(db)):
         draft = owned_draft(draft_id, session)
+        if draft.snapshot.get("authoring_only"):
+            fail(409, "AUTHORING_NOT_PUBLISHABLE", "統合編集の下書きは個別に正式登録できません")
         revision_check(draft, body.expected_revision)
         material = session.get(TestMaterial, draft.material_id)
         if not material or material.test_id != draft.test_id or material.material_type != "model_answer_source":
@@ -1038,6 +1021,8 @@ def router(db, artifact_root, classifier=None):
     @routes.post("/model-answer-import-drafts/{draft_id}/confirm")
     def confirm(draft_id: str, body: ConfirmRequest, session=Depends(db)):
         draft = owned_draft(draft_id, session)
+        if draft.snapshot.get("authoring_only"):
+            fail(409, "AUTHORING_NOT_PUBLISHABLE", "統合編集の下書きは個別に正式登録できません")
         revision_check(draft, body.expected_revision)
         material = session.get(TestMaterial, draft.material_id)
         if not material or material.test_id != draft.test_id or material.material_type != "model_answer_source":

@@ -804,7 +804,8 @@ def create_app(session_factory=None, *, allowed_roots=None, runtime_client=None,
         return user
 
     from .test_authoring import router as authoring_router
-    app.include_router(authoring_router(db), dependencies=[Depends(domain_authorized)])
+    answer_import_routes = model_answer_import_router(db, action_root, classifier=model_answer_classifier)
+    app.include_router(authoring_router(db, import_root, action_root, model_answer_classifier, answer_import_routes.authoring_create), dependencies=[Depends(domain_authorized)])
     app.include_router(domain_router(db, import_root, roots, visual_options,
                                      storage_root=action_root),
                        dependencies=[Depends(domain_authorized)])
@@ -812,7 +813,7 @@ def create_app(session_factory=None, *, allowed_roots=None, runtime_client=None,
                        dependencies=[Depends(staff_dependency)])
     app.include_router(question_review_router(db, import_root, classifier=model_answer_classifier),
                        dependencies=[Depends(staff_dependency)])
-    app.include_router(model_answer_import_router(db, action_root, classifier=model_answer_classifier),
+    app.include_router(answer_import_routes,
                        dependencies=[Depends(staff_dependency)])
     from .text_tools import router as text_tools_router
     app.include_router(text_tools_router(model_answer_classifier), dependencies=[Depends(staff_only_dependency)])

@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select, delete, func
 
+from ..review_document import ReviewError
 from ..db.models import (Test, CourseOffering, Course,
     TestArchive, GradingJob, DomainEvent)
 from ..test_authoring import (AuthoringError, projection, latest, create_draft,
@@ -12,6 +13,33 @@ from ..test_authoring import (AuthoringError, projection, latest, create_draft,
 class SaveAuthoring(BaseModel):
     expected_edit_version: int = Field(ge=1)
     snapshot: dict
+    continue_after_external_change: bool = False
+
+
+class SourceImport(BaseModel):
+    expected_edit_version: int = Field(ge=1)
+
+
+class AnalyzeSource(SourceImport):
+    material_id: str
+
+
+class RubricSplitTool(BaseModel):
+    expected_revision: int = Field(ge=1)
+    candidate_id: str = Field(min_length=1, max_length=128)
+    text: str = Field(min_length=1, max_length=20000)
+    offset: int | None = Field(default=None, ge=1)
+
+
+class ConsolidationCriterion(BaseModel):
+    id: str = Field(min_length=1, max_length=128)
+    description: str = Field(max_length=20000)
+    points: float = Field(ge=0, allow_inf_nan=False)
+
+
+class ConsolidationTool(BaseModel):
+    expected_revision: int = Field(ge=1)
+    criteria: list[ConsolidationCriterion] | None = Field(default=None, max_length=500)
 
 
 class ArchiveRequest(BaseModel):
@@ -19,7 +47,7 @@ class ArchiveRequest(BaseModel):
     impact_sha256: str = Field(pattern=r'^[0-9a-f]{64}$')
 
 
-def router(db):
+def router(db, question_root=None, answer_root=None, classifier=None, answer_create=None):
     r = APIRouter(prefix='/api/v1')
 
     def owned(test_id, s, allow_archived=False):
@@ -35,6 +63,14 @@ def router(db):
             raise HTTPException(410, 'TEST_ARCHIVED')
         return test
 
+    def validate_materials(snapshot, session, test_id):
+        from ..db.models import TestMaterial
+        for reference in snapshot.get('materials', []):
+            material = session.get(TestMaterial, reference['id']) if isinstance(reference, dict) and isinstance(reference.get('id'), str) else None
+            if (not material or material.test_id != test_id or reference.get('sha256') != material.sha256
+                    or reference.get('role') != material.material_type):
+                raise AuthoringError('AUTHORING_SOURCE_CHANGED', 'この試験の資料と出典情報を確認してください。')
+
     def view(row):
         return {k: getattr(row, k) for k in ('id', 'test_id', 'revision', 'edit_version', 'state',
             'snapshot', 'snapshot_sha256', 'baseline_sha256')}
@@ -43,18 +79,43 @@ def router(db):
         s.rollback()
         raise HTTPException(409, {'error': {'code': exc.code, 'message': str(exc)}}) from exc
 
+    def source_problems(row, session):
+        if not row:
+            return []
+        problems = []
+        domains = row.snapshot.get('domains', {})
+        if domains.get('question'):
+            try:
+                from ..authoring_question import AuthoringQuestionReview
+                service = AuthoringQuestionReview(session, question_root, row)
+                service.get(service.bound['document']['id'])
+            except (ReviewError, ValueError, OSError, KeyError) as exc:
+                problems.append({'domain': 'question', 'code': getattr(exc, 'code', 'question_source_stale')})
+        if domains.get('answer'):
+            try:
+                from ..authoring_answers import AuthoringAnswers
+                AuthoringAnswers(session, answer_root, row)
+            except (ReviewError, ValueError, OSError, KeyError) as exc:
+                problems.append({'domain': 'answer', 'code': str(exc) if isinstance(exc, ValueError) else 'model_answer_source_stale'})
+        return problems
+
     @r.get('/tests/{test_id}/authoring')
     def get_authoring(test_id: str, s=Depends(db)):
         test = owned(test_id, s)
         row = latest(s, test_id)
+        from ..authoring_sources import source_tokens
+        tokens = source_tokens(s, test_id)
+        bound = (row.snapshot.get('source_provenance', {}).get('authoring_origins') or {}).get('tokens') if row else tokens
         return {'revision': view(row) if row else None, 'legacy': projection(s, test),
+            'external_source_change': bound != tokens, 'source_tokens': tokens, 'source_problems': source_problems(row, s),
             'publication_available': False}
 
     @r.post('/tests/{test_id}/authoring/revisions')
     def begin(test_id: str, s=Depends(db)):
         test = owned(test_id, s)
         try:
-            row = create_draft(s, test, s.info['auth_user'].id)
+            row = create_draft(s, test, s.info['auth_user'].id,
+                source_roots=(question_root, answer_root) if question_root and answer_root else None)
             s.commit()
             return view(row)
         except AuthoringError as exc:
@@ -64,18 +125,381 @@ def router(db):
     def save(test_id: str, v: SaveAuthoring, s=Depends(db)):
         test = owned(test_id, s)
         try:
+            from ..authoring_sources import source_tokens
+            current = latest(s, test_id)
+            origin = (current.snapshot.get('source_provenance', {}).get('authoring_origins') or {}) if current else {}
+            if origin and origin.get('tokens') != source_tokens(s, test_id) and not v.continue_after_external_change:
+                raise AuthoringError('AUTHORING_EXTERNAL_REVIEW_CHANGED', '外部の保存済みレビューが更新されています。現在の下書きを継続するか、最新レビューを取り込んでください。')
+            from ..test_authoring import validate_snapshot
+            validate_materials(v.snapshot, s, test_id)
+            if current:
+                v.snapshot = validate_snapshot(v.snapshot, current.snapshot)
+            if v.snapshot.get('domains', {}).get('question'):
+                from ..authoring_question import AuthoringQuestionReview
+                from ..review_document import ReviewError
+                try:
+                    v.snapshot['nodes'] = AuthoringQuestionReview(s, question_root, current,
+                        v.snapshot).validate_working(current.snapshot)
+                except (ReviewError, ValueError) as exc:
+                    raise AuthoringError(getattr(exc, 'code', str(exc)), '問題文と元資料の対応を確認してください。未保存の編集は保持されています。') from exc
+            if v.snapshot.get('domains', {}).get('answer'):
+                from ..authoring_answers import AuthoringAnswers
+                try:
+                    AuthoringAnswers(s, answer_root, current, v.snapshot).validate()
+                except (ValueError, KeyError, TypeError) as exc:
+                    import logging
+                    logging.getLogger(__name__).warning('Authoring answer validation rejected: %s', exc, exc_info=True)
+                    raise AuthoringError('AUTHORING_ANSWER_SOURCE_INVALID', '解答・図・採点基準の出典を確認してください。未保存の編集は保持されています。') from exc
             row = save_draft(s, test, v.snapshot, v.expected_edit_version, s.info['auth_user'].id)
             s.commit()
             return view(row)
         except AuthoringError as exc:
             error(exc, s)
 
+    @r.post('/tests/{test_id}/authoring/source-import')
+    def import_sources(test_id: str, v: SourceImport, s=Depends(db)):
+        from ..authoring_sources import source_projection
+        from ..pdf_native import canonical_hash
+        from ..db.models import TestAuthoringRevision, now
+        from sqlalchemy import update
+        test = owned(test_id, s)
+        row = latest(s, test_id)
+        if not row or row.state != 'draft' or row.edit_version != v.expected_edit_version:
+            raise HTTPException(409, 'AUTHORING_SAVE_CONFLICT')
+        baseline = projection(s, test)
+        snapshot = source_projection(s, test, baseline, question_root, answer_root)
+        result = s.execute(update(TestAuthoringRevision).where(TestAuthoringRevision.id == row.id,
+            TestAuthoringRevision.edit_version == v.expected_edit_version, TestAuthoringRevision.state == 'draft')
+            .values(snapshot=snapshot, snapshot_sha256=canonical_hash(snapshot),
+                baseline_sha256=baseline_hash(baseline), edit_version=v.expected_edit_version+1, updated_at=now()))
+        if result.rowcount != 1:
+            s.rollback()
+            raise HTTPException(409, 'AUTHORING_SAVE_CONFLICT')
+        s.add(DomainEvent(entity_type='test', entity_id=test.id, actor_user_id=s.info['auth_user'].id,
+            event_type='authoring_sources_imported', payload={'edit_version': v.expected_edit_version+1}))
+        s.commit()
+        s.refresh(row)
+        return view(row)
+
+    @r.post('/tests/{test_id}/authoring/analyze-answer')
+    def analyze_answer(test_id: str, v: AnalyzeSource, s=Depends(db)):
+        from copy import deepcopy
+        from sqlalchemy import update
+        from ..db.models import TestAuthoringRevision, now
+        from ..pdf_native import canonical_hash
+        from ..authoring_answers import authoring_questions
+        from ..authoring_sources import source_tokens
+        from .model_answer_imports import ImportCreate
+        owned(test_id, s)
+        row = latest(s, test_id)
+        if not row or row.state != 'draft' or row.edit_version != v.expected_edit_version:
+            raise HTTPException(409, 'AUTHORING_SAVE_CONFLICT')
+        if not answer_create:
+            raise HTTPException(503, 'AUTHORING_ANALYSIS_UNAVAILABLE')
+        snapshot = deepcopy(row.snapshot)
+        aliases, questions = authoring_questions(snapshot)
+        draft = answer_create(test_id, ImportCreate(material_id=v.material_id), s,
+            questions_override=questions, commit=False)
+        inverse = {identifier: key for key, identifier in aliases.items()}
+        entries = deepcopy(draft.snapshot['entries'])
+        for entry in entries:
+            entry['authoring_question_key'] = inverse.get(entry.get('question_id'))
+        snapshot.setdefault('domains', {})['answer'] = {
+            'draft_id': draft.id, 'revision': draft.revision, 'material_id': draft.material_id,
+            'source_sha256': draft.source_sha256, 'artifact_ref': draft.artifact_ref,
+            'question_regions': deepcopy(draft.snapshot.get('question_regions', [])), 'entries': entries}
+        origin = snapshot['source_provenance'].setdefault('authoring_origins', {})
+        tokens = deepcopy(origin.get('tokens') or source_tokens(s, test_id))
+        tokens['answer'] = source_tokens(s, test_id)['answer']
+        origin['tokens'] = tokens
+        result = s.execute(update(TestAuthoringRevision).where(TestAuthoringRevision.id == row.id,
+            TestAuthoringRevision.edit_version == v.expected_edit_version, TestAuthoringRevision.state == 'draft')
+            .values(snapshot=snapshot, snapshot_sha256=canonical_hash(snapshot),
+                edit_version=v.expected_edit_version+1, updated_at=now()))
+        if result.rowcount != 1:
+            s.rollback()
+            raise HTTPException(409, 'AUTHORING_SAVE_CONFLICT')
+        s.commit()
+        s.refresh(row)
+        return view(row)
+
+    def question_context(test_id, s, revision=None):
+        from ..authoring_question import AuthoringQuestionReview
+        from ..review_document import ReviewError
+        owned(test_id, s)
+        row = latest(s, test_id)
+        if not row or (revision is not None and revision != row.edit_version):
+            raise ReviewError('revision_conflict', 409)
+        service = AuthoringQuestionReview(s, question_root, row)
+        return service, row, service.bound['document']['id']
+
+    from .question_reviews import QuestionMathRequest, DiagramRequest, DiagramCropRequest
+    from fastapi import Request
+    from fastapi.responses import FileResponse
+
+    def question_error(exc):
+        raise HTTPException(getattr(exc, 'status', 422),
+            {'error': {'code': getattr(exc, 'code', str(exc))}}) from exc
+
+    @r.post('/tests/{test_id}/authoring/nodes/{node_key}/split-suggest')
+    def question_split(test_id: str, node_key: str, body: RubricSplitTool, s=Depends(db)):
+        from ..rubric_split import reconstruct_split
+        owned(test_id, s)
+        row = latest(s, test_id)
+        if not row or row.edit_version != body.expected_revision or row.state != 'draft':
+            raise HTTPException(409, 'AUTHORING_SAVE_CONFLICT')
+        node = next((n for n in row.snapshot['nodes'] if n['stable_key'] == node_key), None)
+        if not node or body.candidate_id != node_key:
+            raise HTTPException(404, 'AUTHORING_TARGET_MISSING')
+        if not callable(getattr(classifier, 'suggest_review_split', None)):
+            raise HTTPException(503, 'QUESTION_SPLIT_UNAVAILABLE')
+        try:
+            result = classifier.suggest_review_split(candidate_id=node_key, text=body.text,
+                question_label=node['label']['raw'], segment_ids=[], context_type='question')
+            contract = {k: result[k] for k in ('candidate_id', 'split', 'confidence', 'reason')}
+            contract['parts'] = [{k: p[k] for k in ('start', 'end')} for p in result['parts']]
+            return reconstruct_split(contract, node_key, body.text)
+        except Exception as exc:
+            raise HTTPException(503, 'QUESTION_SPLIT_UNAVAILABLE') from exc
+
+    @r.post('/tests/{test_id}/authoring/nodes/{node_key}/math-ocr')
+    def question_math(test_id: str, node_key: str, body: QuestionMathRequest, s=Depends(db)):
+        from ..question_math_source import question_math_source, compact_provenance
+        from ..source_math_ocr import SourceMathOCR, MathOCRError
+        from ..review_document import ReviewError
+        try:
+            service, _, rid = question_context(test_id, s, body.expected_revision)
+            path, segments, source, exclusions = question_math_source(service, rid, node_key,
+                None, body.expected_revision, body.expected_source)
+            if not getattr(classifier, 'manager', None):
+                raise MathOCRError('math_runtime_unavailable')
+            result = SourceMathOCR(classifier.manager, excluded_source_regions=exclusions).propose(
+                path, segments, body.text, alignment_mode='source_fragment')
+            result['source'] = source
+            if result['status'] in {'safe', 'ambiguous'}:
+                result['apply_provenance'] = compact_provenance(result)
+            return result
+        except MathOCRError as exc:
+            raise HTTPException(504 if 'timeout' in exc.code else 503,
+                {'error': {'code': exc.code}}) from exc
+        except (ReviewError, ValueError) as exc:
+            question_error(exc)
+
+    def diagram_context(test_id, node_key, s, revision=None):
+        from ..diagram_review import question_diagram_review
+        service, row, rid = question_context(test_id, s, revision)
+        return question_diagram_review(service, rid, node_key, row.edit_version), row
+
+    def diagram_view(engine, records, test_id, node_key):
+        for record in records:
+            if record.get('crop_sha256'):
+                engine.preview(record)
+                record['preview_url'] = (f'/api/v1/tests/{test_id}/authoring/nodes/{node_key}/diagrams/'
+                    f'{record["id"]}/crop?crop_sha={record["crop_sha256"]}')
+        return {'diagrams': records}
+
+    @r.get('/tests/{test_id}/authoring/nodes/{node_key}/diagrams')
+    @r.post('/tests/{test_id}/authoring/nodes/{node_key}/diagrams')
+    def question_diagrams(test_id: str, node_key: str, request: Request,
+        body: DiagramRequest | None = None, s=Depends(db)):
+        from ..review_document import ReviewError
+        try:
+            engine, row = diagram_context(test_id, node_key, s, body.expected_revision if body else None)
+            if request.method == 'POST' and body:
+                engine.discover(getattr(classifier, 'manager', None))
+            node = next(n for n in row.snapshot['nodes'] if n['stable_key'] == node_key)
+            return diagram_view(engine, engine.records(node.get('diagram_records', []), revision=row.edit_version), test_id, node_key)
+        except (ReviewError, ValueError) as exc:
+            question_error(exc)
+
+    @r.post('/tests/{test_id}/authoring/nodes/{node_key}/diagrams/{candidate_id}/crop-preview')
+    def question_crop_preview(test_id: str, node_key: str, candidate_id: str,
+        body: DiagramCropRequest, s=Depends(db)):
+        from ..review_document import ReviewError
+        try:
+            engine, _ = diagram_context(test_id, node_key, s, body.expected_revision)
+            record = engine.record(candidate_id, final_bbox=body.final_bbox, revision=body.expected_revision)
+            return diagram_view(engine, [record], test_id, node_key)['diagrams'][0]
+        except (ReviewError, ValueError) as exc:
+            question_error(exc)
+
+    @r.get('/tests/{test_id}/authoring/nodes/{node_key}/diagrams/{candidate_id}/crop')
+    def question_crop(test_id: str, node_key: str, candidate_id: str, crop_sha: str | None = None, s=Depends(db)):
+        from ..review_document import ReviewError
+        try:
+            engine, _ = diagram_context(test_id, node_key, s)
+            return FileResponse(engine.preview_path(candidate_id, crop_sha), media_type='image/png')
+        except (ReviewError, ValueError) as exc:
+            question_error(exc)
+
+    def answer_context(test_id, entry_id, s, revision=None, question_id=None):
+        from ..authoring_answers import AuthoringAnswers
+        owned(test_id, s)
+        row = latest(s, test_id)
+        if not row or (revision is not None and row.edit_version != revision):
+            raise HTTPException(409, {'error': {'code': 'revision_conflict'}})
+        if entry_id.startswith('formal-entry:'):
+            from types import SimpleNamespace
+            key = entry_id.removeprefix('formal-entry:')
+            if not any(n['stable_key'] == key for n in row.snapshot['nodes']):
+                raise HTTPException(404, 'AUTHORING_TARGET_MISSING')
+            criteria = row.snapshot['rubrics'].get(key, [])
+            entry = {'id': entry_id, 'authoring_question_key': key, 'rubric_edits': criteria,
+                'semantic_classification': {'segments': [
+                    {'id': c['id'], 'text': c['description'], 'source_text': c['description'],
+                     'category': 'rubric', 'confidence': 1} for c in criteria if not c.get('excluded')]}}
+            return SimpleNamespace(snapshot=row.snapshot), entry, row
+        context = AuthoringAnswers(s, answer_root, row)
+        return context, context.entry(entry_id, question_id), row
+
+    def answer_diagram_view(engine, records, test_id, entry_id, question_id, reuse=False):
+        from urllib.parse import urlencode
+        for record in records:
+            if record.get('crop_sha256'):
+                engine.preview(record)
+                params = {'crop_sha': record['crop_sha256'], 'scope': record.get('scope', 'exact')}
+                if question_id:
+                    params['question_id'] = question_id
+                if record.get('reuse_ref'):
+                    params['reuse_ref'] = record['reuse_ref']
+                record['preview_url'] = (f'/api/v1/tests/{test_id}/authoring/entries/{entry_id}/diagrams/'
+                    f'{record["id"]}/crop?{urlencode(params)}')
+        if reuse:
+            return {'diagrams': [], 'reusable_diagrams': records}
+        return {'diagrams': records, 'fallback': engine.fallback(), 'diagnostics': engine.diagnostics()}
+
+    from typing import Literal
+
+    @r.get('/tests/{test_id}/authoring/entries/{entry_id}/diagrams')
+    @r.post('/tests/{test_id}/authoring/entries/{entry_id}/diagrams')
+    def answer_diagrams(test_id: str, entry_id: str, request: Request,
+        body: DiagramRequest | None = None, question_id: str | None = None,
+        scope: Literal['exact', 'parent', 'pdf', 'reuse'] | None = None, s=Depends(db)):
+        try:
+            context, entry, row = answer_context(test_id, entry_id, s, body.expected_revision if body else None, question_id)
+            if not hasattr(context, 'diagrams'):
+                raise ValueError('authoring_answer_source_missing')
+            engine = context.diagrams(entry)
+            if scope == 'reuse':
+                if request.method != 'GET':
+                    raise ValueError('diagram_invalid_scope')
+                return answer_diagram_view(engine, engine.reuse().available(row.edit_version), test_id, entry_id, question_id, True)
+            if request.method == 'POST' and body:
+                engine.discover(getattr(classifier, 'manager', None), scope or 'exact')
+            return answer_diagram_view(engine, engine.records(entry.get('diagram_records', []),
+                revision=row.edit_version, scope=scope or ('exact' if request.method == 'POST' else None)), test_id, entry_id, question_id)
+        except ValueError as exc:
+            question_error(exc)
+
+    @r.post('/tests/{test_id}/authoring/entries/{entry_id}/diagrams/{candidate_id}/crop-preview')
+    def answer_crop_preview(test_id: str, entry_id: str, candidate_id: str, body: DiagramCropRequest,
+        question_id: str | None = None, scope: Literal['exact', 'parent', 'pdf', 'reuse'] = 'exact',
+        reuse_ref: str | None = None, s=Depends(db)):
+        try:
+            context, entry, row = answer_context(test_id, entry_id, s, body.expected_revision, question_id)
+            if not hasattr(context, 'diagrams'):
+                raise ValueError('authoring_answer_source_missing')
+            engine = context.diagrams(entry)
+            record = engine.record(candidate_id, final_bbox=body.final_bbox, revision=row.edit_version, scope=scope, reuse_ref=reuse_ref)
+            return answer_diagram_view(engine, [record], test_id, entry_id, question_id)['diagrams'][0]
+        except ValueError as exc:
+            question_error(exc)
+
+    @r.get('/tests/{test_id}/authoring/entries/{entry_id}/diagrams/{candidate_id}/crop')
+    def answer_crop(test_id: str, entry_id: str, candidate_id: str, crop_sha: str | None = None,
+        question_id: str | None = None, scope: Literal['exact', 'parent', 'pdf', 'reuse'] = 'exact',
+        reuse_ref: str | None = None, s=Depends(db)):
+        try:
+            context, entry, _ = answer_context(test_id, entry_id, s, question_id=question_id)
+            if not hasattr(context, 'diagrams'):
+                raise ValueError('authoring_answer_source_missing')
+            engine = context.diagrams(entry)
+            return FileResponse(engine.preview_path(candidate_id, crop_sha, scope=scope, reuse_ref=reuse_ref), media_type='image/png')
+        except ValueError as exc:
+            question_error(exc)
+
+    from .model_answer_imports import MathOCRRequest
+
+    @r.post('/tests/{test_id}/authoring/entries/{entry_id}/math-ocr')
+    def answer_math(test_id: str, entry_id: str, body: MathOCRRequest, s=Depends(db)):
+        from ..source_math_ocr import SourceMathOCR, MathOCRError
+        try:
+            context, entry, row = answer_context(test_id, entry_id, s, body.expected_revision)
+            if not hasattr(context, 'pdf'):
+                raise ValueError('authoring_answer_source_missing')
+            if not getattr(classifier, 'manager', None):
+                raise MathOCRError('math_runtime_unavailable')
+            result = SourceMathOCR(classifier.manager).propose(context.pdf,
+                entry.get('source', {}).get('segments', []), body.text)
+            result['source'] = {'draft_id': context.bound['draft_id'], 'entry_id': entry_id,
+                'material_id': context.bound['material_id'], 'source_sha256': context.bound['source_sha256'], 'revision': row.edit_version}
+            return result
+        except MathOCRError as exc:
+            raise HTTPException(504 if 'timeout' in exc.code else 503, {'error': {'code': exc.code}}) from exc
+        except ValueError as exc:
+            question_error(exc)
+
+    @r.post('/tests/{test_id}/authoring/entries/{entry_id}/rubric-split')
+    def rubric_split(test_id: str, entry_id: str, body: RubricSplitTool, s=Depends(db)):
+        from ..rubric_split import reconstruct_split
+        try:
+            context, entry, _ = answer_context(test_id, entry_id, s, body.expected_revision)
+            if body.offset is not None:
+                contract = {'candidate_id': body.candidate_id, 'split': True, 'confidence': 1,
+                    'reason': 'semantic_boundary', 'parts': [{'start': 0, 'end': body.offset},
+                        {'start': body.offset, 'end': len(body.text)}]}
+            else:
+                if not callable(getattr(classifier, 'suggest_rubric_split', None)):
+                    raise HTTPException(503, {'error': {'code': 'RUBRIC_SPLIT_UNAVAILABLE'}})
+                node = next((n for n in context.snapshot['nodes'] if n['stable_key'] == entry.get('authoring_question_key')), None)
+                result = classifier.suggest_rubric_split(candidate_id=body.candidate_id, text=body.text,
+                    question_label=node['label']['raw'] if node else '', segment_ids=[])
+                contract = {k: result[k] for k in ('candidate_id', 'split', 'confidence', 'reason')}
+                contract['parts'] = [{k: p[k] for k in ('start', 'end')} for p in result['parts']]
+            return reconstruct_split(contract, body.candidate_id, body.text)
+        except (ValueError, KeyError) as exc:
+            question_error(exc)
+
+    @r.post('/tests/{test_id}/authoring/entries/{entry_id}/rubric-consolidate')
+    def rubric_consolidate(test_id: str, entry_id: str, body: ConsolidationTool, s=Depends(db)):
+        from ..rubric_consolidation import consolidate_rubrics
+        import time
+        try:
+            _, entry, _ = answer_context(test_id, entry_id, s, body.expected_revision)
+            classification = entry.get('semantic_classification') or {}
+            if body.criteria is not None:
+                if len({c.id for c in body.criteria}) != len(body.criteria):
+                    raise ValueError('rubric_duplicate_candidate')
+                classification = {'segments': [{'id': c.id, 'text': f'{c.description} ({c.points:g}点)',
+                    'source_text': f'{c.description} ({c.points:g}点)', 'category': 'rubric', 'confidence': 1}
+                    for c in body.criteria]}
+            groups, method = consolidate_rubrics(classification, classifier, time.monotonic()+120)
+            return {'groups': groups, 'method': method}
+        except ValueError as exc:
+            question_error(exc)
+
     @r.get('/tests/{test_id}/authoring/review')
-    def review(test_id: str, s=Depends(db)):
+    @r.post('/tests/{test_id}/authoring/review')
+    def review(test_id: str, body: SaveAuthoring | None = None, s=Depends(db)):
         test = owned(test_id, s)
         row = latest(s, test_id)
         snapshot = row.snapshot if row else projection(s, test)
+        if body:
+            if not row or row.edit_version != body.expected_edit_version:
+                raise HTTPException(409, 'AUTHORING_SAVE_CONFLICT')
+            from ..test_authoring import validate_snapshot
+            try:
+                validate_materials(body.snapshot, s, test_id)
+                snapshot = validate_snapshot(body.snapshot, row.snapshot)
+                if snapshot.get('domains', {}).get('answer'):
+                    from ..authoring_answers import AuthoringAnswers
+                    AuthoringAnswers(s, answer_root, row, snapshot).validate()
+            except (AuthoringError, ValueError) as exc:
+                raise HTTPException(422, {'error': {'code': getattr(exc, 'code', 'AUTHORING_SOURCE_INVALID'),
+                    'message': '編集内容と出典の対応を確認してください。変更は保存されていません。'}}) from exc
         result = preflight(snapshot)
+        for problem in source_problems(row, s):
+            result['issues'].append({'question_key': None, 'section': 'source', 'message': '元PDFとの対応が無効になっています。資料と保存済みレビューを確認してください。', 'code': problem['code']})
         if row and row.baseline_sha256 != baseline_hash(projection(s, test)):
             result['issues'].append({'question_key': None, 'section': 'source',
                 'message': '元の正式内容が変更されています。出典付きレビューを確認してください。'})

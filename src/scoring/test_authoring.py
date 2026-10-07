@@ -78,7 +78,7 @@ def latest(session, test_id):
         .order_by(TestAuthoringRevision.revision.desc()))
 
 
-def create_draft(session, test, actor=None):
+def create_draft(session, test, actor=None, *, source_roots=None):
     session.scalar(select(Test).where(Test.id == test.id).with_for_update())
     if session.get(TestArchive, test.id):
         raise AuthoringError('TEST_ARCHIVED', 'このテストはアーカイブされています。')
@@ -87,6 +87,9 @@ def create_draft(session, test, actor=None):
         return prior
     baseline = projection(session, test)
     snapshot = deepcopy(prior.snapshot if prior else baseline)
+    if not prior and source_roots:
+        from .authoring_sources import source_projection
+        snapshot = source_projection(session, test, baseline, *source_roots)
     row = TestAuthoringRevision(id=str(uuid4()), test_id=test.id,
         revision=prior.revision+1 if prior else 1, edit_version=1, state='draft',
         snapshot=snapshot, snapshot_sha256=canonical_hash(snapshot),
@@ -105,6 +108,10 @@ def validate_snapshot(value, previous):
     # No client may manufacture/replace original evidence while editing text.
     if value['source_provenance'] != previous['source_provenance']:
         raise AuthoringError('AUTHORING_SOURCE_CHANGED', '元資料の出典情報は編集できません。')
+    value['source_provenance'] = deepcopy(previous['source_provenance'])
+    if 'domains' in previous:
+        from .authoring_sources import validate_domains
+        validate_domains(value, previous)
     if (not isinstance(value['metadata'], dict) or not isinstance(value['metadata'].get('name'), str)
             or not value['metadata']['name'].strip() or len(value['metadata']['name']) > 200
             or type(value['metadata'].get('total_points')) not in (int, float)
@@ -153,6 +160,10 @@ def validate_snapshot(value, previous):
                 or not all(isinstance(a, str) and len(a) <= 100000 for a in answer['alternatives'])
                 or not isinstance(answer.get('diagram_records'), list)):
             raise AuthoringError('AUTHORING_INVALID_TEXT', '模範解答本文を確認してください。')
+    if not value.get('domains', {}).get('answer'):
+        for key, answer in value['answers'].items():
+            if answer['diagram_records'] != previous.get('answers', {}).get(key, {}).get('diagram_records', []):
+                raise AuthoringError('AUTHORING_SOURCE_CHANGED', '図の変更には出典付きレビューを使用してください。')
     for criteria in value['rubrics'].values():
         if not isinstance(criteria, list) or len(criteria) > 500:
             raise AuthoringError('AUTHORING_INVALID_RUBRIC', '採点基準を確認してください。')
@@ -210,13 +221,50 @@ def preflight(snapshot):
             else:
                 total += points
             a = snapshot['answers'].get(key, {})
-            if not str(a.get('primary', '')).strip():
+            accepted = any(r.get('state') == 'accepted' and r.get('trust_state') != 'hard_invalid'
+                and (r.get('trust_state', 'trusted') == 'trusted' or r.get('teacher_confirmed'))
+                for r in a.get('diagram_records', []) if isinstance(r, dict))
+            if not str(a.get('primary', '')).strip() and not accepted:
                 issue(key, 'answer', '模範解答本文または検証済みの図を確認してください。')
             criteria = snapshot['rubrics'].get(key, [])
+            if any((c.get('points_conflict') and not c.get('points_confirmed')) or
+                    c.get('grouping_confirmed') is False for c in criteria):
+                issue(key, 'rubric', '採点基準の統合結果と配点を確認してください。')
             if not criteria or sum(c['points'] for c in criteria) != points:
                 issue(key, 'rubric', '採点基準の配点合計を確認してください。')
-        if n.get('review_flags'):
+        if n.get('review_flags') and not snapshot.get('domains', {}).get('question'):
             issue(key, 'question', '出典の未確認項目があります。')
+    question = snapshot.get('domains', {}).get('question')
+    if question:
+        from .review_document import _formula_confirmation_resolved
+        for n in nodes:
+            for rid, decision in n.get('formula_decisions', {}).items():
+                if not _formula_confirmation_resolved(decision):
+                    issue(n['stable_key'], 'question', '元資料と数式を確認してください。')
+            for rid, decision in n.get('figure_decisions', {}).items():
+                if decision.get('decision', 'unreviewed') == 'unreviewed':
+                    issue(n['stable_key'], 'question', '元資料の図を確認してください。')
+        states = question['snapshot'].get('warning_states', {})
+        for warning in question['document'].get('warnings', []):
+            if warning.get('blocking') and states.get(warning['id'], {}).get('state', 'unreviewed') == 'unreviewed':
+                owner = next((n['stable_key'] for n in nodes if n['stable_key'] == warning.get('owner') or
+                    n.get('source_draft_stable_key') == warning.get('owner')), None)
+                issue(owner, 'question', '元資料の確認事項を確認してください。')
+    for diagnostic in snapshot['source_provenance'].get('authoring_origins', {}).get('diagnostics', []):
+        issue(None, 'source', '保存済みレビューの元資料を確認できません。出典付きレビューを確認してください。')
+    for entry in snapshot.get('domains', {}).get('answer', {}).get('entries', []):
+        if entry.get('disposition') not in {'ignored', 'excluded'} and not entry.get('authoring_question_key'):
+            issue(None, 'answer', '設問未割当の解答・採点基準候補があります。対応先を確認してください。')
+    entries = snapshot.get('domains', {}).get('answer', {}).get('entries', [])
+    for key in {e.get('authoring_question_key') for e in entries} - {None}:
+        current = [e for e in entries if e.get('authoring_question_key') == key and
+            e.get('disposition', 'include') == 'include']
+        if sum(e.get('answer_kind', 'primary') == 'primary' for e in current) > 1:
+            issue(key, 'answer', '主な模範解答を1件にしてください。別解は別解として指定してください。')
+    for entry in entries:
+        classification = entry.get('semantic_classification') or {}
+        if entry.get('disposition', 'include') == 'include' and classification.get('status') == 'needs_teacher_review':
+            issue(entry.get('authoring_question_key'), 'answer', '解答候補の分類を確認してください。')
     if total != snapshot['metadata'].get('total_points'):
         issue(None, 'metadata', '設問の合計点とテストの合計点が一致していません。')
     # Fail closed rather than pretending a JSON copy is a grading snapshot.

@@ -23,8 +23,8 @@ function errorMessage(e: unknown) {
   return "図の出典または範囲を確認できません。範囲を見直すか、再度図候補を確認してください。";
 }
 
-export function DiagramReview({path, revision, records = [], disabled, sourceStale, targetQuestionId, disabledReason, label, onChange, onSelect}: {
-  path: string; revision: number; records?: DiagramRecord[]; disabled: boolean; sourceStale?: boolean; targetQuestionId?: string; disabledReason?: string; label: string;
+export function DiagramReview({path, revision, records = [], disabled, sourceStale, targetQuestionId, assignmentQuestionId, disabledReason, label, onChange, onSelect}: {
+  path: string; revision: number; records?: DiagramRecord[]; disabled: boolean; sourceStale?: boolean; targetQuestionId?: string; assignmentQuestionId?: string; disabledReason?: string; label: string;
   onChange: (records: DiagramRecord[]) => void; onSelect: (selection: DiagramSelection) => void;
 }) {
   const requestPath = (suffix = "", selectedScope?: DiagramScope, reuseRef?: string) => {
@@ -101,7 +101,7 @@ export function DiagramReview({path, revision, records = [], disabled, sourceSta
   }
   function decide(candidate: DiagramRecord, state: DiagramRecord["state"]) {
     if (disabled || sourceStale || (state === "accepted" && trust(candidate) === "hard_invalid")
-      || (targetQuestionId && candidate.assigned_question_id !== targetQuestionId)) return;
+      || (targetQuestionId && candidate.assigned_question_id !== (assignmentQuestionId || targetQuestionId))) return;
     ++requestEpoch.current;
     const confirmed = state === "accepted" && trust(candidate) === "teacher_confirmable";
     const record: DiagramRecord = {...candidate, state, teacher_confirmed: confirmed,

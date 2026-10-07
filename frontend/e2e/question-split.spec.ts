@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { clearTextSourceMapping, mapCandidateToSources, suggestSubquestions } from "../lib/questionSplit";
+import { clearTextSourceMapping, mapCandidateToSources, suggestSubquestions, splitQuestionAtCaret } from "../lib/questionSplit";
 import { mergeContiguousContent, mergeContiguousText } from "../lib/reviewTextMerge";
 import { formulaIsConfirmed, setFormulaConfirmation } from "../lib/formulaConfirmation";
 import type { ContentItem, ReviewNode } from "../types/reviews";
@@ -294,4 +294,13 @@ test("multi-text merge keeps every source anchor and rejects gaps or non-text it
   });
   expect(mergeContiguousText(items, [1, 4])).toBeNull();
   expect(mergeContiguousText(items, [2, 3])).toBeNull();
+});
+
+
+test("manual caret split keeps ordered repeated-token native ranges",()=>{
+  const original=node("24\n24\n𝑇𝑃");
+  const proposal=splitQuestionAtCaret(original,3,[{index:0,start:0,end:original.body_text.length,text:original.body_text}]);
+  expect(proposal?.children).toHaveLength(2);
+  expect(proposal?.children[0].items[0].source_slice).toEqual([0,3,8]);
+  expect(proposal?.children[1].items[0].source_slice).toEqual([3,8,8]);
 });

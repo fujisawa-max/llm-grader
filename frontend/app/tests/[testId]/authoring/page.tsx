@@ -9,10 +9,17 @@ import {LatexNormalizationControl} from "@/components/LatexNormalizationControl"
 import {LoadingState, ErrorState} from "@/components/ui";
 import {testAuthoring, type AuthoringRevision, type AuthoringSnapshot, type AuthoringIssue} from "@/lib/api/testAuthoring";
 import {testData} from "@/lib/api/domain";
-import {apiFetch} from "@/lib/api/client";
+import {apiFetch, json} from "@/lib/api/client";
 import {canonicalQuestionPath} from "@/lib/canonicalQuestionPath";
 import {localId} from "@/lib/localId";
-import {editQuestionContent} from "@/lib/questionContent";
+import {editQuestionContent, questionContent} from "@/lib/questionContent";
+import {DiagramReview, type DiagramSelection} from "@/components/reviews/DiagramReview";
+import {suggestSubquestions, splitQuestionAtCaret, splitQuestionRanges, mapCandidateToSources, type SplitProposal} from "@/lib/questionSplit";
+import {applyQuestionSplit} from "@/lib/questionSplitApply";
+import {AuthoringCandidates, type AuthoringEntry} from "@/components/reviews/AuthoringCandidates";
+import {rubricRows} from "@/lib/rubricEditing";
+import {WarningPanel} from "@/components/reviews/WarningPanel";
+import {EvidencePanel} from "@/components/reviews/EvidencePanel";
 import type {ReviewNode} from "@/types/reviews";
 import type {Material} from "@/types/domain";
 
@@ -27,9 +34,16 @@ function newNode(order: number): ReviewNode {
 }
 export default function TestAuthoringPage() {
   const id = String(useParams().testId);
+  const [sourceProblems,setSourceProblems]=useState<{domain:string;code:string}[]>([]);
+  const [externalChange,setExternalChange]=useState(false);
+  const [continueExternal,setContinueExternal]=useState(false);
+  const [diagramSelection,setDiagramSelection]=useState<DiagramSelection>();
+  const [splitProposal,setSplitProposal]=useState<SplitProposal|null>(null);
+  const [regionId,setRegionId]=useState("");
   const [revision,setRevision]=useState<AuthoringRevision|null>(null);
   const [snapshot,setSnapshot]=useState<AuthoringSnapshot>();
   const [dirty,setDirty]=useState(false);
+  const [dirtyDomains,setDirtyDomains]=useState<Record<string,boolean>>({});
   const [buffers,setBuffers]=useState<Record<string,string>>({});
   const [selected,setSelected]=useState("");
   const [materials,setMaterials]=useState<Material[]>([]),[materialId,setMaterialId]=useState("");
@@ -38,6 +52,8 @@ export default function TestAuthoringPage() {
   const [issues,setIssues]=useState<AuthoringIssue[]>([]);
   const [saving,setSaving]=useState(false);
   const [busy,setBusy]=useState(false),[error,setError]=useState(""),[notice,setNotice]=useState("");
+  const questionCaret=useRef(0);
+  const questionToolScope=useRef("");questionToolScope.current=`${selected}:${revision?.edit_version}:${buffers[selected]}`;
   const fileInput=useRef<HTMLInputElement>(null);
   const readonly=!revision || revision.state==="confirmed";
   useEffect(()=>{
@@ -45,8 +61,8 @@ export default function TestAuthoringPage() {
     void Promise.all([testAuthoring.get(id),testData.materials(id)]).then(([data,files])=>{
       if(!active)return;
       const value=data.revision?.snapshot||data.legacy;
-      setRevision(data.revision);setSnapshot(value);setDirty(false);
-      setBuffers(Object.fromEntries(value.nodes.map(n=>[n.stable_key,n.body_text])));
+      setRevision(data.revision);setSnapshot(value);setDirty(false);setDirtyDomains({});setExternalChange(data.external_source_change);setSourceProblems(data.source_problems||[]);
+      setBuffers(Object.fromEntries(value.nodes.map(n=>[n.stable_key,questionContent(n,value.domains?.question?.document.regions||[]).text])));
       setSelected(value.nodes[0]?.stable_key||"all");
       setMaterials(files.filter(m=>m.material_type!=="student_answer_source"));
       setMaterialId(files.find(m=>m.material_type==="question_sheet")?.id||files[0]?.id||"");
@@ -60,33 +76,105 @@ export default function TestAuthoringPage() {
     .flatMap(n=>[n,...orderedNodes(n.stable_key,depth+1)]);
   const node=nodes.find(n=>n.stable_key===selected);
   const pathFor=(key:string)=>canonicalQuestionPath(key,nodes.map(n=>({key:n.stable_key,parentKey:n.parent_key,label:n.label.raw})));
-  function change(value:AuthoringSnapshot){setSnapshot(value);setDirty(true);}
-  function updateNode(value:ReviewNode){setDirty(true);setSnapshot(s=>s?{...s,nodes:s.nodes.map(n=>n.stable_key===value.stable_key?value:n)}:s);}
+  function change(value:AuthoringSnapshot,domain?:string){setSnapshot(value);setDirty(true);setDirtyDomains(d=>({...d,...(domain?{[domain]:true}:{question:value.nodes!==snapshot?.nodes||value.domains?.question!==snapshot?.domains?.question||d.question,answer:value.answers!==snapshot?.answers||d.answer,rubric:value.rubrics!==snapshot?.rubrics||d.rubric})}));}
+  function updateNode(value:ReviewNode){setDirty(true);setDirtyDomains(d=>({...d,question:true}));setSnapshot(s=>s?{...s,nodes:s.nodes.map(n=>n.stable_key===value.stable_key?value:n)}:s);}
+  function moveNode(value:ReviewNode,direction:number){
+    if(!snapshot)return;
+    const siblings=nodes.filter(n=>n.parent_key===value.parent_key).sort((a,b)=>a.sort_order-b.sort_order||a.stable_key.localeCompare(b.stable_key));
+    const index=siblings.findIndex(n=>n.stable_key===value.stable_key),other=siblings[index+direction];
+    if(!other)return;
+    [siblings[index],siblings[index+direction]]=[other,value];
+    const orders=new Map(siblings.map((n,i)=>[n.stable_key,i]));
+    change({...snapshot,nodes:nodes.map(n=>orders.has(n.stable_key)?{...n,sort_order:orders.get(n.stable_key)!}:n)});
+  }
+  function reparentNode(value:ReviewNode,parent:string|null){
+    const order=Math.max(-1,...nodes.filter(n=>n.parent_key===parent&&n.stable_key!==value.stable_key).map(n=>n.sort_order))+1;
+    updateNode({...value,parent_key:parent,sort_order:order,node_type:parent?"subquestion":"major_question"});
+  }
   function navigate(issue:AuthoringIssue){
-    if(!issue.question_key)return;
-    setSelected(issue.question_key);setVisible(v=>({...v,[issue.section]:true}));
+    if(!issue.question_key&&issue.section!=="answer")return;
+    setSelected(issue.question_key||"unassigned");setDiagramSelection(undefined);setRegionId("");setVisible(v=>({...v,[issue.section]:true}));
     requestAnimationFrame(()=>requestAnimationFrame(()=>{
-      const target=document.getElementById(`authoring-${issue.section}`);
-      target?.scrollIntoView({block:"center"});target?.focus({preventScroll:true});
+      const marker=document.getElementById(`authoring-${issue.section}`);
+      const container=marker?.tagName==="SPAN"?marker.parentElement:marker;
+      const target=issue.section==="rubric"?container?.querySelector<HTMLElement>('[aria-label="採点基準候補"]')||container:container;
+      target?.scrollIntoView({block:"center"});
+      const control=target?.querySelector<HTMLElement>('textarea,input,select,button');
+      (control||marker)?.focus({preventScroll:true});
     }));
   }
+  async function suggestQuestionSplit(){
+    if(!node||!snapshot||!revision)return;
+    const scope=questionToolScope.current,text=buffers[selected]??questionContent(node,regions).text;
+    const reconciled=editQuestionContent(node,regions,text);
+    if(!reconciled){setError("元資料との対応を確認してください。");return;}
+    setBusy(true);setError("");
+    try{
+      const result=await apiFetch<{split:boolean;parts:{start:number;end:number}[]}>(`/tests/${id}/authoring/nodes/${selected}/split-suggest`,json({expected_revision:revision.edit_version,candidate_id:selected,text}));
+      if(questionToolScope.current!==scope)return;
+      if(!result.split){setNotice("分割が必要ないという提案です。必要ならカーソル位置を指定してください。");return;}
+      const codepoints=Array.from(text),toOffset=(n:number)=>codepoints.slice(0,n).join("").length;
+      const boundaries=[0,...result.parts.map(p=>toOffset(p.end))];
+      const proposal=splitQuestionRanges(reconciled,boundaries,questionContent(reconciled,regions).spans,questionDomain?.document.automatic_nodes.find(n=>n.stable_key===node.source_draft_stable_key)?.ordered_content);
+      if(!proposal){setError("分割案は元資料の範囲を安全に分けられません。カーソル位置や対応する読み取り項目を確認してください。");return;}
+      updateNode(reconciled);setSplitProposal(proposal);
+    }catch(e){if(questionToolScope.current===scope)setError(e instanceof Error?e.message:"分割案を取得できませんでした。");}finally{setBusy(false);}
+  }
+  async function analyzeSource(domain:"question"|"answer"){
+    if(!revision||!materialId||dirty){setError("資料を選び、現在の変更を保存してから解析してください。");return;}
+    if(!window.confirm("この資料を解析して保存済みの編集状態へ取り込みます。対象の解答・採点基準または問題の編集状態が置き換わります。続行しますか？"))return;
+    setBusy(true);setError("");
+    try{
+      let row:AuthoringRevision;
+      if(domain==="answer")row=await testAuthoring.analyzeAnswer(id,materialId,revision.edit_version);
+      else{
+        const response=await fetch(`/api/v1/tests/${id}/materials/${materialId}/file`,{credentials:"include"});
+        if(!response.ok)throw new Error("元PDFを取得できませんでした。");
+        const extraction=await apiFetch<{id:string}>(`/tests/${id}/question-materials`,{method:"POST",headers:{"Content-Type":"application/pdf","X-Filename":materials.find(m=>m.id===materialId)?.original_filename||"question.pdf"},body:await response.blob()});
+        const draft=await apiFetch<{id:string}>(`/question-imports/${extraction.id}/draft`,json({}));
+        await apiFetch(`/question-import-drafts/${draft.id}/reviews`,json({}));
+        row=await testAuthoring.importSources(id,revision.edit_version);
+      }
+      setRevision(row);setSnapshot(row.snapshot);setDirty(false);setDirtyDomains({});setExternalChange(false);setContinueExternal(false);
+      setBuffers(Object.fromEntries(row.snapshot.nodes.map(n=>[n.stable_key,questionContent(n,row.snapshot.domains?.question?.document.regions||[]).text])));
+      setSelected(current=>row.snapshot.nodes.some(n=>n.stable_key===current)?current:row.snapshot.nodes[0]?.stable_key||"all");
+      setNotice("解析結果を編集用下書きに取り込みました。正式内容は変更していません。");
+    }catch(e){setError(e instanceof Error?e.message:"資料を解析できませんでした。");}finally{setBusy(false);}
+  }
   async function begin(){setBusy(true);setError("");try{
-    const row=await testAuthoring.begin(id);setRevision(row);setSnapshot(row.snapshot);setDirty(false);
-    setBuffers(Object.fromEntries(row.snapshot.nodes.map(n=>[n.stable_key,n.body_text])));
+    const row=await testAuthoring.begin(id);setRevision(row);setSnapshot(row.snapshot);setDirty(false);setDirtyDomains({});
+    setSelected(current=>row.snapshot.nodes.some(n=>n.stable_key===current)?current:row.snapshot.nodes[0]?.stable_key||"all");
+    setBuffers(Object.fromEntries(row.snapshot.nodes.map(n=>[n.stable_key,questionContent(n,row.snapshot.domains?.question?.document.regions||[]).text])));
     setNotice("下書きを開きました。保存しても正式な問題・解答・採点基準は変更されません。");
   }catch(e){setError(e instanceof Error?e.message:"下書きを開けませんでした。");}finally{setBusy(false);}}
+  async function importSources(){if(!revision)return;
+    if(!window.confirm("統合下書きを最新の保存済みレビューに置き換えます。現在の下書き編集は失われます。取り込みますか？"))return;
+    setBusy(true);setError("");try{
+      const row=await testAuthoring.importSources(id,revision.edit_version);setRevision(row);setSnapshot(row.snapshot);setDirty(false);setDirtyDomains({});
+      setBuffers(Object.fromEntries(row.snapshot.nodes.map(n=>[n.stable_key,questionContent(n,row.snapshot.domains?.question?.document.regions||[]).text])));
+      setSelected(row.snapshot.nodes[0]?.stable_key||"all");setExternalChange(false);setContinueExternal(false);
+    }catch(e){setError(e instanceof Error?e.message:"取り込めませんでした。");}finally{setBusy(false);}
+  }
   async function save(){if(!snapshot||!revision)return;setBusy(true);setSaving(true);setError("");try{
     const value={...snapshot,nodes:snapshot.nodes.map(n=>{
       const text=buffers[n.stable_key]??n.body_text;
-      const reconciled=editQuestionContent(n,[],text);
+      const reconciled=editQuestionContent(n,snapshot.domains?.question?.document.regions||[],text);
       if(!reconciled)throw new Error("問題文と出典の対応を確認してください。");
       return {...reconciled,body_text:text};
     })};
-    const row=await testAuthoring.save(id,value,revision.edit_version);
-    setRevision(row);setSnapshot(row.snapshot);setDirty(false);setNotice("下書きを保存しました。");
+    const row=await testAuthoring.save(id,value,revision.edit_version,continueExternal);
+    setRevision(row);setSnapshot(row.snapshot);setDirty(false);setDirtyDomains({});setNotice("下書きを保存しました。");
   }catch(e){setError(e instanceof Error?e.message:"保存できませんでした。");}finally{setBusy(false);setSaving(false);}}
-  async function finalReview(){if(dirty){setNotice("変更を保存してからテスト全体を確認してください。");return;}
-    setBusy(true);try{setIssues((await testAuthoring.review(id)).issues);setSelected("all");}
+  async function finalReview(){
+    setBusy(true);try{
+      if(dirty&&snapshot&&revision){
+        const value={...snapshot,nodes:snapshot.nodes.map(n=>{
+          const text=buffers[n.stable_key]??questionContent(n,regions).text,next=editQuestionContent(n,regions,text);
+          if(!next)throw new Error("問題文と元資料の対応を確認してください。");return {...next,body_text:text};
+        })};setIssues((await testAuthoring.reviewLocal(id,value,revision.edit_version)).issues);
+      }else setIssues((await testAuthoring.review(id)).issues);
+      setSelected("all");
+    }
     catch(e){setError(e instanceof Error?e.message:"確認できませんでした。");}finally{setBusy(false);}}
   async function upload(files:FileList|null){if(!files||!snapshot)return;setBusy(true);setError("");try{
     const uploaded:Material[]=[];
@@ -101,52 +189,130 @@ export default function TestAuthoringPage() {
   }catch(e){setError(e instanceof Error?e.message:"資料を追加できませんでした。");}finally{setBusy(false);if(fileInput.current)fileInput.current.value="";}}
   if(error&&!snapshot)return <ErrorState message={error}/>;
   if(!snapshot)return <LoadingState/>;
+  const questionDomain=snapshot.domains?.question;
+  const regions=questionDomain?.document.regions||[];
+  const activeRegions=regions.filter(r=>node?.ordered_content.some(item=>"region_id" in item&&item.region_id===r.region_id)||!!node?.formula_decisions[r.region_id]||!!node?.figure_decisions[r.region_id]);
   const answer=snapshot.answers[selected]||{primary:"",alternatives:[],diagram_records:[]};
   const criteria=snapshot.rubrics[selected]||[];
+  const hasRubricState=(entry:AuthoringEntry)=>entry.rubric_edits!==undefined||entry.semantic_classification?.segments.some(s=>s.category==="rubric");
+  const formalRubricFallback=!!criteria.length&&!snapshot.domains?.answer?.entries.some(e=>e.authoring_question_key===selected&&hasRubricState(e));
+  const viewed=materials.find(m=>m.id===materialId);
+  let mappedLocation:{id:string;page:number;bbox?:number[]}|undefined;
+  if(node&&viewed?.sha256===questionDomain?.document.source_pdf_sha256){
+    const selectedRegion=regions.find(r=>r.region_id===regionId&&activeRegions.includes(r));
+    const source=selectedRegion||questionDomain?.document.source_regions[node.stable_key]?.[0];
+    if(source)mappedLocation={id:`${selected}:${regionId}`,page:source.page_index+1,bbox:source.bbox};
+  }else if(node&&materialId===snapshot.domains?.answer?.material_id){
+    const sourceId=snapshot.source_provenance.authoring_origins?.identities[selected]?.formal_question_id||selected;
+    const source=snapshot.domains.answer.question_regions.find(r=>r.question_id===sourceId);
+    if(source)mappedLocation={id:`${selected}:${materialId}`,page:source.page_index+1,bbox:[source.left,source.top,source.right,source.bottom]};
+  }
   return <><h1>{snapshot.metadata.name}</h1><p>問題・解答・採点基準を下書きで編集します。既存の正式内容は保持されます。</p>
+    {externalChange&&<section role="alert" className="panel"><p>外部の保存済みレビューが更新されています。統合下書きは上書きされていません。</p>
+      <button disabled={busy} onClick={()=>{setContinueExternal(true);setNotice("現在の統合下書きを継続します。外部レビューの更新は取り込みません。");}}>現在の下書きを継続</button>
+      <button disabled={busy} onClick={importSources}>最新レビューを取り込む</button></section>}
     {error&&<p role="alert" className="error">{error}</p>}{notice&&<p role="status">{notice}</p>}
+    {sourceProblems.length>0&&<p role="alert">元PDFとの対応が無効になっています。資料と保存済みレビューを確認し、必要なら明示的に再解析してください。</p>}
     <ReviewWorkspaceLayout actions={<div className="review-toolbar" aria-busy={busy}>
       {readonly?<button className="button" disabled={busy} onClick={begin}>編集用の下書きを作成</button>:<button className="button" disabled={busy||!dirty} onClick={save}>保存</button>}
+      {!readonly&&<button disabled={busy} onClick={importSources}>保存済みレビューを取り込む</button>}
       <button className="button secondary" disabled={busy} onClick={finalReview}>最終確認へ</button><Link className="button secondary" href={`/tests/${id}`}>戻る</Link>
-      {dirty&&<span role="status">未保存の変更があります</span>}
+      {dirty&&<><span role="status">未保存の変更があります</span><span className="muted">{Object.entries(dirtyDomains).filter(([,v])=>v).map(([k])=>({question:"問題",answer:"解答",rubric:"採点基準",diagram:"図"}[k])).filter(Boolean).join("・")}</span></>}
     </div>} source={<>
       <label>利用資料<select aria-label="利用資料" value={materialId} onChange={e=>setMaterialId(e.target.value)}>
         <option value="">資料を選択</option>{materials.map(m=><option key={m.id} value={m.id}>{roles[m.material_type]||"資料"} — {m.original_filename}</option>)}
       </select></label>
-      {materialId&&<SourcePdfPreview key={materialId} testId={id} material={materials.find(m=>m.id===materialId)} label="利用資料PDF" inline paneZoom/>}
+      {materialId&&<SourcePdfPreview key={materialId} testId={id} material={materials.find(m=>m.id===materialId)} label="利用資料PDF" inline paneZoom diagramSelection={diagramSelection?.record.material_id===materialId?diagramSelection:undefined} targetLocation={diagramSelection?.record.material_id===materialId?{id:diagramSelection.record.id,page:diagramSelection.record.page_index+1,bbox:diagramSelection.record.final_bbox||diagramSelection.record.automatic_bbox}:mappedLocation}/>}
     </>} selector={<div className="review-toolbar">
-      <label>対象設問<select aria-label="対象設問" value={selected} onChange={e=>{if(e.target.value==="all")void finalReview();else setSelected(e.target.value);}}>
-        {orderedNodes().map(n=><option key={n.stable_key} value={n.stable_key}>{pathFor(n.stable_key)}</option>)}<option value="all">テスト全体確認</option>
+      <label>対象設問<select aria-label="対象設問" value={selected} onChange={e=>{if(e.target.value==="all")void finalReview();else {setSelected(e.target.value);setDiagramSelection(undefined);setRegionId("");}}}>
+        {orderedNodes().map(n=><option key={n.stable_key} value={n.stable_key}>{pathFor(n.stable_key)}</option>)}{snapshot.domains?.answer?.entries.some(e=>!e.authoring_question_key)&&<option value="unassigned">設問未割当の候補</option>}<option value="all">テスト全体確認</option>
       </select></label><span>表示</span>{([['question','問題'],['answer','解答'],['rubric','採点基準']] as const).map(([key,label])=><label key={key}><input type="checkbox" checked={visible[key]} onChange={e=>{const next={...visible,[key]:e.target.checked};setVisible(next);localStorage.setItem("test-authoring-visible",JSON.stringify(next));}}/>{label}</label>)}
     </div>}>
       <details><summary>試験資料</summary><p>資料を追加してから編集できます。差し替え用資料も追加として保持します。</p>
         <label>資料の種類<select aria-label="資料の種類" value={role} onChange={e=>setRole(e.target.value)}>{Object.entries(roles).map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label>
         <input ref={fileInput} aria-label="資料を追加" type="file" accept="application/pdf,.pdf" multiple disabled={readonly||busy} onChange={e=>void upload(e.target.files)}/>
+        <button disabled={readonly||busy||dirty||!materialId} onClick={()=>void analyzeSource("question")}>選択資料から問題を解析</button>
+        <button disabled={readonly||busy||dirty||!materialId} onClick={()=>void analyzeSource("answer")}>選択資料から解答・採点基準を解析</button>
         <p><Link href={`/tests/${id}?section=questions`}>既存の資料解析・出典付きレビューを開く</Link></p>
       </details>
       {selected==="all"?<section aria-label="テスト全体確認"><h2>テスト全体確認</h2>
         <label>テスト名<input disabled={readonly||saving} value={snapshot.metadata.name} onChange={e=>change({...snapshot,metadata:{...snapshot.metadata,name:e.target.value}})}/></label>
         <label>合計点<input type="number" disabled={readonly||saving} value={snapshot.metadata.total_points} onChange={e=>change({...snapshot,metadata:{...snapshot.metadata,total_points:Number(e.target.value)}})}/></label>
         <ol>{nodes.filter(n=>n.included).map(n=><li key={n.stable_key}>{pathFor(n.stable_key)} — {n.score_points??"未設定"}点</li>)}</ol>
-        <ul>{issues.map((issue,index)=><li key={index}>{issue.question_key?<button onClick={()=>navigate(issue)}>{pathFor(issue.question_key)} — {issue.message}</button>:issue.message}</li>)}</ul>
+        <ul>{issues.map((issue,index)=><li key={index}>{issue.question_key||issue.section==="answer"?<button onClick={()=>navigate(issue)}>{issue.question_key?pathFor(issue.question_key):"設問未割当"} — {issue.message}</button>:issue.message}</li>)}</ul>
         <button disabled title="この画面からの試験内容確定は現在利用できません。">試験内容を確定</button>
-      </section>:node&&<>
-        {visible.question&&<section id="authoring-question" tabIndex={-1} aria-label="問題"><h2>問題</h2>
-          <NodeEditor key={node.stable_key} node={node} nodes={nodes} regions={[]} readonly={readonly||saving}
-            content={buffers[selected]??node.body_text} contentChanged={(buffers[selected]??node.body_text)!==node.body_text}
-            onContentChange={text=>{setDirty(true);setBuffers(current=>({...current,[selected]:text}));}}
-            onConfirmContent={confirm=>updateNode(confirm(node))} onChange={updateNode}
-            onParent={parent=>updateNode({...node,parent_key:parent})} onMove={direction=>updateNode({...node,sort_order:node.sort_order+direction})} onRegion={()=>{}}/>
+      </section>:(node||selected==="unassigned")&&<>
+        {visible.question&&node&&<section id="authoring-question" tabIndex={-1} aria-label="問題"><h2>問題</h2>
+          <NodeEditor key={node.stable_key} node={node} nodes={nodes} regions={activeRegions} readonly={readonly||saving}
+            content={buffers[selected]??node.body_text} contentChanged={(buffers[selected]??node.body_text)!==questionContent(node,regions).text}
+            mathContext={questionDomain&&revision?{reviewId:questionDomain.document.id,revision:revision.edit_version,savedNode:revision.snapshot.nodes.find(n=>n.stable_key===selected),authoringTestId:id}:undefined}
+            activeRegionId={regionId} renderEvidence={questionDomain?(rid)=><EvidencePanel id={questionDomain.document.id} regionId={rid} ownerLabel={pathFor(selected)} readonly={readonly||saving}
+              decision={(regions.find(r=>r.region_id===rid)?.region_type==="formula"?node.formula_decisions:node.figure_decisions)[rid]||{decision:"unreviewed"}}
+              onDecision={d=>{const field=regions.find(r=>r.region_id===rid)?.region_type==="formula"?"formula_decisions":"figure_decisions";updateNode({...node,[field]:{...node[field],[rid]:d}});}}/>:undefined}
+            onCaret={offset=>{questionCaret.current=offset;}} onContentChange={(text,proposal)=>{setSplitProposal(null);setDirty(true);setDirtyDomains(d=>({...d,question:true}));setBuffers(current=>({...current,[selected]:text}));if(proposal?.apply_provenance)updateNode({...node,math_ocr_edits:[...(node.math_ocr_edits||[]),proposal.apply_provenance].slice(-16)});}}
+            onConfirmContent={confirm=>{const next=editQuestionContent(node,regions,buffers[selected]??node.body_text);if(next)updateNode(confirm(next));else setError("問題文と元資料の対応を確認してください。");}} onChange={updateNode}
+            onParent={parent=>reparentNode(node,parent)} onMove={direction=>moveNode(node,direction)} onRegion={setRegionId}/>
+          <button disabled={readonly||saving} onClick={()=>{
+            const next=editQuestionContent(node,regions,buffers[selected]??node.body_text);
+            if(!next){setError("元資料との対応を保った分割案を作成できません。");return;}
+            updateNode(next);const proposal=suggestSubquestions(next,questionDomain?.document.automatic_nodes.find(n=>n.stable_key===node.source_draft_stable_key));
+            setSplitProposal(proposal);if(!proposal)setNotice("小問候補を検出できませんでした。必要なら設問を追加してください。");
+          }}>小問の分割案を作成</button>
+          <button disabled={readonly||saving||busy} onClick={()=>void suggestQuestionSplit()}>AIで小問の分割案を作成</button>
+          <button disabled={readonly||saving} onClick={()=>{
+            const next=editQuestionContent(node,regions,buffers[selected]??node.body_text);
+            const proposal=next&&splitQuestionAtCaret(next,questionCaret.current,questionContent(next,regions).spans,questionDomain?.document.automatic_nodes.find(n=>n.stable_key===node.source_draft_stable_key)?.ordered_content);
+            if(!proposal){setError("この位置は元資料の範囲を安全に分割できません。数式や図の境界を避け、分割位置を確認してください。");return;}
+            updateNode(next!);setSplitProposal(proposal);
+          }}>問題文のカーソル位置で分割</button>
+          {splitProposal&&<section aria-label="小問の分割案"><h3>小問の分割案</h3>
+            {splitProposal.children.map((child,index)=><div key={index}><strong>{child.label}</strong><pre>{questionContent({...node,ordered_content:child.items},regions).text}</pre><p>{child.mappingStatus==="automatic"?"元資料との対応を確認済み":"元資料との対応を確認できません。対応する読み取り項目を指定してください。"}</p>
+              {child.mappingStatus==="manual_required"&&<fieldset><legend>対応する読み取り項目</legend>{splitProposal.sourceOptions.map(option=><label key={option.id}><input type="checkbox" checked={child.selectedSourceIds.includes(option.id)} onChange={e=>setSplitProposal({...splitProposal,children:splitProposal.children.map((c,i)=>i===index?{...c,selectedSourceIds:e.target.checked?[...c.selectedSourceIds,option.id]:c.selectedSourceIds.filter(id=>id!==option.id)}:c)})}/>{option.label} — {option.excerpt}</label>)}<button onClick={()=>{const items=mapCandidateToSources(child.items,child.selectedSourceIds,splitProposal.sourceOptions);if(items)setSplitProposal({...splitProposal,children:splitProposal.children.map((c,i)=>i===index?{...c,items,mappingStatus:"manual_mapped",included:true}:c)});}}>この対応を使用</button></fieldset>}
+              <label>小問名<input value={child.label} onChange={e=>setSplitProposal({...splitProposal,children:splitProposal.children.map((c,i)=>i===index?{...c,label:e.target.value}:c)})}/></label>
+            </div>)}
+            <button disabled={splitProposal.children.some(c=>c.included&&(!["automatic","manual_mapped"].includes(c.mappingStatus)||!c.contentValid))} onClick={()=>{
+              const result=applyQuestionSplit(node,splitProposal,()=>`teacher-${localId()}`);if(!result)return;
+              const orderOffset=Math.max(-1,...snapshot.nodes.filter(n=>n.parent_key===node.stable_key).map(n=>n.sort_order))+1;
+              result.children.forEach(n=>{n.sort_order+=orderOffset;});
+              change({...snapshot,nodes:[...snapshot.nodes.map(n=>n.stable_key===node.stable_key?result.updated:n),...result.children]});
+              setBuffers(current=>({...current,[node.stable_key]:questionContent(result.updated,regions).text,...Object.fromEntries(result.children.map(n=>[n.stable_key,questionContent(n,regions).text]))}));
+              setSelected(result.children[0].stable_key);setSplitProposal(null);
+            }}>この内容で分割</button><button onClick={()=>setSplitProposal(null)}>キャンセル</button>
+          </section>}
+          {questionDomain&&revision&&<DiagramReview path={`/tests/${id}/authoring/nodes/${selected}/diagrams`} revision={revision.edit_version}
+            records={node.diagram_records} disabled={readonly||saving} label="図の確認" onSelect={setDiagramSelection}
+            onChange={records=>{setDirty(true);setDirtyDomains(d=>({...d,diagram:true}));setSnapshot(current=>current?{...current,nodes:current.nodes.map(n=>{if(n.stable_key!==node.stable_key)return n;const decisions={...n.figure_decisions};for(const record of records)for(const rid of record.legacy_region_ids||(record.legacy_region_id?[record.legacy_region_id]:[]))decisions[rid]={decision:record.state==="accepted"?"accepted_as_evidence":record.state==="excluded"?"excluded":"unreviewed"};return {...n,diagram_records:records,figure_decisions:decisions};})}:current);}}/>}
+          {questionDomain&&<WarningPanel warnings={questionDomain.document.warnings} states={questionDomain.snapshot.warning_states||{}} readonly={readonly||saving}
+            onChange={(key,resolution)=>change({...snapshot,domains:{...snapshot.domains,question:{...questionDomain,snapshot:{...questionDomain.snapshot,warning_states:{...questionDomain.snapshot.warning_states,[key]:resolution}}}}})}/>}
         </section>}
-        {visible.answer&&<section id="authoring-answer" tabIndex={-1} aria-label="解答"><h2>解答</h2>
+        {snapshot.domains?.answer&&(visible.answer||visible.rubric)&&revision&&<section id="authoring-answer" tabIndex={-1} aria-label="解答・採点基準"><span id="authoring-rubric" tabIndex={-1}/><h2>解答・採点基準</h2>
+          <AuthoringCandidates key={snapshot.domains.answer.draft_id} testId={id} draftId={snapshot.domains.answer.draft_id} revision={revision.edit_version} questionKey={selected}
+            entries={snapshot.domains.answer.entries} savedEntries={revision.snapshot.domains?.answer?.entries||[]} disabled={readonly||saving}
+            showAnswer={visible.answer} showRubric={visible.rubric&&!formalRubricFallback} questions={orderedNodes().map(n=>({key:n.stable_key,label:pathFor(n.stable_key),gradable:n.score_semantics==="direct",sourceId:snapshot.source_provenance.authoring_origins?.identities[n.stable_key]?.formal_question_id||n.stable_key}))}
+            onSelect={setDiagramSelection} onChange={(rawEntries,domain)=>{
+              const entries=rawEntries.map(e=>hasRubricState(e)?{...e,rubric_edits:e.rubric_edits??rubricRows(e)}:e);
+              const answers={...snapshot.answers},rubrics={...snapshot.rubrics};
+              for(const key of new Set([...snapshot.domains!.answer!.entries,...entries].map(e=>e.authoring_question_key).filter(Boolean))){
+                const current=entries.filter(e=>e.authoring_question_key===key&&e.disposition!=="ignored"&&e.disposition!=="excluded"&&e.disposition!=="unassigned");
+                const primary=current.find(e=>(e.answer_kind||"primary")==="primary");
+                answers[key!]={primary:primary?.answer_text||"",alternatives:current.flatMap(e=>[...(e.answer_kind==="alternative"?[e.answer_text]:[]),...(e.manual_alternative_answers||e.semantic_classification?.manual_alternative_answers||e.semantic_classification?.alternative_answers||[]).map(a=>a.text)]),diagram_records:primary?.diagram_records||[]};
+                if(current.some(hasRubricState)||snapshot.domains!.answer!.entries.some(e=>e.authoring_question_key===key&&hasRubricState(e)))rubrics[key!]=current.flatMap(e=>rubricRows(e).filter(c=>!c.excluded));
+              }
+              change({...snapshot,domains:{...snapshot.domains,answer:{...snapshot.domains!.answer!,entries}},answers,rubrics},domain||"answer");
+            }}/></section>}
+        {!snapshot.domains?.answer&&visible.answer&&<section id="authoring-answer" tabIndex={-1} aria-label="解答"><h2>解答</h2>
           <label>模範解答本文<textarea aria-label="模範解答本文" rows={8} disabled={readonly||saving} value={answer.primary} onChange={e=>change({...snapshot,answers:{...snapshot.answers,[selected]:{...answer,primary:e.target.value}}})}/></label>
           <LatexNormalizationControl text={answer.primary} contextType="model_answer" disabled={readonly||saving} onApply={text=>change({...snapshot,answers:{...snapshot.answers,[selected]:{...answer,primary:text}}})}/>
           {!!answer.diagram_records.length&&<p>保存済みの模範解答図: {answer.diagram_records.length}件（元の出典情報を保持）</p>}
         </section>}
-        {visible.rubric&&<section id="authoring-rubric" tabIndex={-1} aria-label="採点基準"><h2>採点基準</h2>
-          {criteria.map((criterion,index)=><fieldset key={criterion.id} disabled={readonly||saving}><label>観点<textarea aria-label="観点" value={criterion.description} onChange={e=>change({...snapshot,rubrics:{...snapshot.rubrics,[selected]:criteria.map((c,i)=>i===index?{...c,description:e.target.value}:c)}})}/></label>
-            <label>点数<input type="number" min="0" value={criterion.points} onChange={e=>change({...snapshot,rubrics:{...snapshot.rubrics,[selected]:criteria.map((c,i)=>i===index?{...c,points:Number(e.target.value)}:c)}})}/></label></fieldset>)}
-          <button disabled={readonly||saving} onClick={()=>change({...snapshot,rubrics:{...snapshot.rubrics,[selected]:[...criteria,{id:localId(),description:"",points:0}]}})}>観点を追加</button>
+        {(!snapshot.domains?.answer||formalRubricFallback)&&visible.rubric&&<section id="authoring-rubric" tabIndex={-1} aria-label="採点基準"><h2>採点基準</h2>
+          <AuthoringCandidates testId={id} draftId="" revision={revision?.edit_version||1} questionKey={selected} showAnswer={false} showRubric
+            disabled={readonly||saving} questions={orderedNodes().map(n=>({key:n.stable_key,label:pathFor(n.stable_key),gradable:n.score_semantics==="direct"}))}
+            savedEntries={[]} entries={[{id:`formal-entry:${selected}`,mapping_state:"manual_mapped",question_id:null,authoring_question_key:selected,answer_text:"",source:{kind:"teacher_manual",material_id:null,source_sha256:null,segments:[]},
+              rubric_edits:criteria,rubric_merge_history:snapshot.rubric_histories?.[selected]||[]}]}
+            onSelect={setDiagramSelection} onChange={entries=>change({...snapshot,rubrics:{...snapshot.rubrics,[selected]:entries[0].rubric_edits||[]},
+              ...(snapshot.rubric_histories?{rubric_histories:{...snapshot.rubric_histories,[selected]:entries[0].rubric_merge_history||[]}}:{})})}/>
+
         </section>}
       </>}
       <button disabled={readonly||saving} onClick={()=>{const n=newNode(nodes.length);change({...snapshot,nodes:[...nodes,n]});setBuffers(current=>({...current,[n.stable_key]:""}));setSelected(n.stable_key);}}>設問を追加</button>

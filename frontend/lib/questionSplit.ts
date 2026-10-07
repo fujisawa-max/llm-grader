@@ -477,3 +477,36 @@ export function suggestSubquestions(node: ReviewNode, canonicalNode?: Pick<Revie
   if (ambiguousCount && !automaticCount) notes.push("自動で対応を確認できない候補があります。元資料の読み取り項目を指定するか、対応情報なしで分割してください。");
   return { parentItems, children, sourceOptions: options, notes: [...new Set(notes)], placements, canApply };
 }
+
+/** Explicit caret split uses the same ordered native ranges as numbered splits. */
+export function splitQuestionRanges(node:ReviewNode, boundaries:number[], spans:{index:number;start:number;end:number;text:string}[],canonicalItems=node.ordered_content):SplitProposal|null {
+  const length=spans.at(-1)?.end||0;
+  if(boundaries.length<3||boundaries[0]!==0||boundaries.at(-1)!==length||boundaries.some((b,i)=>!Number.isInteger(b)||(i>0&&b<=boundaries[i-1])))return null;
+  const children:SplitCandidate[]=boundaries.slice(1).map(i=>({label:`(${i+1})`,items:[],included:true,mappingStatus:"automatic",contentValid:true,selectedSourceIds:[]}));
+  const placements:SplitProposal["placements"]=[],parentItems:ContentItem[]=[];
+  for(const item of node.ordered_content){
+    const span=spans.find(s=>node.ordered_content[s.index]===item);
+    if(!span){parentItems.push(item);placements.push({owner:null,item});continue;}
+    if(item.type!=="text"){
+      if(boundaries.some(b=>span.start<b&&b<span.end))return null;
+      const owner=boundaries.findIndex((b,i)=>i<boundaries.length-1&&b<=span.start&&span.end<=boundaries[i+1]);
+      if(owner<0)return null;children[owner].items.push(item);placements.push({owner,item});continue;
+    }
+    const origins=locateOrigins(item,node.formula_decisions,canonicalItems);
+    for(const owner of children.keys()){
+      const start=Math.max(0,boundaries[owner]-span.start),end=Math.min(span.text.length,boundaries[owner+1]-span.start);
+      if(start>=end)continue;
+      const value=span.text.slice(start,end);
+      const piece=origins?textPiece(item,Array.from(span.text.slice(0,start)).length,Array.from(span.text.slice(0,end)).length,value,origins):null;
+      // Never assign a partial atomic/unaligned source element by text equality.
+      if(!piece)return null;
+      children[owner].items.push(piece);placements.push({owner,item:piece});
+    }
+  }
+  if(children.some(c=>!c.items.some(i=>i.type!=="text"||String(i.text||"").trim())))return null;
+  return {children,placements,parentItems,sourceOptions:sourceOptions(canonicalItems),notes:[],canApply:true};
+}
+
+export function splitQuestionAtCaret(node:ReviewNode,offset:number,spans:{index:number;start:number;end:number;text:string}[],canonicalItems=node.ordered_content){
+  return splitQuestionRanges(node,[0,offset,spans.at(-1)?.end||0],spans,canonicalItems);
+}

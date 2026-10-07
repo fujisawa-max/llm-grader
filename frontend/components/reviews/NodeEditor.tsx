@@ -9,11 +9,12 @@ import { LatexNormalizationControl } from "@/components/LatexNormalizationContro
 import { questionMathSource, questionMathReference } from "@/lib/questionMathSource";
 import type { LatexProposal } from "@/lib/api/textTools";
 
-export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange, onParent, onMove, onRegion, activeRegionId, renderEvidence, issues = {}, mathContext, content, contentChanged, onContentChange, onConfirmContent }: {
+export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange, onParent, onMove, onRegion, activeRegionId, renderEvidence, issues = {}, mathContext, content, contentChanged, onContentChange, onConfirmContent, onCaret }: {
   content: string; contentChanged: boolean;
+  onCaret?: (offset:number)=>void;
   onContentChange: (text: string, proposal?: LatexProposal) => void;
   onConfirmContent: (confirm: (node: ReviewNode) => ReviewNode) => void;
-  mathContext?: {reviewId: string; revision: number; savedNode?: ReviewNode};
+  mathContext?: {reviewId: string; revision: number; savedNode?: ReviewNode; authoringTestId?: string};
   node: ReviewNode; nodes: ReviewNode[]; automatic?: AutomaticNode; regions: Region[]; readonly: boolean;
   onChange: (node: ReviewNode) => void; onParent: (key: string | null) => void;
   onMove: (direction: number) => void; onRegion: (region: string) => void;
@@ -29,8 +30,11 @@ export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange
   const derivedScore = useMemo(() => effectiveQuestionScore(node.stable_key, nodes), [node.stable_key, nodes]);
   const contentDiagnostics = useMemo(() => JSON.stringify(node.ordered_content, null, 2), [node.ordered_content]);
   const reviewId = mathContext?.reviewId, revision = mathContext?.revision, savedNode = mathContext?.savedNode;
-  const source = useMemo(() => reviewId && revision !== undefined ? questionMathSource(reviewId, revision, node, savedNode) : undefined,
-    [reviewId, revision, savedNode, node]);
+  const authoringTestId = mathContext?.authoringTestId;
+  const source = useMemo(() => {
+    const value = reviewId && revision !== undefined ? questionMathSource(reviewId, revision, node, savedNode) : undefined;
+    return value && authoringTestId ? {...value, authoringTestId} : value;
+  }, [reviewId, revision, savedNode, node, authoringTestId]);
   const confirmContent = () => onConfirmContent(current => {
     const decisions = {...current.formula_decisions};
     for (const region of regions.filter(r => r.region_type === "formula")) {
@@ -81,7 +85,7 @@ export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange
         {Object.keys(issues).filter(key => key.startsWith("text:") || key.startsWith("formula:")).map(key =>
           <span key={key} id={reviewFieldId(node.stable_key, key)} />)}
         <label>問題文<textarea aria-label="問題文" maxLength={20000} rows={14} value={content} aria-invalid={!!fieldIssues("content").length}
-          onChange={event => onContentChange(event.target.value)} /></label>
+          onSelect={event=>onCaret?.(event.currentTarget.selectionStart)} onChange={event => onContentChange(event.target.value)} /></label>
         {errors("content")}
         <small className="math-help">{markdownMathHelp}</small><MarkdownMathPreview source={content} />
         {mathContext && <><LatexNormalizationControl key={`${node.stable_key}:${mathContext.revision}`} text={content}

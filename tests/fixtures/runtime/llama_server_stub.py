@@ -113,18 +113,24 @@ class Handler(BaseHTTPRequestHandler):
                       "warnings": [], "changes": []}
             self.send({"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(result)}}]})
             return
-        if body.get("response_format", {}).get("json_schema", {}).get("name") == "rubric_semantic_split":
+        if body.get("response_format", {}).get("json_schema", {}).get("name") in {"rubric_semantic_split", "question_semantic_split"}:
             text = payload["text"]
             if "[split_failure]" in text:
                 self.send({"error": "synthetic split failure"}, 503)
                 return
-            marks = list(re.finditer(r"\d+ points:", text))
+            marks = list(re.finditer(r"\d+ points:", text)) if body["response_format"]["json_schema"]["name"] == "rubric_semantic_split" else list(re.finditer(r"(?m)^\s*(?:\(\d+\)|\d+[.)])", text))
             boundaries = [0] + [mark.start() for mark in marks[1:]] + [len(text)]
             split = len(marks) > 1
             result = {"candidate_id": payload["candidate_id"], "split": split, "confidence": .96,
                       "reason": "independent_criteria" if split else "single_criterion",
                       "parts": [{"start": a, "end": b} for a, b in zip(boundaries, boundaries[1:])] if split else []}
             self.send({"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(result)}}]})
+            return
+        if body.get("response_format", {}).get("json_schema", {}).get("name") == "rubric_segment_grouping" and all(
+                item["id"].startswith("teacher-rubric-") for item in payload["source_segments"]):
+            groups = [{"group_id": f"manual-{i}", "segment_ids": [item["id"]], "kind": "rubric", "confidence": .99}
+                      for i, item in enumerate(payload["source_segments"])]
+            self.send({"choices": [{"finish_reason": "stop", "message": {"content": json.dumps({"groups": groups})}}]})
             return
         assignments = []
         for segment in payload["source_segments"]:

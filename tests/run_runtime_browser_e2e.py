@@ -184,6 +184,8 @@ def seed(root):
         domain.model_answer(math_test.id, question_id=math_question.id, answer_text="Formal answer A.")
         math_material = domain.material(math_test.id, material_type="model_answer_source", storage_ref=str(math_source),
                                        original_filename="fractions.pdf", mime_type="application/pdf", sha256=math_digest)
+        from scoring.pdf_native import PyMuPdfNativeExtractor
+        PyMuPdfNativeExtractor().extract(math_source, source_sha256=math_digest, material_id=math_material.id, output_dir=root / "math-native")
         source_lines = ["Precision=", "TP", "TP+FP=", "24", "24+6 =", "24", "30 = 0.800"]
         source_boxes = [[30,45,100,58], [114,37,135,49], [110,56,175,68], [191,37,205,49], [180,56,230,68], [250,37,264,49], [240,56,330,68]]
         math_text = "\n".join(source_lines) + "\nAnswer: 0.800 (80%)"
@@ -191,7 +193,7 @@ def seed(root):
                           "bbox": source_boxes[i], "reading_order": i}
                          for i, t in enumerate(source_lines)]
         math_draft = ModelAnswerImportDraft(id=str(uuid4()), test_id=math_test.id, material_id=math_material.id,
-            source_sha256=math_digest, artifact_ref="math-ir.json", state="editing", revision=1,
+            source_sha256=math_digest, artifact_ref="math-native/document-ir.json", state="editing", revision=1,
             snapshot={"schema": "model-answer-review.v1", "page_count": 1, "entries": [{"id": str(uuid4()),
                 "question_id": math_question.id, "answer_text": math_text, "disposition": "include",
                 "answer_kind": "primary", "classification_reviewed": True,
@@ -226,6 +228,15 @@ def seed(root):
         diagram_material = domain.material(diagram_answer_test.id, material_type="model_answer_source",
             storage_ref=str(diagram_answer_path), original_filename="diagram-answer.pdf", mime_type="application/pdf",
             sha256=hashlib.sha256(diagram_answer_path.read_bytes()).hexdigest())
+        unified_test = domain.test(teacher_offering.id, name="Source-backed authoring fixture", total_points=20)
+        for index, number in enumerate((3, 4)):
+            domain.question(unified_test.id, question_number=str(number), display_label=f"問題{number}",
+                stable_question_key=f"q{index+1}", sort_order=index, max_points=10, is_gradable=True,
+                question_text="既存の正式問題文")
+        unified_material = domain.material(unified_test.id, material_type="model_answer_source",
+            storage_ref=str(diagram_answer_path), original_filename="authoring-answer.pdf", mime_type="application/pdf",
+            sha256=hashlib.sha256(diagram_answer_path.read_bytes()).hexdigest())
+        geometry_env.update(AUTHORING_SOURCE_TEST_ID=unified_test.id, AUTHORING_SOURCE_MATERIAL_ID=unified_material.id)
         geometry_env.update(DIAGRAM_TEST_ID=diagram_test.id, DIAGRAM_SPLIT_TEST_ID=diagram_split_test.id, DIAGRAM_PDF_PATH=str(diagram_path),
             DIAGRAM_ANSWER_TEST_ID=diagram_answer_test.id, DIAGRAM_ANSWER_MATERIAL_ID=diagram_material.id)
         manual_diagram_test = domain.test(teacher_offering.id, name="Manual diagram-only answers", total_points=30)
@@ -253,7 +264,7 @@ def seed(root):
         # Review state after splitting an originally parent-owned diagram.
         # There is ONE completed diagram, not one fabricated per child.
         from scoring.pdf_native import PyMuPdfNativeExtractor
-        for scope_name in ("parent", "pdf", "override", "reuse"):
+        for scope_name in ("parent", "pdf", "override", "reuse", "authoring"):
             scope_test = domain.test(teacher_offering.id, name=f"Diagram {scope_name} fallback", total_points=30)
             owner = domain.question(scope_test.id, question_number="3", display_label="問題3",
                 sort_order=3, max_points=None, is_gradable=False)
@@ -268,7 +279,7 @@ def seed(root):
                 p.draw_line((80, 285), (215, 150), color=(0, 0, 1))
                 p.draw_rect((160, 230, 205, 280), fill=(.6, .8, 1))
                 p.insert_text((153, 217), "O", fontsize=8)
-                if scope_name in {"override", "reuse"}:
+                if scope_name in {"override", "reuse", "authoring"}:
                     # A connected grid is genuinely ambiguous; managed Ricoh
                     # returns truncated JSON in the explicit override scenario.
                     for v in (140, 180, 260):
@@ -487,6 +498,7 @@ def main():
                         "e2e/diagram-review-real.spec.ts",
                         "e2e/model-answer-nested-navigation-real-isolated.spec.ts",
                         "e2e/test-authoring-foundation-real.spec.ts",
+                        "e2e/authoring-source-backed-real.spec.ts",
                     ]
                     subprocess.run(["npm", "run", "e2e", "--", *specs, "--workers=1"],
                                    cwd=REPO / "frontend", env=env, check=True)
