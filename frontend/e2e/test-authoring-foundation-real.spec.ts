@@ -1,3 +1,4 @@
+import {openAuthoringEditors} from "./authoringEditMode";
 import {test,expect} from "@playwright/test";
 
 test.setTimeout(90000);
@@ -21,7 +22,7 @@ test("whole-test drafts preserve local caret, materials, section state and forma
   await page.goto(`/tests/${exam.id}/authoring`);
   await page.getByRole("button",{name:"編集用の下書きを作成"}).click();
   await page.getByRole("button",{name:"設問を追加",exact:true}).click();
-  const editor=page.getByLabel("問題文",{exact:true});
+  await page.getByLabel("問題文",{exact:true}).waitFor({state:"attached"});await openAuthoringEditors(page);const editor=page.getByLabel("問題文",{exact:true});
   const text="2変数 x1, x2 に対して、\nx1 + x2 - 3 の値が\n0以上ならクラス1";
   await editor.fill(text);
   const at=text.indexOf("\n");
@@ -42,7 +43,7 @@ test("whole-test drafts preserve local caret, materials, section state and forma
   await page.getByRole("button",{name:"保存",exact:true}).click();
   await expect(page.getByText("下書きを保存しました。",{exact:true})).toBeVisible();
   const saved=await (await page.request.get(base+"/authoring")).json();
-  await page.reload();
+  await page.reload();await openAuthoringEditors(page);
   await expect(editor).toHaveValue(saved.revision.snapshot.nodes[0].body_text);
   await expect(page.getByLabel("模範解答本文",{exact:true})).toHaveValue("Answer draft");
   await expect(page.getByLabel("観点",{exact:true})).toHaveValue("Correct result");

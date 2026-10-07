@@ -1,3 +1,4 @@
+import {openAuthoringEditors} from "./authoringEditMode";
 import {test,expect} from "@playwright/test";
 import {readFile} from "node:fs/promises";
 test.setTimeout(90000);
@@ -17,7 +18,7 @@ test("saved source reviews integrate Question, answer diagrams and advanced Rubr
   const answerResult=await page.request.post(base+"/model-answer-imports",{data:{material_id:process.env.AUTHORING_SOURCE_MATERIAL_ID}});
   expect(answerResult.status()).toBe(201);const answer=await answerResult.json();
   await page.goto(`/tests/${tid}/authoring`);await page.getByRole("button",{name:"編集用の下書きを作成"}).click();
-  const editor=page.getByLabel("問題文",{exact:true});await expect(editor).toContainText("図の範囲");
+  await page.getByLabel("問題文",{exact:true}).waitFor({state:"attached"});await openAuthoringEditors(page);const editor=page.getByLabel("問題文",{exact:true});await expect(editor).toContainText("図の範囲");
   const initial=await editor.inputValue();
   await editor.fill("第1行\n第2行\n第3行");
   await editor.evaluate(el=>{const t=el as HTMLTextAreaElement;(window as unknown as {activeAuthoringEditor:Element}).activeAuthoringEditor=t;t.focus();t.setSelectionRange(3,3);});
@@ -33,7 +34,7 @@ test("saved source reviews integrate Question, answer diagrams and advanced Rubr
   await expect(problemDiagram.getByAltText("図1の切り出し範囲")).toBeVisible();await expect(page.locator(".diagram-overlay")).toBeVisible();
   await problemDiagram.getByRole("button",{name:"この図を使用",exact:true}).click();await expect(problemDiagram.getByText("使用中",{exact:true})).toBeVisible();
   await page.getByLabel("利用資料",{exact:true}).selectOption(process.env.AUTHORING_SOURCE_MATERIAL_ID!);await expect(editor).toHaveValue(initial+"\n教師が編集した問題文");
-  await page.getByLabel("候補の扱い").first().selectOption("ignored");await page.getByRole("button",{name:"模範解答を追加",exact:true}).click();
+  await page.getByLabel("候補の扱い").first().selectOption("ignored");await page.getByRole("button",{name:"模範解答を追加",exact:true}).click();await page.locator('[id^="authoring-candidate-teacher-entry-"]').first().waitFor();await openAuthoringEditors(page);
   const manual=page.locator('[id^="authoring-candidate-teacher-entry-"]');await expect(manual.getByLabel("模範解答本文",{exact:true})).toHaveValue("");
   const diagrams=manual.getByRole("region",{name:"模範解答の図",exact:true});await diagrams.getByRole("button",{name:"図候補を確認",exact:true}).click();
   await expect(diagrams.getByAltText("図1の切り出し範囲")).toBeVisible();await diagrams.getByRole("button",{name:"この図を使用",exact:true}).click();await expect(diagrams.getByText("使用中",{exact:true})).toBeVisible();
@@ -59,14 +60,14 @@ test("saved source reviews integrate Question, answer diagrams and advanced Rubr
   await selector.selectOption("q1");await expect(editor).toHaveValue(initial+"\n教師が編集した問題文");
   await page.getByRole("button",{name:"保存",exact:true}).click();await expect(page.getByText("下書きを保存しました。",{exact:true})).toBeVisible();
   const saved=await (await page.request.get(base+"/authoring")).json();expect(saved.revision.state).toBe("draft");
-  await page.reload();await expect(editor).toHaveValue(initial+"\n教師が編集した問題文");await expect(manual.getByLabel("模範解答本文",{exact:true})).toHaveValue("");await expect(manual.getByLabel("観点",{exact:true})).toHaveCount(2);await expect(manual.getByLabel("別解1",{exact:true})).toHaveValue("教師が入力した別解");
+  await page.reload();await openAuthoringEditors(page);await expect(editor).toHaveValue(initial+"\n教師が編集した問題文");await expect(manual.getByLabel("模範解答本文",{exact:true})).toHaveValue("");await expect(manual.getByLabel("観点",{exact:true})).toHaveCount(2);await expect(manual.getByLabel("別解1",{exact:true})).toHaveValue("教師が入力した別解");
   await expect(diagrams.getByText("使用中",{exact:true})).toBeVisible();
   expect(await (await page.request.get(`/api/v1/question-import-reviews/${review.id}`)).json()).toEqual(review);
   expect(await (await page.request.get(`/api/v1/model-answer-import-drafts/${answer.id}`)).json()).toEqual(answer);
   expect(await Promise.all(["questions","model-answers","rubrics"].map(async suffix=>(await page.request.get(base+`/${suffix}`)).json()))).toEqual(formal);
   const externalEntries=answer.entries.map((e:Record<string,unknown>,index:number)=>({id:e.id,question_id:e.question_id,disposition:e.disposition||"include",answer_kind:e.answer_kind||"primary",answer_text:index===0?String(e.answer_text)+" 外部レビューの更新":e.answer_text}));
   const external=await page.request.put(`/api/v1/model-answer-import-drafts/${answer.id}`,{data:{expected_revision:answer.revision,entries:externalEntries}});expect(external.status()).toBe(200);
-  await page.reload();await expect(page.getByText("外部の保存済みレビューが更新されています。統合下書きは上書きされていません。",{exact:true})).toBeVisible();
+  await page.reload();await openAuthoringEditors(page);await expect(page.getByText("外部の保存済みレビューが更新されています。統合下書きは上書きされていません。",{exact:true})).toBeVisible();
   await expect(editor).toHaveValue(initial+"\n教師が編集した問題文");await expect(diagrams.getByText("使用中",{exact:true})).toBeVisible();
   await page.getByRole("button",{name:"現在の下書きを継続",exact:true}).click();
   await editor.fill(initial+"\n教師が編集した問題文\n外部変更後も統合下書きを維持");

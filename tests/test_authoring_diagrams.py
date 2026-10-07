@@ -257,3 +257,22 @@ def test_answer_only_draft_keeps_approved_formal_rubric_fallback(workspace):
     snapshot['rubrics'][key][0]['description'] = 'edited fallback, still draft'
     row = save(w, path, row, snapshot)
     assert row['snapshot']['rubrics'][key][0]['description'] == 'edited fallback, still draft'
+
+
+def test_replaced_answer_source_keeps_evidence_but_rejects_diagram_operations(workspace):
+    from scoring.db.models import TestMaterial
+    w = workspace
+    path, row = begin(w, w.answer['test_id'])
+    snapshot = deepcopy(row['snapshot'])
+    bound = snapshot['domains']['answer']
+    with w.sf() as session:
+        new = TestMaterial(test_id=w.answer['test_id'], material_type='model_answer_source', original_filename='replacement.pdf', storage_ref='replacement.pdf', sha256='b'*64)
+        session.add(new)
+        session.flush()
+        snapshot['materials'].append({'id': new.id, 'role': new.material_type, 'sha256': new.sha256, 'replaces_material_id': bound['material_id']})
+        session.commit()
+    result = save(w, path, row, snapshot)
+    assert result['snapshot']['domains']['answer'] == bound
+    assert {'domain': 'answer', 'code': 'authoring_material_replaced'} in w.client.get(path).json()['source_problems']
+    entry = bound['entries'][0]
+    assert w.client.get(path+f'/entries/{entry["id"]}/diagrams').status_code == 409

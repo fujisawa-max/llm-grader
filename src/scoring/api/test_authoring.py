@@ -71,6 +71,9 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
                     or reference.get('role') != material.material_type):
                 raise AuthoringError('AUTHORING_SOURCE_CHANGED', 'この試験の資料と出典情報を確認してください。')
 
+        from ..test_authoring import validate_material_replacements
+        validate_material_replacements(snapshot)
+
     def view(row):
         return {k: getattr(row, k) for k in ('id', 'test_id', 'revision', 'edit_version', 'state',
             'snapshot', 'snapshot_sha256', 'baseline_sha256')}
@@ -82,7 +85,8 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
     def source_problems(row, session):
         if not row:
             return []
-        problems = []
+        from ..test_authoring import replacement_problems
+        problems = replacement_problems(row.snapshot)
         domains = row.snapshot.get('domains', {})
         if domains.get('question'):
             try:
@@ -236,6 +240,9 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
         row = latest(s, test_id)
         if not row or (revision is not None and revision != row.edit_version):
             raise ReviewError('revision_conflict', 409)
+        from ..test_authoring import replacement_problems
+        if any(p['domain'] == 'question' for p in replacement_problems(row.snapshot)):
+            raise ReviewError('authoring_material_replaced', 409)
         service = AuthoringQuestionReview(s, question_root, row)
         return service, row, service.bound['document']['id']
 
@@ -355,6 +362,9 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
                     {'id': c['id'], 'text': c['description'], 'source_text': c['description'],
                      'category': 'rubric', 'confidence': 1} for c in criteria if not c.get('excluded')]}}
             return SimpleNamespace(snapshot=row.snapshot), entry, row
+        from ..test_authoring import replacement_problems
+        if any(p['domain'] == 'answer' for p in replacement_problems(row.snapshot)):
+            raise HTTPException(409, {'error': {'code': 'authoring_material_replaced'}})
         context = AuthoringAnswers(s, answer_root, row)
         return context, context.entry(entry_id, question_id), row
 

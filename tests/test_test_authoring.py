@@ -258,3 +258,41 @@ def test_recent_card_selects_one_active_draft_before_newer_legacy_test(workspace
     values = w.client.get(f'/api/v1/courses/{w.course}/recent-tests').json()['tests']
     assert len(values) == 1
     assert values[0]['id'] == w.fresh
+
+
+def test_material_replacement_preserves_source_refs_and_requires_rebinding():
+    from scoring.test_authoring import replacement_problems, validate_material_replacements, AuthoringError
+    old = {'id': 'old', 'role': 'model_answer_source', 'sha256': 'before'}
+    new = {'id': 'new', 'role': 'model_answer_source', 'sha256': 'after', 'replaces_material_id': 'old'}
+    value = {'materials': [old, new], 'domains': {'answer': {'material_id': 'old', 'source_sha256': 'before'}}}
+    validate_material_replacements(value)
+    assert replacement_problems(value) == [{'domain': 'answer', 'code': 'authoring_material_replaced'}]
+    assert value['materials'][0] == old  # old source evidence is never rewritten
+    value['domains']['answer'] = {'material_id': 'new', 'source_sha256': 'after'}
+    assert replacement_problems(value) == []
+    for patch in ({'replaces_material_id': 'foreign'}, {'replaces_material_id': 'new'},
+                  {'role': 'question_sheet'}, {'sha256': 'before'}, {'replaces_material_id': []}):
+        with pytest.raises(AuthoringError):
+            validate_material_replacements({'materials': [old, {**new, **patch}]})
+
+
+def test_material_replacement_roundtrips_without_formal_or_legacy_mutation(workspace):
+    from scoring.db.models import TestMaterial
+    w = workspace
+    row = begin(w)
+    with w.sf() as s:
+        first = TestMaterial(test_id=w.legacy, material_type='question_sheet', original_filename='old.pdf', storage_ref='old.pdf', sha256='a'*64)
+        second = TestMaterial(test_id=w.legacy, material_type='question_sheet', original_filename='new.pdf', storage_ref='new.pdf', sha256='b'*64)
+        s.add_all([first, second])
+        s.flush()
+        refs = [{'id': m.id, 'sha256': m.sha256, 'role': m.material_type} for m in (first, second)]
+        refs[1]['replaces_material_id'] = first.id
+        s.commit()
+    row['snapshot']['materials'] = refs
+    saved = w.client.put(base(w)+'/authoring', json={'snapshot': row['snapshot'], 'expected_edit_version': row['edit_version']})
+    assert saved.status_code == 200, saved.text
+    assert w.client.get(base(w)+'/authoring').json()['revision']['snapshot']['materials'] == refs
+    assert saved.json()['state'] == 'draft'
+    with w.sf() as s:
+        assert s.get(TestMaterial, refs[0]['id']).sha256 == 'a'*64
+        assert s.scalar(select(func.count()).select_from(Exam)) == 3

@@ -11,7 +11,7 @@ export interface AuthoringSnapshot {
   rubrics: Record<string, AuthoringCriterion[]>;
   rubric_histories?: Record<string,AuthoringCriterion[][]>;
   source_provenance: Record<string, unknown> & {authoring_origins?: {identities: Record<string,{formal_question_id?:string|null}>}};
-  materials: {id: string; sha256: string | null; role: string}[];
+  materials: {id: string; sha256: string | null; role: string; replaces_material_id?:string}[];
   domains?: {
     question?: {document: Omit<ReviewDocument, "snapshot">; snapshot: Omit<ReviewSnapshot, "nodes">};
     answer?: {draft_id: string; revision: number; material_id: string; source_sha256: string; question_regions:{question_id:string;page_index:number;left:number;top:number;right:number;bottom:number;depth:number}[]; entries: (ModelAnswerDraftEntry & {authoring_question_key?: string | null; manual_alternative_answers?:{id:string;text:string}[]})[]};

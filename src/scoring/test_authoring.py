@@ -188,6 +188,7 @@ def save_draft(session, test, value, expected, actor=None):
         material = session.get(TestMaterial, m['id'])
         if not material or material.test_id != test.id or material.sha256 != m.get('sha256') or material.material_type != m.get('role'):
             raise AuthoringError('AUTHORING_SOURCE_CHANGED', '資料の出典が変わっています。')
+    validate_material_replacements(snapshot)
     result = session.execute(update(TestAuthoringRevision).where(TestAuthoringRevision.id == row.id,
         TestAuthoringRevision.edit_version == expected, TestAuthoringRevision.state.in_(['draft', 'final_review']))
         .values(snapshot=snapshot, snapshot_sha256=canonical_hash(snapshot), edit_version=expected+1,
@@ -285,3 +286,38 @@ def archive_impact(session, test):
             .where(GradingJob.test_id == test.id, or_(GradingJobItem.normalized_result_hash.is_not(None),
                 GradingJobItem.score.is_not(None)))) or 0}
     return {**value, 'impact_sha256': canonical_hash(value)}
+
+
+def replacement_problems(snapshot):
+    """Replacement preserves old evidence but requires rebinding to the new source."""
+    references = {m['id']: m for m in snapshot.get('materials', [])}
+    superseded = [references[m['replaces_material_id']]
+        for m in references.values() if m.get('replaces_material_id') in references]
+    domains = snapshot.get('domains', {})
+    result = []
+    for name, context in domains.items():
+        sha = (context.get('document', {}).get('source_pdf_sha256') if name == 'question'
+               else context.get('source_sha256'))
+        affected = (any(m.get('role') == 'question_sheet' and m.get('sha256') == sha for m in superseded)
+                    if name == 'question' else any(m['id'] == context.get('material_id') for m in superseded))
+        if sha and affected:
+            result.append({'domain': name, 'code': 'authoring_material_replaced'})
+    return result
+
+
+def validate_material_replacements(snapshot):
+    references = {m['id']: m for m in snapshot.get('materials', [])}
+    for item in references.values():
+        old_id = item.get('replaces_material_id')
+        if old_id is None:
+            continue
+        old = references.get(old_id) if isinstance(old_id, str) else None
+        if (not old or old_id == item['id'] or old.get('role') != item.get('role')
+                or old.get('sha256') == item.get('sha256')):
+            raise AuthoringError('AUTHORING_INVALID_REPLACEMENT', '差し替え元と新しい資料の対応を確認してください。')
+        visited = {item['id']}
+        while old:
+            if old['id'] in visited:
+                raise AuthoringError('AUTHORING_INVALID_REPLACEMENT', '資料の差し替え関係を確認してください。')
+            visited.add(old['id'])
+            old = references.get(old.get('replaces_material_id'))

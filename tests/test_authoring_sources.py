@@ -101,3 +101,26 @@ def test_stale_source_is_actionable_on_resume_without_inference(workspace):
     assert response.json()['source_problems'][0]['domain'] == 'question'
     assert any(i['section'] == 'source' for i in issues.json()['issues'])
     inference.assert_not_called()
+
+
+def test_replaced_question_source_remains_saved_but_tools_require_reanalysis(workspace):
+    from scoring.db.models import TestMaterial
+    fixture, data = workspace
+    path, row = start(fixture, data)
+    with fixture.sf() as session:
+        old = TestMaterial(test_id=data['test_id'], material_type='question_sheet', original_filename='old.pdf', storage_ref='old.pdf', sha256=data['source_pdf_sha256'])
+        new = TestMaterial(test_id=data['test_id'], material_type='question_sheet', original_filename='new.pdf', storage_ref='new.pdf', sha256='b'*64)
+        session.add_all([old, new])
+        session.flush()
+        refs = [{'id': m.id, 'role': m.material_type, 'sha256': m.sha256} for m in (old, new)]
+        refs[1]['replaces_material_id'] = old.id
+        session.commit()
+    snapshot = deepcopy(row['snapshot'])
+    snapshot['materials'].extend(refs)
+    result = fixture.client.put(path, json={'expected_edit_version': row['edit_version'], 'snapshot': snapshot})
+    assert result.status_code == 200, result.text
+    restored = fixture.client.get(path).json()
+    assert {'domain': 'question', 'code': 'authoring_material_replaced'} in restored['source_problems']
+    assert restored['revision']['snapshot']['nodes'] == snapshot['nodes']
+    assert fixture.client.get(path+'/nodes/q1/diagrams').status_code == 409
+    assert fixture.client.get(f'/api/v1/question-import-reviews/{data["id"]}').json() == data

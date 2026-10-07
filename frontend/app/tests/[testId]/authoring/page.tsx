@@ -3,6 +3,8 @@ import {useEffect, useRef, useState} from "react";
 import {useParams} from "next/navigation";
 import Link from "next/link";
 import {ReviewWorkspaceLayout} from "@/components/reviews/ReviewWorkspaceLayout";
+import {AuthoringPreviewEditor, AcceptedDiagramPreview} from "@/components/reviews/AuthoringPreviewEditor";
+import {MarkdownMathText} from "@/components/MarkdownMathText";
 import {NodeEditor} from "@/components/reviews/NodeEditor";
 import {SourcePdfPreview} from "@/components/SourcePdfPreview";
 import {LatexNormalizationControl} from "@/components/LatexNormalizationControl";
@@ -47,6 +49,9 @@ export default function TestAuthoringPage() {
   const [buffers,setBuffers]=useState<Record<string,string>>({});
   const [selected,setSelected]=useState("");
   const [materials,setMaterials]=useState<Material[]>([]),[materialId,setMaterialId]=useState("");
+  const [editing,setEditing]=useState({question:false,answer:false,rubric:false});
+  const [materialPanel,setMaterialPanel]=useState(false);
+  const [replacement,setReplacement]=useState<string|null>(null);
   const [role,setRole]=useState("question_sheet");
   const [visible,setVisible]=useState({question:true,answer:true,rubric:true});
   const [issues,setIssues]=useState<AuthoringIssue[]>([]);
@@ -65,7 +70,9 @@ export default function TestAuthoringPage() {
       setBuffers(Object.fromEntries(value.nodes.map(n=>[n.stable_key,questionContent(n,value.domains?.question?.document.regions||[]).text])));
       setSelected(value.nodes[0]?.stable_key||"all");
       setMaterials(files.filter(m=>m.material_type!=="student_answer_source"));
-      setMaterialId(files.find(m=>m.material_type==="question_sheet")?.id||files[0]?.id||"");
+      const superseded=new Set(value.materials.map(m=>m.replaces_material_id));
+      const activeFiles=files.filter(m=>m.material_type!=="student_answer_source"&&!superseded.has(m.id));
+      setMaterialId(activeFiles.find(m=>m.material_type==="question_sheet")?.id||activeFiles[0]?.id||"");
     }).catch(e=>{if(active)setError(e.message);});
     try{const prefs=localStorage.getItem("test-authoring-visible");if(prefs)setVisible(JSON.parse(prefs));}catch{}
     return()=>{active=false;};
@@ -93,7 +100,7 @@ export default function TestAuthoringPage() {
   }
   function navigate(issue:AuthoringIssue){
     if(!issue.question_key&&issue.section!=="answer")return;
-    setSelected(issue.question_key||"unassigned");setDiagramSelection(undefined);setRegionId("");setVisible(v=>({...v,[issue.section]:true}));
+    setSelected(issue.question_key||"unassigned");setDiagramSelection(undefined);setRegionId("");setVisible(v=>({...v,[issue.section]:true}));setEditing(v=>({...v,[issue.section]:true}));
     requestAnimationFrame(()=>requestAnimationFrame(()=>{
       const marker=document.getElementById(`authoring-${issue.section}`);
       const container=marker?.tagName==="SPAN"?marker.parentElement:marker;
@@ -176,16 +183,19 @@ export default function TestAuthoringPage() {
       setSelected("all");
     }
     catch(e){setError(e instanceof Error?e.message:"確認できませんでした。");}finally{setBusy(false);}}
-  async function upload(files:FileList|null){if(!files||!snapshot)return;setBusy(true);setError("");try{
+  async function upload(files:FileList|null){if(!files||!snapshot)return;
+    const old=replacement?materials.find(m=>m.id===replacement):undefined;
+    if(old&&!window.confirm(`${old.original_filename}を差し替えます。元資料は保持されますが、出典付きの確認結果は再確認が必要になります。自動で再解析しません。続行しますか？`)){if(fileInput.current)fileInput.current.value="";return;}setBusy(true);setError("");try{
     const uploaded:Material[]=[];
-    for(const file of Array.from(files)){
+    for(const file of Array.from(files).slice(0,old?1:files.length)){
       if(!/\.pdf$/i.test(file.name)||file.size>25*1024*1024)throw new Error("25MB以内のPDFを選択してください。");
       uploaded.push(await apiFetch<Material>(`/tests/${id}/materials/upload`,{method:"POST",body:file,
-        headers:{"Content-Type":"application/pdf","X-Source-Role":role,"X-Filename":encodeURIComponent(file.name)}}));
+        headers:{"Content-Type":"application/pdf","X-Source-Role":old?.material_type||role,"X-Filename":encodeURIComponent(file.name)}}));
     }
+    if(old&&uploaded[0].sha256===old.sha256)throw new Error("同じ内容の資料です。差し替えは行いませんでした。");
     setMaterials(current=>[...current,...uploaded.filter(m=>!current.some(old=>old.id===m.id))]);
-    setSnapshot(current=>current?{...current,materials:[...current.materials,...uploaded.filter(m=>!current.materials.some(old=>old.id===m.id)).map(m=>({id:m.id,sha256:m.sha256||null,role:m.material_type}))]}:current);
-    setDirty(true);setMaterialId(uploaded[0].id);setNotice("資料を追加しました。既存の資料と解析結果は保持されています。");
+    setSnapshot(current=>current?{...current,materials:[...current.materials.filter(ref=>!uploaded.some(m=>m.id===ref.id)),...uploaded.map(m=>({id:m.id,sha256:m.sha256||null,role:m.material_type,...(old?{replaces_material_id:old.id}:{})}))]}:current);
+    setDirty(true);setMaterialId(uploaded[0].id);setNotice(old?"資料を差し替えました。元資料と出典情報は保持されています。変更を保存してから明示的に再解析してください。":"資料を追加しました。既存の資料と解析結果は保持されています。");setReplacement(null);
   }catch(e){setError(e instanceof Error?e.message:"資料を追加できませんでした。");}finally{setBusy(false);if(fileInput.current)fileInput.current.value="";}}
   if(error&&!snapshot)return <ErrorState message={error}/>;
   if(!snapshot)return <LoadingState/>;
@@ -196,6 +206,9 @@ export default function TestAuthoringPage() {
   const criteria=snapshot.rubrics[selected]||[];
   const hasRubricState=(entry:AuthoringEntry)=>entry.rubric_edits!==undefined||entry.semantic_classification?.segments.some(s=>s.category==="rubric");
   const formalRubricFallback=!!criteria.length&&!snapshot.domains?.answer?.entries.some(e=>e.authoring_question_key===selected&&hasRubricState(e));
+  const superseded=snapshot.materials.filter(m=>m.replaces_material_id).map(m=>snapshot.materials.find(old=>old.id===m.replaces_material_id));
+  const questionStale=!!questionDomain&&superseded.some(m=>m?.role==="question_sheet"&&m.sha256===questionDomain.document.source_pdf_sha256);
+  const answerStale=!!snapshot.domains?.answer&&superseded.some(m=>m?.id===snapshot.domains?.answer?.material_id);
   const viewed=materials.find(m=>m.id===materialId);
   let mappedLocation:{id:string;page:number;bbox?:number[]}|undefined;
   if(node&&viewed?.sha256===questionDomain?.document.source_pdf_sha256){
@@ -212,7 +225,7 @@ export default function TestAuthoringPage() {
       <button disabled={busy} onClick={()=>{setContinueExternal(true);setNotice("現在の統合下書きを継続します。外部レビューの更新は取り込みません。");}}>現在の下書きを継続</button>
       <button disabled={busy} onClick={importSources}>最新レビューを取り込む</button></section>}
     {error&&<p role="alert" className="error">{error}</p>}{notice&&<p role="status">{notice}</p>}
-    {sourceProblems.length>0&&<p role="alert">元PDFとの対応が無効になっています。資料と保存済みレビューを確認し、必要なら明示的に再解析してください。</p>}
+    {(sourceProblems.length>0||questionStale||answerStale)&&<p role="alert">元PDFとの対応が無効になっています。資料と保存済みレビューを確認し、必要なら明示的に再解析してください。</p>}
     <ReviewWorkspaceLayout actions={<div className="review-toolbar" aria-busy={busy}>
       {readonly?<button className="button" disabled={busy} onClick={begin}>編集用の下書きを作成</button>:<button className="button" disabled={busy||!dirty} onClick={save}>保存</button>}
       {!readonly&&<button disabled={busy} onClick={importSources}>保存済みレビューを取り込む</button>}
@@ -220,17 +233,18 @@ export default function TestAuthoringPage() {
       {dirty&&<><span role="status">未保存の変更があります</span><span className="muted">{Object.entries(dirtyDomains).filter(([,v])=>v).map(([k])=>({question:"問題",answer:"解答",rubric:"採点基準",diagram:"図"}[k])).filter(Boolean).join("・")}</span></>}
     </div>} source={<>
       <label>利用資料<select aria-label="利用資料" value={materialId} onChange={e=>setMaterialId(e.target.value)}>
-        <option value="">資料を選択</option>{materials.map(m=><option key={m.id} value={m.id}>{roles[m.material_type]||"資料"} — {m.original_filename}</option>)}
+        <option value="">資料を選択</option>{materials.map(m=><option key={m.id} value={m.id}>{roles[m.material_type]||"資料"} — {m.original_filename}{snapshot.materials.some(ref=>ref.replaces_material_id===m.id)?"（差し替え済み）":""}</option>)}
       </select></label>
+      <div className="review-toolbar authoring-material-actions"><button disabled={readonly||busy} onClick={()=>{setReplacement(null);setMaterialPanel(true);}}>資料を追加</button><button disabled={readonly||busy||!materialId} onClick={()=>{setReplacement(materialId);setRole(viewed?.material_type||"question_sheet");setMaterialPanel(true);}}>差し替え</button><button onClick={()=>setMaterialPanel(v=>!v)}>資料一覧</button></div>
       {materialId&&<SourcePdfPreview key={materialId} testId={id} material={materials.find(m=>m.id===materialId)} label="利用資料PDF" inline paneZoom diagramSelection={diagramSelection?.record.material_id===materialId?diagramSelection:undefined} targetLocation={diagramSelection?.record.material_id===materialId?{id:diagramSelection.record.id,page:diagramSelection.record.page_index+1,bbox:diagramSelection.record.final_bbox||diagramSelection.record.automatic_bbox}:mappedLocation}/>}
     </>} selector={<div className="review-toolbar">
       <label>対象設問<select aria-label="対象設問" value={selected} onChange={e=>{if(e.target.value==="all")void finalReview();else {setSelected(e.target.value);setDiagramSelection(undefined);setRegionId("");}}}>
         {orderedNodes().map(n=><option key={n.stable_key} value={n.stable_key}>{pathFor(n.stable_key)}</option>)}{snapshot.domains?.answer?.entries.some(e=>!e.authoring_question_key)&&<option value="unassigned">設問未割当の候補</option>}<option value="all">テスト全体確認</option>
       </select></label><span>表示</span>{([['question','問題'],['answer','解答'],['rubric','採点基準']] as const).map(([key,label])=><label key={key}><input type="checkbox" checked={visible[key]} onChange={e=>{const next={...visible,[key]:e.target.checked};setVisible(next);localStorage.setItem("test-authoring-visible",JSON.stringify(next));}}/>{label}</label>)}
     </div>}>
-      <details><summary>試験資料</summary><p>資料を追加してから編集できます。差し替え用資料も追加として保持します。</p>
-        <label>資料の種類<select aria-label="資料の種類" value={role} onChange={e=>setRole(e.target.value)}>{Object.entries(roles).map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label>
-        <input ref={fileInput} aria-label="資料を追加" type="file" accept="application/pdf,.pdf" multiple disabled={readonly||busy} onChange={e=>void upload(e.target.files)}/>
+      <details open={materialPanel} onToggle={e=>setMaterialPanel(e.currentTarget.open)}><summary>試験資料</summary><p>資料を追加してから編集できます。差し替えは元資料を保持し、出典の再確認が必要です。解析は明示操作のみです。</p><ul>{materials.map(m=><li key={m.id}>{roles[m.material_type]||"資料"} — {m.original_filename}<details><summary>出典情報</summary>SHA: {m.sha256||"なし"}<p>{snapshot.materials.some(ref=>ref.replaces_material_id===m.id)?"差し替え済み・元資料を保持":"登録済み"}</p></details></li>)}</ul>{replacement&&<p role="alert">差し替え対象: {materials.find(m=>m.id===replacement)?.original_filename}。既存の出典確認は再確認が必要です。自動解析は行いません。</p>}
+        <label>資料の種類<select aria-label="資料の種類" disabled={!!replacement} value={role} onChange={e=>setRole(e.target.value)}>{Object.entries(roles).map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label>
+        <input ref={fileInput} aria-label="資料を追加" type="file" accept="application/pdf,.pdf" multiple={!replacement} disabled={readonly||busy} onChange={e=>void upload(e.target.files)}/>
         <button disabled={readonly||busy||dirty||!materialId} onClick={()=>void analyzeSource("question")}>選択資料から問題を解析</button>
         <button disabled={readonly||busy||dirty||!materialId} onClick={()=>void analyzeSource("answer")}>選択資料から解答・採点基準を解析</button>
         <p><Link href={`/tests/${id}?section=questions`}>既存の資料解析・出典付きレビューを開く</Link></p>
@@ -243,9 +257,10 @@ export default function TestAuthoringPage() {
         <button disabled title="この画面からの試験内容確定は現在利用できません。">試験内容を確定</button>
       </section>:(node||selected==="unassigned")&&<>
         {visible.question&&node&&<section id="authoring-question" tabIndex={-1} aria-label="問題"><h2>問題</h2>
-          <NodeEditor key={node.stable_key} node={node} nodes={nodes} regions={activeRegions} readonly={readonly||saving}
+          <AuthoringPreviewEditor label="問題" editing={editing.question} onEditing={value=>setEditing(v=>({...v,question:value}))} preview={<><MarkdownMathText source={buffers[selected]??node.body_text}/><AcceptedDiagramPreview records={questionStale?[]:node.diagram_records} path={questionDomain?`/tests/${id}/authoring/nodes/${selected}/diagrams`:undefined}/></>}>
+          <NodeEditor inlinePreview={false} key={node.stable_key} node={node} nodes={nodes} regions={activeRegions} readonly={readonly||saving}
             content={buffers[selected]??node.body_text} contentChanged={(buffers[selected]??node.body_text)!==questionContent(node,regions).text}
-            mathContext={questionDomain&&revision?{reviewId:questionDomain.document.id,revision:revision.edit_version,savedNode:revision.snapshot.nodes.find(n=>n.stable_key===selected),authoringTestId:id}:undefined}
+            mathContext={questionDomain&&!questionStale&&revision?{reviewId:questionDomain.document.id,revision:revision.edit_version,savedNode:revision.snapshot.nodes.find(n=>n.stable_key===selected),authoringTestId:id}:undefined}
             activeRegionId={regionId} renderEvidence={questionDomain?(rid)=><EvidencePanel id={questionDomain.document.id} regionId={rid} ownerLabel={pathFor(selected)} readonly={readonly||saving}
               decision={(regions.find(r=>r.region_id===rid)?.region_type==="formula"?node.formula_decisions:node.figure_decisions)[rid]||{decision:"unreviewed"}}
               onDecision={d=>{const field=regions.find(r=>r.region_id===rid)?.region_type==="formula"?"formula_decisions":"figure_decisions";updateNode({...node,[field]:{...node[field],[rid]:d}});}}/>:undefined}
@@ -280,14 +295,15 @@ export default function TestAuthoringPage() {
             }}>この内容で分割</button><button onClick={()=>setSplitProposal(null)}>キャンセル</button>
           </section>}
           {questionDomain&&revision&&<DiagramReview path={`/tests/${id}/authoring/nodes/${selected}/diagrams`} revision={revision.edit_version}
-            records={node.diagram_records} disabled={readonly||saving} label="図の確認" onSelect={setDiagramSelection}
+            records={node.diagram_records} sourceStale={questionStale} disabled={readonly||saving} label="図の確認" onSelect={setDiagramSelection}
             onChange={records=>{setDirty(true);setDirtyDomains(d=>({...d,diagram:true}));setSnapshot(current=>current?{...current,nodes:current.nodes.map(n=>{if(n.stable_key!==node.stable_key)return n;const decisions={...n.figure_decisions};for(const record of records)for(const rid of record.legacy_region_ids||(record.legacy_region_id?[record.legacy_region_id]:[]))decisions[rid]={decision:record.state==="accepted"?"accepted_as_evidence":record.state==="excluded"?"excluded":"unreviewed"};return {...n,diagram_records:records,figure_decisions:decisions};})}:current);}}/>}
           {questionDomain&&<WarningPanel warnings={questionDomain.document.warnings} states={questionDomain.snapshot.warning_states||{}} readonly={readonly||saving}
             onChange={(key,resolution)=>change({...snapshot,domains:{...snapshot.domains,question:{...questionDomain,snapshot:{...questionDomain.snapshot,warning_states:{...questionDomain.snapshot.warning_states,[key]:resolution}}}}})}/>}
-        </section>}
+        </AuthoringPreviewEditor></section>}
         {snapshot.domains?.answer&&(visible.answer||visible.rubric)&&revision&&<section id="authoring-answer" tabIndex={-1} aria-label="解答・採点基準"><span id="authoring-rubric" tabIndex={-1}/><h2>解答・採点基準</h2>
           <AuthoringCandidates key={snapshot.domains.answer.draft_id} testId={id} draftId={snapshot.domains.answer.draft_id} revision={revision.edit_version} questionKey={selected}
-            entries={snapshot.domains.answer.entries} savedEntries={revision.snapshot.domains?.answer?.entries||[]} disabled={readonly||saving}
+            sourceStale={answerStale} entries={snapshot.domains.answer.entries} savedEntries={revision.snapshot.domains?.answer?.entries||[]} disabled={readonly||saving}
+            answerEditing={editing.answer} rubricEditing={editing.rubric} onAnswerEditing={value=>setEditing(v=>({...v,answer:value}))} onRubricEditing={value=>setEditing(v=>({...v,rubric:value}))}
             showAnswer={visible.answer} showRubric={visible.rubric&&!formalRubricFallback} questions={orderedNodes().map(n=>({key:n.stable_key,label:pathFor(n.stable_key),gradable:n.score_semantics==="direct",sourceId:snapshot.source_provenance.authoring_origins?.identities[n.stable_key]?.formal_question_id||n.stable_key}))}
             onSelect={setDiagramSelection} onChange={(rawEntries,domain)=>{
               const entries=rawEntries.map(e=>hasRubricState(e)?{...e,rubric_edits:e.rubric_edits??rubricRows(e)}:e);
@@ -301,12 +317,13 @@ export default function TestAuthoringPage() {
               change({...snapshot,domains:{...snapshot.domains,answer:{...snapshot.domains!.answer!,entries}},answers,rubrics},domain||"answer");
             }}/></section>}
         {!snapshot.domains?.answer&&visible.answer&&<section id="authoring-answer" tabIndex={-1} aria-label="解答"><h2>解答</h2>
+          <AuthoringPreviewEditor label="解答" editing={editing.answer} onEditing={value=>setEditing(v=>({...v,answer:value}))} preview={<><MarkdownMathText source={answer.primary||"本文なし"}/>{answer.alternatives.map((text,i)=><div key={i}><h4>別解{i+1}</h4><MarkdownMathText source={text}/></div>)}<AcceptedDiagramPreview records={answer.diagram_records}/></>}>
           <label>模範解答本文<textarea aria-label="模範解答本文" rows={8} disabled={readonly||saving} value={answer.primary} onChange={e=>change({...snapshot,answers:{...snapshot.answers,[selected]:{...answer,primary:e.target.value}}})}/></label>
           <LatexNormalizationControl text={answer.primary} contextType="model_answer" disabled={readonly||saving} onApply={text=>change({...snapshot,answers:{...snapshot.answers,[selected]:{...answer,primary:text}}})}/>
           {!!answer.diagram_records.length&&<p>保存済みの模範解答図: {answer.diagram_records.length}件（元の出典情報を保持）</p>}
-        </section>}
+        </AuthoringPreviewEditor></section>}
         {(!snapshot.domains?.answer||formalRubricFallback)&&visible.rubric&&<section id="authoring-rubric" tabIndex={-1} aria-label="採点基準"><h2>採点基準</h2>
-          <AuthoringCandidates testId={id} draftId="" revision={revision?.edit_version||1} questionKey={selected} showAnswer={false} showRubric
+          <AuthoringCandidates answerEditing={editing.answer} rubricEditing={editing.rubric} onAnswerEditing={value=>setEditing(v=>({...v,answer:value}))} onRubricEditing={value=>setEditing(v=>({...v,rubric:value}))} testId={id} draftId="" revision={revision?.edit_version||1} questionKey={selected} showAnswer={false} showRubric
             disabled={readonly||saving} questions={orderedNodes().map(n=>({key:n.stable_key,label:pathFor(n.stable_key),gradable:n.score_semantics==="direct"}))}
             savedEntries={[]} entries={[{id:`formal-entry:${selected}`,mapping_state:"manual_mapped",question_id:null,authoring_question_key:selected,answer_text:"",source:{kind:"teacher_manual",material_id:null,source_sha256:null,segments:[]},
               rubric_edits:criteria,rubric_merge_history:snapshot.rubric_histories?.[selected]||[]}]}

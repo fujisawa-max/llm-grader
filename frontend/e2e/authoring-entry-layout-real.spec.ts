@@ -1,3 +1,4 @@
+import {openAuthoringEditors} from "./authoringEditMode";
 import {test,expect,type Page} from "@playwright/test";
 test.setTimeout(90000);
 test.skip(!process.env.RUNTIME_MANAGER_E2E,"requires isolated real API/production frontend");
@@ -29,7 +30,7 @@ test("Test and single right-hand recent shortcut open authoring; source stacks v
   expect((await (await page.request.get(base+"/authoring")).json()).revision).toBeNull();
   await page.getByRole("button",{name:"編集用の下書きを作成",exact:true}).click();
   await page.getByRole("button",{name:"設問を追加",exact:true}).click();
-  const text=page.getByLabel("問題文",{exact:true});await text.fill("第1行\n第2行\n第3行");
+  await page.getByLabel("問題文",{exact:true}).waitFor({state:"attached"});await openAuthoringEditors(page);const text=page.getByLabel("問題文",{exact:true});await text.fill("第1行\n第2行\n第3行");
   await page.getByRole("checkbox",{name:"採点基準",exact:true}).uncheck();
   const selected=await page.getByLabel("対象設問",{exact:true}).inputValue();
   const source=page.locator(".review-workspace-source"),editor=page.locator(".review-workspace-editor");

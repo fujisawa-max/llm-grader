@@ -9,7 +9,8 @@ import { LatexNormalizationControl } from "@/components/LatexNormalizationContro
 import { questionMathSource, questionMathReference } from "@/lib/questionMathSource";
 import type { LatexProposal } from "@/lib/api/textTools";
 
-export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange, onParent, onMove, onRegion, activeRegionId, renderEvidence, issues = {}, mathContext, content, contentChanged, onContentChange, onConfirmContent, onCaret }: {
+export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange, onParent, onMove, onRegion, activeRegionId, renderEvidence, issues = {}, mathContext, content, contentChanged, onContentChange, onConfirmContent, onCaret, inlinePreview = true }: {
+  inlinePreview?: boolean;
   content: string; contentChanged: boolean;
   onCaret?: (offset:number)=>void;
   onContentChange: (text: string, proposal?: LatexProposal) => void;
@@ -87,7 +88,7 @@ export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange
         <label>問題文<textarea aria-label="問題文" maxLength={20000} rows={14} value={content} aria-invalid={!!fieldIssues("content").length}
           onSelect={event=>onCaret?.(event.currentTarget.selectionStart)} onChange={event => onContentChange(event.target.value)} /></label>
         {errors("content")}
-        <small className="math-help">{markdownMathHelp}</small><MarkdownMathPreview source={content} />
+        <small className="math-help">{markdownMathHelp}</small>{inlinePreview && <MarkdownMathPreview source={content} />}
         {mathContext && <><LatexNormalizationControl key={`${node.stable_key}:${mathContext.revision}`} text={content}
           contextType="question" contextLabel={node.label.raw} source={source} disabled={readonly || !source}
           onApply={onContentChange} />
