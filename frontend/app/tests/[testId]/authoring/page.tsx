@@ -10,6 +10,7 @@ import {SourcePdfPreview} from "@/components/SourcePdfPreview";
 import {LatexNormalizationControl} from "@/components/LatexNormalizationControl";
 import {LoadingState, ErrorState} from "@/components/ui";
 import {testAuthoring, type AuthoringRevision, type AuthoringSnapshot, type AuthoringIssue} from "@/lib/api/testAuthoring";
+import {authoringBuffers,prepareAuthoringSave,analysisReadiness} from "@/lib/authoringState";
 import {testData} from "@/lib/api/domain";
 import {apiFetch, json} from "@/lib/api/client";
 import {canonicalQuestionPath} from "@/lib/canonicalQuestionPath";
@@ -41,6 +42,8 @@ export default function TestAuthoringPage() {
   const [externalChange,setExternalChange]=useState(false);
   const [continueExternal,setContinueExternal]=useState(false);
   const [diagramSelection,setDiagramSelection]=useState<DiagramSelection>();
+  const saveInFlight=useRef(false),editEpoch=useRef(0);
+  const [saveStatus,setSaveStatus]=useState<"idle"|"saving"|"success"|"error">("idle");
   const splitInFlight=useRef(false);
   const [splitRunning,setSplitRunning]=useState(false);
   const [splitProposal,setSplitProposal]=useState<SplitProposal|null>(null);
@@ -74,13 +77,13 @@ export default function TestAuthoringPage() {
       if(!active)return;
       const value=data.revision?.snapshot||data.legacy;
       setRevision(data.revision);setSnapshot(value);setDirty(false);setDirtyDomains({});setExternalChange(data.external_source_change);setSourceProblems(data.source_problems||[]);
-      setBuffers(Object.fromEntries(value.nodes.map(n=>[n.stable_key,questionContent(n,value.domains?.question?.document.regions||[]).text])));
+      setBuffers(authoringBuffers(value));
       setSelected(value.nodes[0]?.stable_key||"all");
       setMaterials(files.filter(m=>m.material_type!=="student_answer_source"));
       const superseded=new Set(value.materials.map(m=>m.replaces_material_id));
       const activeFiles=files.filter(m=>m.material_type!=="student_answer_source"&&!superseded.has(m.id));
       setMaterialId(activeFiles.find(m=>m.material_type==="question_sheet")?.id||activeFiles[0]?.id||"");
-    }).catch(e=>{if(active)setError(e.message);});
+    }).catch(e=>{if(active)setError(`編集内容を再開できませんでした。認証・保存競合・出典状態を確認してください。 (${e.message})`);});
     try{const prefs=localStorage.getItem("test-authoring-visible");if(prefs)setVisible(JSON.parse(prefs));}catch{}
     return()=>{active=false;};
   },[id]);
@@ -90,8 +93,18 @@ export default function TestAuthoringPage() {
     .flatMap(n=>[n,...orderedNodes(n.stable_key,depth+1)]);
   const node=nodes.find(n=>n.stable_key===selected);
   const pathFor=(key:string)=>canonicalQuestionPath(key,nodes.map(n=>({key:n.stable_key,parentKey:n.parent_key,label:n.label.raw})));
-  function change(value:AuthoringSnapshot,domain?:string){setSnapshot(value);setDirty(true);setDirtyDomains(d=>({...d,...(domain?{[domain]:true}:{question:value.nodes!==snapshot?.nodes||value.domains?.question!==snapshot?.domains?.question||d.question,answer:value.answers!==snapshot?.answers||d.answer,rubric:value.rubrics!==snapshot?.rubrics||d.rubric})}));}
-  function updateNode(value:ReviewNode){setDirty(true);setDirtyDomains(d=>({...d,question:true}));setSnapshot(s=>s?{...s,nodes:s.nodes.map(n=>n.stable_key===value.stable_key?value:n)}:s);}
+  useEffect(()=>{
+    if(!dirty&&!saving)return;
+    const guard=(event:BeforeUnloadEvent)=>{event.preventDefault();event.returnValue="";};
+    window.addEventListener("beforeunload",guard);return()=>window.removeEventListener("beforeunload",guard);
+  },[dirty,saving]);
+  function markDirty(){editEpoch.current++;setDirty(true);setSaveStatus("idle");setNotice("");}
+  function synchronize(row:AuthoringRevision){
+    setRevision(row);setSnapshot(row.snapshot);setBuffers(authoringBuffers(row.snapshot));
+    setDirty(false);setDirtyDomains({});setIssues([]);
+  }
+  function change(value:AuthoringSnapshot,domain?:string){setSnapshot(value);markDirty();setDirtyDomains(d=>({...d,...(domain?{[domain]:true}:{question:value.nodes!==snapshot?.nodes||value.domains?.question!==snapshot?.domains?.question||d.question,answer:value.answers!==snapshot?.answers||d.answer,rubric:value.rubrics!==snapshot?.rubrics||d.rubric})}));}
+  function updateNode(value:ReviewNode){markDirty();setDirtyDomains(d=>({...d,question:true}));setSnapshot(s=>s?{...s,nodes:s.nodes.map(n=>n.stable_key===value.stable_key?value:n)}:s);}
   function moveNode(value:ReviewNode,direction:number){
     if(!snapshot)return;
     const siblings=nodes.filter(n=>n.parent_key===value.parent_key).sort((a,b)=>a.sort_order-b.sort_order||a.stable_key.localeCompare(b.stable_key));
@@ -152,7 +165,7 @@ export default function TestAuthoringPage() {
         row=await testAuthoring.importSources(id,revision.edit_version,true,materialId);
       }
       setRevision(row);setSnapshot(row.snapshot);setDirty(false);setDirtyDomains({});setExternalChange(false);setContinueExternal(false);
-      setBuffers(Object.fromEntries(row.snapshot.nodes.map(n=>[n.stable_key,questionContent(n,row.snapshot.domains?.question?.document.regions||[]).text])));
+      setBuffers(authoringBuffers(row.snapshot));
       setSelected(current=>row.snapshot.nodes.some(n=>n.stable_key===current)?current:row.snapshot.nodes[0]?.stable_key||"all");
       const outcome=row.snapshot.domains?.answer?.analysis_result;
       if(domain==="answer"&&outcome){
@@ -165,34 +178,39 @@ export default function TestAuthoringPage() {
   async function begin(){setBusy(true);setError("");try{
     const row=await testAuthoring.begin(id);setRevision(row);setSnapshot(row.snapshot);setDirty(false);setDirtyDomains({});
     setSelected(current=>row.snapshot.nodes.some(n=>n.stable_key===current)?current:row.snapshot.nodes[0]?.stable_key||"all");
-    setBuffers(Object.fromEntries(row.snapshot.nodes.map(n=>[n.stable_key,questionContent(n,row.snapshot.domains?.question?.document.regions||[]).text])));
+    setBuffers(authoringBuffers(row.snapshot));
     setNotice("下書きを開きました。保存しても正式な問題・解答・採点基準は変更されません。");
   }catch(e){setError(e instanceof Error?e.message:"下書きを開けませんでした。");}finally{setBusy(false);}}
   async function importSources(){if(!revision)return;
-    if(!window.confirm("統合下書きを最新の保存済みレビューに置き換えます。現在の下書き編集は失われます。取り込みますか？"))return;
+    if(dirty){setError("先に現在の編集内容を保存してください。保存済みレビューは自動では取り込みません。");return;}
+    if(!window.confirm("最新の解答・採点基準レビューを取り込みます。現在の設問本文・分割・階層は保持し、取り込み前の編集版も残します。問題レビューの変更は確認事項として扱います。続行しますか？"))return;
     setBusy(true);setError("");try{
-      const row=await testAuthoring.importSources(id,revision.edit_version);setRevision(row);setSnapshot(row.snapshot);setDirty(false);setDirtyDomains({});
-      setBuffers(Object.fromEntries(row.snapshot.nodes.map(n=>[n.stable_key,questionContent(n,row.snapshot.domains?.question?.document.regions||[]).text])));
-      setSelected(row.snapshot.nodes[0]?.stable_key||"all");setExternalChange(false);setContinueExternal(false);
+      const row=await testAuthoring.importSources(id,revision.edit_version,true);setRevision(row);setSnapshot(row.snapshot);setDirty(false);setDirtyDomains({});
+      setBuffers(authoringBuffers(row.snapshot));
+      setSelected(current=>row.snapshot.nodes.some(n=>n.stable_key===current)?current:row.snapshot.nodes[0]?.stable_key||"all");setExternalChange(false);setContinueExternal(false);setNotice("保存済みレビューを取り込みました。現在の設問本文・分割・階層と取り込み前の編集版は保持されています。");
     }catch(e){setError(e instanceof Error?e.message:"取り込めませんでした。");}finally{setBusy(false);}
   }
-  async function save(){if(!snapshot||!revision)return;setBusy(true);setSaving(true);setError("");try{
-    const value={...snapshot,nodes:snapshot.nodes.map(n=>{
-      const text=buffers[n.stable_key]??n.body_text;
-      const reconciled=editQuestionContent(n,snapshot.domains?.question?.document.regions||[],text);
-      if(!reconciled)throw new Error("問題文と出典の対応を確認してください。");
-      return {...reconciled,body_text:text};
-    })};
-    const row=await testAuthoring.save(id,value,revision.edit_version,continueExternal);
-    setRevision(row);setSnapshot(row.snapshot);setDirty(false);setDirtyDomains({});setNotice("下書きを保存しました。");
-  }catch(e){setError(e instanceof Error?e.message:"保存できませんでした。");}finally{setBusy(false);setSaving(false);}}
+  async function save(){
+    if(!snapshot||!revision||saveInFlight.current)return;
+    saveInFlight.current=true;const epoch=editEpoch.current;
+    setBusy(true);setSaving(true);setSaveStatus("saving");setError("");setNotice("");
+    try{
+      const value=prepareAuthoringSave(snapshot,buffers);
+      const row=await testAuthoring.save(id,value,revision.edit_version,continueExternal);
+      if(editEpoch.current===epoch){
+        synchronize(row);setSaveStatus("success");setNotice("下書きを保存しました。");
+        void testAuthoring.get(id).then(data=>{
+          if(data.revision?.id===row.id&&data.revision.edit_version===row.edit_version&&editEpoch.current===epoch){setSourceProblems(data.source_problems||[]);setExternalChange(data.external_source_change);}
+        }).catch(()=>{/* Persisted response remains authoritative even if status refresh fails. */});
+      }
+      else {setRevision(row);setSnapshot(current=>current?{...current,source_provenance:row.snapshot.source_provenance}:current);setNotice("送信した内容は保存しました。その後の変更は未保存です。");}
+    }catch(e){setSaveStatus("error");setError(`保存できませんでした。編集内容は画面に保持されています。${e instanceof Error?` (${e.message})`:""}`);}
+    finally{saveInFlight.current=false;setBusy(false);setSaving(false);}
+  }
   async function finalReview(){
     setBusy(true);try{
       if(dirty&&snapshot&&revision){
-        const value={...snapshot,nodes:snapshot.nodes.map(n=>{
-          const text=buffers[n.stable_key]??questionContent(n,regions).text,next=editQuestionContent(n,regions,text);
-          if(!next)throw new Error("問題文と元資料の対応を確認してください。");return {...next,body_text:text};
-        })};setIssues((await testAuthoring.reviewLocal(id,value,revision.edit_version)).issues);
+        const value=prepareAuthoringSave(snapshot,buffers);setIssues((await testAuthoring.reviewLocal(id,value,revision.edit_version)).issues);
       }else setIssues((await testAuthoring.review(id)).issues);
       setSelected("all");
     }
@@ -209,7 +227,7 @@ export default function TestAuthoringPage() {
     if(old&&uploaded[0].sha256===old.sha256)throw new Error("同じ内容の資料です。差し替えは行いませんでした。");
     setMaterials(current=>[...current,...uploaded.filter(m=>!current.some(old=>old.id===m.id))]);
     setSnapshot(current=>current?{...current,materials:[...current.materials.filter(ref=>!uploaded.some(m=>m.id===ref.id)),...uploaded.map(m=>({id:m.id,sha256:m.sha256||null,role:m.material_type,...(old?{replaces_material_id:old.id}:{})}))]}:current);
-    setDirty(true);setMaterialId(uploaded[0].id);setSourceMode("pdf");setNotice(old?"資料を差し替えました。元資料と出典情報は保持されています。変更を保存してから明示的に再解析してください。":"資料を追加しました。既存の資料と解析結果は保持されています。");setReplacement(null);
+    markDirty();setMaterialId(uploaded[0].id);setSourceMode("pdf");setNotice(old?"資料を差し替えました。元資料と出典情報は保持されています。変更を保存してから明示的に再解析してください。":"資料を追加しました。既存の資料と解析結果は保持されています。");setReplacement(null);
   }catch(e){setError(e instanceof Error?e.message:"資料を追加できませんでした。");}finally{setBusy(false);if(fileInput.current)fileInput.current.value="";}}
   if(error&&!snapshot)return <ErrorState message={error}/>;
   if(!snapshot)return <LoadingState/>;
@@ -239,8 +257,9 @@ export default function TestAuthoringPage() {
   const boundAnalyzed=analysisDomain==="question"?!!questionDomain&&viewed?.sha256===questionDomain.document.source_pdf_sha256:
     analysisDomain==="answer"&&materialId===snapshot.domains?.answer?.material_id;
   const analyzed=!!boundAnalyzed||snapshot.source_provenance.analysis_materials?.some(m=>m.id===materialId&&m.sha256===viewed?.sha256);
-  const analysisReason=readonly?"修正版を作成すると編集できます。":busy?"処理中です。完了までお待ちください。":
-    !materialId?"資料を選択してください。":!analysisDomain?"この資料は解析対象ではありません。":dirty?"変更を保存してから解析してください。":"";
+  const readiness=analysisReadiness(revision?.analysis_readiness?.[materialId],{editable:!readonly,dirty,busy,selected:!!materialId,supported:!!analysisDomain});
+  const analysisReason=readiness.reason;
+  const sourceWarnings=revision?.source_warnings||[];
   const replaceMaterial=(mid:string)=>{setReplacement(mid);setRole(materials.find(m=>m.id===mid)?.material_type||"question_sheet");setSourceMode("add");};
   let mappedLocation:{id:string;page:number;bbox?:number[]}|undefined;
   if(node&&viewed?.sha256===questionDomain?.document.source_pdf_sha256){
@@ -257,12 +276,14 @@ export default function TestAuthoringPage() {
       <button disabled={busy} onClick={()=>{setContinueExternal(true);setNotice("現在の統合下書きを継続します。外部レビューの更新は取り込みません。");}}>現在の下書きを継続</button>
       <button disabled={busy} onClick={importSources}>最新レビューを取り込む</button></section>}
     {error&&<p role="alert" className="error">{error}</p>}{notice&&<p role="status">{notice}</p>}
+    {saveStatus==="success"&&<p role="status" className="authoring-save-success">✓ 保存しました</p>}
+    {sourceWarnings.length>0&&<section aria-label="保存済み内容の出典確認" className="authoring-source-notice" role="status"><p>⚠ 元資料との対応に確認が必要な設問があります。編集内容は保存されています。</p>{sourceWarnings.map((w,i)=><div key={i}><span>{w.message}</span>{w.question_key&&<button onClick={()=>navigate({question_key:w.question_key,section:"question",field:"source",message:w.message})}>確認する</button>}</div>)}</section>}
     {(sourceProblems.length>0||questionStale||answerStale)&&<p role="alert">元PDFとの対応が無効になっています。資料と保存済みレビューを確認し、必要なら明示的に再解析してください。</p>}
-    {analysisReason&&<p id="authoring-analysis-reason" className="muted" role="status">選択資料の解析: {analysisReason}</p>}{analyzing&&<p role="status">選択資料を解析しています。完了までお待ちください。</p>}
+    {readiness.state!=="unsaved_changes"&&analysisReason&&<p id="authoring-analysis-reason" role="status">選択資料の解析: {analysisReason}</p>}{analyzing&&<p role="status">選択資料を解析しています。完了までお待ちください。</p>}
     <ReviewWorkspaceLayout actions={<div className="review-toolbar" aria-busy={busy}>
-      {readonly?<button className="button" disabled={busy} onClick={begin}>修正版を作成</button>:<button className="button" disabled={busy||!dirty} onClick={save}>保存</button>}
+      {readonly?<button className="button" disabled={busy} onClick={begin}>修正版を作成</button>:<button className="button" disabled={busy||!dirty} onClick={save}>{saving?"保存中…":"保存"}</button>}
       {!readonly&&<button disabled={busy} onClick={importSources}>保存済みレビューを取り込む</button>}
-      <button className="button secondary" disabled={busy} onClick={finalReview}>最終確認へ</button><Link className="button secondary" href={`/tests/${id}`}>戻る</Link>
+      <button className="button secondary" disabled={busy} onClick={finalReview}>最終確認へ</button><Link className="button secondary" href={`/tests/${id}`} onClick={event=>{if(saving||dirty&&!window.confirm("未保存の変更があります。保存せずにテスト詳細へ戻りますか？"))event.preventDefault();}}>戻る</Link>
       {dirty&&<><span role="status">未保存の変更があります</span><span className="muted">{Object.entries(dirtyDomains).filter(([,v])=>v).map(([k])=>({question:"問題",answer:"解答",rubric:"採点基準",diagram:"図"}[k])).filter(Boolean).join("・")}</span></>}
     </div>} source={<>
       <div className="authoring-source-controls" role="group" aria-label="利用資料の操作">
@@ -272,10 +293,11 @@ export default function TestAuthoringPage() {
         }}><option value="">資料を選択・追加・編集</option><optgroup label="資料">{materials.map(m=><option key={m.id} value={m.id}>{roles[m.material_type]||"資料"} — {m.original_filename}{snapshot.materials.some(ref=>ref.replaces_material_id===m.id)?"（差し替え済み）":""}</option>)}</optgroup>
           <optgroup label="資料管理"><option value="action:add">資料の追加</option><option value="action:manage">資料の編集</option></optgroup>
         </select>
-        {sourceMode==="pdf"&&materialId&&<div className="authoring-current-material-actions"><span title={analysisReason||undefined}><button aria-describedby={analysisReason?"authoring-analysis-reason":undefined} disabled={!!analysisReason} onClick={()=>analysisDomain&&void analyzeSource(analysisDomain)}>{analyzing?"解析中…":analyzed?"再解析":"解析"}</button></span>
+        {sourceMode==="pdf"&&materialId&&<div className="authoring-current-material-actions"><span title={analysisReason||undefined}><button aria-describedby={analysisReason?"authoring-analysis-reason":undefined} disabled={readiness.state!=="ready"} onClick={()=>analysisDomain&&void analyzeSource(analysisDomain)}>{analyzing?"解析中…":analyzed?"再解析":"解析"}</button></span>
           <button disabled={readonly||busy} onClick={()=>replaceMaterial(materialId)}>差換え</button>
         </div>}
       </div>
+      {readiness.state==="unsaved_changes"&&sourceMode==="pdf"&&<section id="authoring-analysis-reason" className="authoring-source-notice" aria-label="解析前の保存" role="status"><p>⚠ 未保存の変更があります。この資料を解析する前に保存してください。</p><button disabled={busy} onClick={()=>void save()}>保存</button></section>}
       {sourceMode!=="pdf"&&(<section className="authoring-material-management" aria-label="資料管理"><h3>{sourceMode==="manage"?"資料の編集":replacement?"資料の差換え":"資料の追加"}</h3><p>資料を追加してから編集できます。差し替えは元資料を保持し、出典の再確認が必要です。解析は明示操作のみです。</p><button onClick={()=>{setSourceMode("pdf");setReplacement(null);}}>PDFに戻る</button>{sourceMode==="manage"&&<><button disabled={readonly||busy} onClick={()=>{setReplacement(null);setSourceMode("add");}}>資料の追加</button><ul>{materials.map(m=><li key={m.id}>{roles[m.material_type]||"資料"} — {m.original_filename}<details><summary>出典情報</summary>SHA: {m.sha256||"なし"}<p>{snapshot.materials.some(ref=>ref.replaces_material_id===m.id)?"差し替え済み・元資料を保持":"利用中"}{materialId===m.id?"・選択中の資料":""}</p></details><button onClick={()=>{setMaterialId(m.id);setSourceMode("pdf");}}>選択</button><button disabled={readonly||busy} onClick={()=>replaceMaterial(m.id)}>差換え</button></li>)}</ul></>}{sourceMode==="add"&&<>{replacement&&<p role="alert">差し替え対象: {materials.find(m=>m.id===replacement)?.original_filename}。既存の出典確認は再確認が必要です。自動解析は行いません。</p>}
         <label>資料の種類<select aria-label="資料の種類" disabled={!!replacement} value={role} onChange={e=>setRole(e.target.value)}>{Object.entries(roles).map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label>
         <input ref={fileInput} aria-label="資料を追加" type="file" accept="application/pdf,.pdf" multiple={!replacement} disabled={readonly||busy} onChange={e=>void upload(e.target.files)}/>
@@ -307,7 +329,7 @@ export default function TestAuthoringPage() {
             activeRegionId={regionId} renderEvidence={questionDomain?(rid)=><EvidencePanel id={questionDomain.document.id} regionId={rid} ownerLabel={pathFor(selected)} readonly={readonly||saving||analyzing}
               decision={(regions.find(r=>r.region_id===rid)?.region_type==="formula"?node.formula_decisions:node.figure_decisions)[rid]||{decision:"unreviewed"}}
               onDecision={d=>{const field=regions.find(r=>r.region_id===rid)?.region_type==="formula"?"formula_decisions":"figure_decisions";updateNode({...node,[field]:{...node[field],[rid]:d}});}}/>:undefined}
-            onCaret={offset=>{questionCaret.current=offset;}} onContentChange={(text,proposal)=>{setSplitProposal(null);setDirty(true);setDirtyDomains(d=>({...d,question:true}));setBuffers(current=>({...current,[selected]:text}));if(proposal?.apply_provenance)updateNode({...node,math_ocr_edits:[...(node.math_ocr_edits||[]),proposal.apply_provenance].slice(-16)});}}
+            onCaret={offset=>{questionCaret.current=offset;}} onContentChange={(text,proposal)=>{setSplitProposal(null);markDirty();setDirtyDomains(d=>({...d,question:true}));setBuffers(current=>({...current,[selected]:text}));if(proposal?.apply_provenance)updateNode({...node,math_ocr_edits:[...(node.math_ocr_edits||[]),proposal.apply_provenance].slice(-16)});}}
             onConfirmContent={confirm=>{const next=editQuestionContent(node,regions,buffers[selected]??node.body_text);if(next)updateNode(confirm(next));else setError("問題文と元資料の対応を確認してください。");}} onChange={updateNode}
             onParent={parent=>reparentNode(node,parent)} onMove={direction=>moveNode(node,direction)} onRegion={setRegionId}/>
           <div hidden={questionSettings}><button disabled={readonly||saving||analyzing} onClick={()=>{
@@ -341,7 +363,7 @@ export default function TestAuthoringPage() {
           </div><div hidden={questionSettings}>
           {questionDomain&&revision&&<DiagramReview path={`/tests/${id}/authoring/nodes/${selected}/diagrams`} revision={revision.edit_version}
             records={node.diagram_records} sourceStale={questionStale} disabled={readonly||saving||analyzing} label="図の確認" onSelect={setDiagramSelection}
-            onChange={records=>{setDirty(true);setDirtyDomains(d=>({...d,diagram:true}));setSnapshot(current=>current?{...current,nodes:current.nodes.map(n=>{if(n.stable_key!==node.stable_key)return n;const decisions={...n.figure_decisions};for(const record of records)for(const rid of record.legacy_region_ids||(record.legacy_region_id?[record.legacy_region_id]:[]))decisions[rid]={decision:record.state==="accepted"?"accepted_as_evidence":record.state==="excluded"?"excluded":"unreviewed"};return {...n,diagram_records:records,figure_decisions:decisions};})}:current);}}/>}
+            onChange={records=>{markDirty();setDirtyDomains(d=>({...d,diagram:true}));setSnapshot(current=>current?{...current,nodes:current.nodes.map(n=>{if(n.stable_key!==node.stable_key)return n;const decisions={...n.figure_decisions};for(const record of records)for(const rid of record.legacy_region_ids||(record.legacy_region_id?[record.legacy_region_id]:[]))decisions[rid]={decision:record.state==="accepted"?"accepted_as_evidence":record.state==="excluded"?"excluded":"unreviewed"};return {...n,diagram_records:records,figure_decisions:decisions};})}:current);}}/>}
           {questionDomain&&questionWarnings.length>0&&<WarningPanel warnings={questionWarnings} targetLabel={()=>pathFor(selected)} states={questionDomain.snapshot.warning_states||{}} readonly={readonly||saving||analyzing}
             onChange={(key,resolution)=>change({...snapshot,domains:{...snapshot.domains,question:{...questionDomain,snapshot:{...questionDomain.snapshot,warning_states:{...questionDomain.snapshot.warning_states,[key]:resolution}}}}})}/>}
           </div>

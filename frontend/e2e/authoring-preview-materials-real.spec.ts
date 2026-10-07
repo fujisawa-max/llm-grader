@@ -80,7 +80,7 @@ test("current preview and retained editor history; explicit add/replace material
   page.once("dialog",d=>d.accept());await page.getByLabel("資料を追加",{exact:true}).setInputFiles(changed);
   await expect(page.getByRole("status").filter({hasText:"資料を差し替えました"})).toBeVisible();await expect(page.getByLabel("模範解答本文",{exact:true})).toHaveValue(atext);
   await expect(page.getByText("未保存の変更があります",{exact:true})).toBeVisible();expect(await calls(page)).toEqual(counts);
-  await page.getByRole("button",{name:"保存",exact:true}).click();await expect(page.getByText("下書きを保存しました。",{exact:true})).toBeVisible();
+  await page.getByRole("button",{name:"保存",exact:true}).first().click();await expect(page.getByText("下書きを保存しました。",{exact:true})).toBeVisible();
   const saved=(await(await page.request.get(base+"/authoring")).json()).revision;expect(saved.snapshot.materials.find((m:{replaces_material_id?:string})=>m.replaces_material_id===old)).toBeTruthy();
   await page.reload();await expect(page.getByLabel("問題プレビュー",{exact:true})).toContainText("貼付");await expect(page.getByLabel("解答プレビュー",{exact:true})).toContainText("日本語");await expect(page.getByLabel("模範解答本文",{exact:true})).not.toBeVisible();
   await question.getByRole("button",{name:"本文編集",exact:true}).click();await expect(page.getByLabel("問題文",{exact:true})).toHaveValue(qtext);await answer.getByRole("button",{name:"本文編集",exact:true}).click();await expect(page.getByLabel("模範解答本文",{exact:true})).toHaveValue(atext);
@@ -92,12 +92,12 @@ test("Question and whole-Test views stay separate; canonical score metadata and 
   await page.getByLabel("メールアドレス").fill(process.env.MODEL_ANSWER_CLASSIFICATION_EMAIL!);await page.getByLabel("パスワード").fill(process.env.MODEL_ANSWER_CLASSIFICATION_PASSWORD!);await page.getByRole("button",{name:"ログイン"}).click();await expect(page).not.toHaveURL(/login/);
   const seed=await(await page.request.get(`/api/v1/tests/${process.env.MODEL_ANSWER_CLASSIFICATION_TEST_ID}`)).json();
   const exam=await(await page.request.post(`/api/v1/offerings/${seed.course_offering_id}/tests`,{data:{name:"Question preview metadata",total_points:70}})).json(),base=`/api/v1/tests/${exam.id}`;
-  await page.goto(`/tests/${exam.id}/authoring`);await page.getByRole("button",{name:"設問を追加",exact:true}).click();await page.getByRole("button",{name:"保存",exact:true}).click();
+  await page.goto(`/tests/${exam.id}/authoring`);await page.getByRole("button",{name:"設問を追加",exact:true}).click();await page.getByRole("button",{name:"保存",exact:true}).first().click();
   await expect(page.getByText("未保存の変更があります",{exact:true})).toHaveCount(0);
   const saved=await(await page.request.get(base+"/authoring")).json(),template=saved.revision.snapshot.nodes[0];
   const make=(key:string,label:string,parent:string|null,points:number|null,semantics:string,order:number)=>({...template,stable_key:key,review_node_id:key,parent_key:parent,depth:parent?1:0,node_type:parent?"subquestion":"major_question",label:{raw:label,normalized:label},sort_order:order,score_points:points,score_semantics:semantics,body_text:"$x^2$ の問題",ordered_content:[{type:"text",order:0,text:"$x^2$ の問題"}]});
   const snapshot={...saved.revision.snapshot,nodes:[make("direct","問題1",null,30,"direct",0),make("parent","問題2",null,null,"sum_children",1),make("child1","(1)","parent",20,"direct",0),make("child2","(2)","parent",20,"direct",1),make("unset","問題3",null,null,"unset",2)]};
-  const result=await page.request.put(base+"/authoring",{data:{snapshot,expected_edit_version:saved.revision.edit_version}});expect(result.ok()).toBe(true);
+  const result=await page.request.put(base+"/authoring",{data:{snapshot:{...snapshot,question_text_buffers:Object.fromEntries(snapshot.nodes.map((n:{stable_key:string;body_text:string})=>[n.stable_key,n.body_text]))},expected_edit_version:saved.revision.edit_version}});expect(result.ok()).toBe(true);
   await page.reload();const selector=page.getByLabel("対象設問",{exact:true}),metadata=page.locator(".authoring-question-metadata"),controls=page.locator(".authoring-target-controls");
   const countBefore=await calls(page);
   await selector.selectOption("direct");await expect(metadata).toContainText("大問：問題1 ／ 配点：30点（直接配点）");await expect(page.locator(".authoring-question-preview-frame .katex")).toBeVisible();

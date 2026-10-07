@@ -73,7 +73,8 @@ def test_external_review_change_blocks_silent_overwrite_and_explicit_import(work
     assert fixture.client.get(path).json()['revision'] == row
     result = fixture.client.post(path+'/source-import', json={'expected_edit_version': row['edit_version']})
     assert result.status_code == 200, result.text
-    assert result.json()['snapshot']['nodes'][0]['ordered_content'][0]['text'] == revised['nodes'][0]['ordered_content'][0]['text']
+    assert result.json()['snapshot']['nodes'] == row['snapshot']['nodes']
+    assert result.json()['source_warnings'][0]['code'] == 'authoring_question_review_changed'
     assert fixture.client.get(path).json()['external_source_change'] is False
 
 
@@ -178,3 +179,60 @@ def test_question_analysis_marker_survives_resume(workspace):
     assert response.status_code == 200, response.text
     assert response.json()['snapshot']['source_provenance']['analysis_materials'] == [ref]
     assert fixture.client.get(path).json()['revision'] == response.json()
+
+
+def test_unresolved_raw_text_saves_as_separate_warning_without_source_mutation(workspace):
+    fixture, data = workspace
+    path, row = start(fixture, data)
+    snapshot = deepcopy(row['snapshot'])
+    original = deepcopy(snapshot['nodes'][0]['ordered_content'])
+    snapshot['question_text_buffers'] = {'q1': 'Teacher rewrote text across native/formula boundaries\n$$ unfinished'}
+    snapshot['nodes'][0]['body_text'] = snapshot['question_text_buffers']['q1']
+    snapshot['nodes'][0].update(score_points=7, score_semantics='direct')
+    with patch('scoring.source_math_ocr.SourceMathOCR.propose') as inference:
+        saved = fixture.client.put(path, json={'expected_edit_version': row['edit_version'], 'snapshot': snapshot})
+        assert saved.status_code == 200, saved.text
+        resumed = fixture.client.get(path).json()['revision']
+        assert resumed == saved.json()
+        assert fixture.client.post(path+'/revisions').json() == resumed
+    inference.assert_not_called()
+    assert resumed['snapshot']['nodes'][0]['ordered_content'] == original
+    assert resumed['snapshot']['nodes'][0]['body_text'] == snapshot['question_text_buffers']['q1']
+    assert resumed['source_warnings'][0]['question_key'] == 'q1'
+    assert '保存されています' in resumed['source_warnings'][0]['message']
+    assert fixture.client.get(f'/api/v1/question-import-reviews/{data["id"]}').json() == data
+    assert fixture.client.get(f'/api/v1/tests/{data["test_id"]}/questions').json() == []
+
+
+def test_raw_buffer_does_not_override_invalid_source_anchor(workspace):
+    fixture, data = workspace
+    path, row = start(fixture, data)
+    snapshot = deepcopy(row['snapshot'])
+    snapshot['question_text_buffers'] = {'q1': 'Teacher raw text'}
+    snapshot['nodes'][0]['ordered_content'][0]['source_element_ids'] = ['foreign-element']
+    saved = fixture.client.put(path, json={'expected_edit_version': row['edit_version'], 'snapshot': snapshot})
+    assert saved.status_code == 409
+    assert '保存できませんでした' in saved.text
+    assert fixture.client.get(path).json()['revision'] == row
+
+
+def test_explicit_keep_current_copy_acknowledges_external_token_on_save_and_resume(workspace):
+    fixture, data = workspace
+    path, row = start(fixture, data)
+    revised = deepcopy(data['snapshot'])
+    revised['nodes'][0]['ordered_content'][0]['text'] += ' Legacy change'
+    changed = fixture.client.post(f'/api/v1/question-import-reviews/{data["id"]}/revisions',
+        json={'base_revision': data['current_revision'], 'snapshot': revised})
+    assert changed.status_code == 200, changed.text
+    saved = fixture.client.put(path, json={'snapshot': row['snapshot'],
+        'expected_edit_version': row['edit_version'], 'continue_after_external_change': True})
+    assert saved.status_code == 200, saved.text
+    resumed = fixture.client.get(path).json()
+    assert resumed['external_source_change'] is False
+    assert resumed['revision'] == saved.json()
+    assert resumed['revision']['snapshot']['nodes'] == row['snapshot']['nodes']
+    assert resumed['revision']['snapshot']['domains']['question'] == row['snapshot']['domains']['question']
+    assert resumed['revision']['snapshot']['source_provenance']['authoring_origins']['kept_authoring_after_external_change']
+    again = fixture.client.put(path, json={'snapshot': saved.json()['snapshot'],
+        'expected_edit_version': saved.json()['edit_version']})
+    assert again.status_code == 200, again.text

@@ -232,12 +232,12 @@ def test_changed_formal_baseline_is_actionable_and_not_overwritten(workspace):
 
 def test_status_is_read_only_and_domain_authorized(workspace):
     w = workspace
-    assert w.client.get(base(w)+'/authoring/status').json() == {'state': None}
+    assert w.client.get(base(w)+'/authoring/status').json() == {'state': None, 'revision_id': None, 'edit_version': None}
     assert w.client.get(base(w, 'foreign')+'/authoring/status').status_code == 403
     with w.sf() as s:
         assert s.scalar(select(func.count()).select_from(Revision)) == 0
     row = begin(w)
-    assert w.client.get(base(w)+'/authoring/status').json() == {'state': 'draft'}
+    assert w.client.get(base(w)+'/authoring/status').json() == {'state': 'draft', 'revision_id': row['id'], 'edit_version': row['edit_version']}
     assert w.client.get(base(w)+'/authoring').json()['revision'] == row
 
 
@@ -308,3 +308,85 @@ def test_simultaneous_initial_open_resumes_single_draft(workspace):
         assert session.scalar(select(func.count()).select_from(Revision).where(
             Revision.test_id == w.fresh, Revision.state == 'draft')) == 1
     assert begin(w, 'fresh')['id'] == rows[0]['id']
+
+
+def test_resume_prefers_active_saved_revision_over_backups_and_readonly(workspace):
+    w = workspace
+    row = begin(w)
+    with w.sf() as session:
+        for number, state in [(2, 'confirmed'), (3, 'analysis_backup')]:
+            session.add(Revision(test_id=w.legacy, revision=number, edit_version=99,
+                state=state, snapshot=deepcopy(row['snapshot']), snapshot_sha256=row['snapshot_sha256'],
+                baseline_sha256=row['baseline_sha256']))
+        session.commit()
+    assert w.client.get(base(w)+'/authoring').json()['revision'] == row
+    assert begin(w)['id'] == row['id']
+    value = deepcopy(row['snapshot'])
+    value['nodes'][0]['score_points'] = 7
+    value['nodes'][0]['body_text'] = 'Saved active revision'
+    value['nodes'][0]['ordered_content'][0]['text'] = 'Saved active revision'
+    saved = w.client.put(base(w)+'/authoring', json={'snapshot': value, 'expected_edit_version': row['edit_version']})
+    assert saved.status_code == 200, saved.text
+    assert w.client.get(base(w)+'/authoring').json()['revision'] == saved.json()
+    with w.sf() as session:
+        session.get(Revision, row['id']).state = 'analysis_backup'
+        session.commit()
+    assert w.client.get(base(w)+'/authoring').json()['revision']['state'] == 'confirmed'
+    assert w.client.put(base(w)+'/authoring', json={'snapshot': value, 'expected_edit_version': 99}).status_code == 409
+
+
+def test_exact_buffers_split_points_answer_rubric_roundtrip(workspace):
+    w = workspace
+    row = begin(w)
+    value = deepcopy(row['snapshot'])
+    root = value['nodes'][0]
+    root.update(score_semantics='sum_children', score_points=None)
+    child = {**deepcopy(root), 'stable_key': 'teacher-child', 'review_node_id': 'teacher-child',
+        'parent_key': root['stable_key'], 'node_type': 'subquestion', 'sort_order': 0,
+        'score_semantics': 'direct', 'score_points': 10, 'body_text': 'Japanese\nexact buffer'}
+    child['ordered_content'] = [{'type': 'text', 'order': 0, 'text': child['body_text']}]
+    value['nodes'].append(child)
+    value['question_text_buffers'] = {n['stable_key']: n['body_text'] for n in value['nodes']}
+    value['answers']['teacher-child'] = {'primary': 'answer', 'alternatives': ['alternative'], 'diagram_records': []}
+    value['rubrics']['teacher-child'] = [{'id': 'manual', 'description': 'criterion', 'points': 10}]
+    saved = w.client.put(base(w)+'/authoring', json={'snapshot': value, 'expected_edit_version': row['edit_version']})
+    assert saved.status_code == 200, saved.text
+    assert saved.json()['snapshot'] == value
+    assert w.client.get(base(w)+'/authoring').json()['revision'] == saved.json()
+    assert begin(w) == saved.json()
+    conflict = w.client.put(base(w)+'/authoring', json={'snapshot': row['snapshot'], 'expected_edit_version': 1})
+    assert conflict.status_code == 409
+    assert w.client.get(base(w)+'/authoring').json()['revision'] == saved.json()
+
+
+@pytest.mark.parametrize('state', ['ready', 'unsaved_changes', 'unsupported', 'stale_source', 'busy', 'missing_material', 'readonly'])
+def test_analysis_readiness_has_explicit_states(state):
+    from scoring.test_authoring import material_analysis_readiness
+    material = {'id': 'current', 'role': 'question_sheet', 'sha256': 'hash'}
+    snapshot = {'materials': [material], 'source_provenance': {'analysis_materials': [{'id': 'current', 'sha256': 'hash'}]}}
+    if state == 'unsupported':
+        material['role'] = 'supplementary_source'
+    if state == 'stale_source':
+        snapshot['materials'].append({'id': 'new', 'replaces_material_id': 'current'})
+    result = material_analysis_readiness(snapshot, None if state == 'missing_material' else material,
+        dirty=state == 'unsaved_changes', busy=state == 'busy', editable=state != 'readonly')
+    assert result['state'] == state
+    assert bool(result['reason']) == (state != 'ready')
+    if state == 'ready':
+        assert result['analyzed'] is True
+
+
+def test_backup_only_resume_fails_clearly_instead_of_using_formal_projection(workspace):
+    w = workspace
+    row = begin(w)
+    with w.sf() as session:
+        stored = session.get(Revision, row['id'])
+        stored.snapshot = {**stored.snapshot, 'metadata': {**stored.snapshot['metadata'], 'name': 'Preserved backup'}}
+        stored.state = 'analysis_backup'
+        session.commit()
+    response = w.client.get(base(w)+'/authoring')
+    assert response.status_code == 409
+    assert 'AUTHORING_RESUME_UNAVAILABLE' in response.text
+    restored = begin(w)
+    assert restored['snapshot']['metadata']['name'] == 'Preserved backup'
+    assert restored['revision'] == row['revision']+1

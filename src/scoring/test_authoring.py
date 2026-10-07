@@ -73,16 +73,22 @@ def baseline_hash(snapshot):
     return canonical_hash({k: v for k, v in snapshot.items() if k != 'materials'})
 
 
-def latest(session, test_id):
-    return session.scalar(select(TestAuthoringRevision).where(TestAuthoringRevision.test_id == test_id)
-        .order_by(TestAuthoringRevision.revision.desc()))
+def latest(session, test_id, *, include_backups=False):
+    from sqlalchemy import case
+    query = select(TestAuthoringRevision).where(TestAuthoringRevision.test_id == test_id)
+    if include_backups:
+        return session.scalar(query.order_by(TestAuthoringRevision.revision.desc()))
+    return session.scalar(query.where(TestAuthoringRevision.state.in_(['draft', 'final_review', 'confirmed']))
+        .order_by(case((TestAuthoringRevision.state.in_(['draft', 'final_review']), 0), else_=1),
+                  TestAuthoringRevision.revision.desc()))
 
 
 def create_draft(session, test, actor=None, *, source_roots=None):
     session.scalar(select(Test).where(Test.id == test.id).with_for_update())
     if session.get(TestArchive, test.id):
         raise AuthoringError('TEST_ARCHIVED', 'このテストはアーカイブされています。')
-    prior = latest(session, test.id)
+    highest = latest(session, test.id, include_backups=True)
+    prior = latest(session, test.id) or highest
     if prior and prior.state in {'draft', 'final_review'}:
         return prior
     baseline = projection(session, test)
@@ -91,7 +97,7 @@ def create_draft(session, test, actor=None, *, source_roots=None):
         from .authoring_sources import source_projection
         snapshot = source_projection(session, test, baseline, *source_roots)
     row = TestAuthoringRevision(id=str(uuid4()), test_id=test.id,
-        revision=prior.revision+1 if prior else 1, edit_version=1, state='draft',
+        revision=highest.revision+1 if highest else 1, edit_version=1, state='draft',
         snapshot=snapshot, snapshot_sha256=canonical_hash(snapshot),
         baseline_sha256=baseline_hash(baseline), created_by=actor)
     session.add(row)
@@ -103,7 +109,7 @@ def create_draft(session, test, actor=None, *, source_roots=None):
 
 def validate_snapshot(value, previous):
     if (not isinstance(value, dict) or value.get('schema_version') != 'test-authoring.v1'
-            or set(value) != set(previous) or len(json.dumps(value, ensure_ascii=False)) > 4_000_000):
+            or set(value) - {'question_text_buffers'} != set(previous) - {'question_text_buffers'} or len(json.dumps(value, ensure_ascii=False)) > 4_000_000):
         raise AuthoringError('AUTHORING_INVALID_SNAPSHOT', '下書きの形式が不正です。')
     # No client may manufacture/replace original evidence while editing text.
     if value['source_provenance'] != previous['source_provenance']:
@@ -123,6 +129,10 @@ def validate_snapshot(value, previous):
     keys = [n.get('stable_key') for n in nodes if isinstance(n, dict)]
     if len(keys) != len(nodes) or any(not isinstance(k, str) or not k for k in keys) or len(set(keys)) != len(keys):
         raise AuthoringError('AUTHORING_INVALID_HIERARCHY', '設問IDが重複しています。')
+    buffers = value.get('question_text_buffers', {})
+    if (not isinstance(buffers, dict) or not set(buffers) <= set(keys) or
+            any(not isinstance(v, str) or len(v) > 20000 for v in buffers.values())):
+        raise AuthoringError('AUTHORING_INVALID_TEXT', '問題文の編集内容を確認してください。')
     by_key = {n['stable_key']: n for n in nodes}
     for node in nodes:
         if (not isinstance(node.get('label'), dict) or not isinstance(node['label'].get('raw'), str)
@@ -251,6 +261,8 @@ def preflight(snapshot):
                 owner = next((n['stable_key'] for n in nodes if n['stable_key'] == warning.get('owner') or
                     n.get('source_draft_stable_key') == warning.get('owner')), None)
                 issue(owner, 'question', '元資料の確認事項を確認してください。')
+    for warning in source_warnings(snapshot):
+        issue(warning['question_key'], 'question', '本文と元資料の対応を確認してください。', 'source')
     for diagnostic in snapshot['source_provenance'].get('authoring_origins', {}).get('diagnostics', []):
         issue(None, 'source', '保存済みレビューの元資料を確認できません。出典付きレビューを確認してください。')
     for entry in snapshot.get('domains', {}).get('answer', {}).get('entries', []):
@@ -326,3 +338,59 @@ def validate_material_replacements(snapshot):
                 raise AuthoringError('AUTHORING_INVALID_REPLACEMENT', '資料の差し替え関係を確認してください。')
             visited.add(old['id'])
             old = references.get(old.get('replaces_material_id'))
+
+
+def source_text(node, snapshot):
+    regions = {r['region_id']: r for r in snapshot.get('domains', {}).get('question', {}).get('document', {}).get('regions', [])}
+    text = ''
+    for item in node['ordered_content']:
+        if item['type'] == 'text':
+            value = item.get('text', '')
+        elif item['type'] == 'formula_region':
+            rid = item['region_id']
+            value = node.get('formula_decisions', {}).get(rid, {}).get('teacher_transcription')
+            if value is None:
+                value = '\n'.join((f.get('native_text') or '') for f in regions.get(rid, {}).get('text_fragments', []))
+        else:
+            continue
+        if text and not text.endswith('\n'):
+            text += '\n'
+        text += value
+    return text
+
+
+def source_warnings(snapshot):
+    warnings = [{'question_key': n['stable_key'], 'code': 'authoring_text_source_unresolved',
+             'message': '元資料との対応に確認が必要です。編集内容は保存されています。'}
+            for n in snapshot['nodes'] if n['stable_key'] in snapshot.get('question_text_buffers', {}) and
+            snapshot['question_text_buffers'][n['stable_key']] != source_text(n, snapshot)]
+    if snapshot['source_provenance'].get('authoring_origins', {}).get('pending_question_review'):
+        warnings.append({'question_key': None, 'code': 'authoring_question_review_changed',
+            'message': '旧問題レビューが更新されています。保存済みの設問本文・分割・階層を保持しています。'})
+    return warnings
+
+
+def material_analysis_readiness(snapshot, material=None, *, editable=True, dirty=False, busy=False):
+    if not editable:
+        return {'state': 'readonly', 'reason': '修正版を作成すると編集できます。'}
+    if busy:
+        return {'state': 'busy', 'reason': '処理中です。完了までお待ちください。'}
+    if not material:
+        return {'state': 'missing_material', 'reason': '資料を選択してください。'}
+    if material['role'] not in {'question_sheet', 'model_answer_source', 'rubric_source'}:
+        return {'state': 'unsupported', 'reason': 'この資料は解析対象ではありません。'}
+    if dirty:
+        return {'state': 'unsaved_changes', 'reason': '変更を保存してから解析してください。'}
+    if any(m.get('replaces_material_id') == material['id'] for m in snapshot['materials']):
+        return {'state': 'stale_source', 'reason': '差し替え済みの資料です。新しい資料を選択してください。'}
+    analyzed = any(m['id'] == material['id'] and m['sha256'] == material['sha256']
+                   for m in snapshot['source_provenance'].get('analysis_materials', []))
+    domains = snapshot.get('domains', {})
+    if material['role'] == 'question_sheet':
+        analyzed = analyzed or domains.get('question', {}).get('document', {}).get('source_pdf_sha256') == material['sha256']
+    else:
+        answer = domains.get('answer') or {}
+        analyzed = analyzed or any(source.get('material_id') == material['id'] and
+            source.get('source_sha256') == material['sha256']
+            for source in [answer, *answer.get('sources', {}).values()])
+    return {'state': 'ready', 'reason': '', 'analyzed': analyzed}

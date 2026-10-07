@@ -23,8 +23,8 @@ test("compact material controls, role-aware explicit analysis and every Test edi
  }
  files.push(...await(await page.request.get(base+"/materials")).json());
  await select.selectOption(files.find(m=>m.material_type==="supplementary_source")!.id);await expect(controls.getByRole("button",{name:"解析",exact:true})).toBeDisabled();await expect(page.getByText("選択資料の解析: この資料は解析対象ではありません。",{exact:true})).toBeVisible();
- await select.selectOption(files.find(m=>m.material_type==="model_answer_source")!.id);await expect(controls.getByRole("button",{name:"解析",exact:true})).toBeDisabled();await expect(page.getByText("選択資料の解析: 変更を保存してから解析してください。",{exact:true})).toBeVisible();
- await page.getByRole("button",{name:"保存",exact:true}).click();await expect(page.getByText("下書きを保存しました。",{exact:true})).toBeVisible();await expect(controls.getByRole("button",{name:"解析",exact:true})).toBeEnabled();expect(await calls(page)).toEqual(before);
+ await select.selectOption(files.find(m=>m.material_type==="model_answer_source")!.id);await expect(controls.getByRole("button",{name:"解析",exact:true})).toBeDisabled();await expect(page.getByLabel("解析前の保存",{exact:true})).toBeVisible();
+ await page.getByRole("button",{name:"保存",exact:true}).first().click();await expect(page.getByText("下書きを保存しました。",{exact:true})).toBeVisible();await expect(controls.getByRole("button",{name:"解析",exact:true})).toBeEnabled();expect(await calls(page)).toEqual(before);
  const b=(await controls.boundingBox())!,dropdown=(await select.boundingBox())!,toolbar=(await page.locator(".review-workspace-source .pdf-pane-toolbar").boundingBox())!,pdf=(await page.locator(".pdf-pane-viewport").boundingBox())!;
  expect(b.height).toBeLessThan(48);expect(dropdown.width).toBeGreaterThan(170);expect(toolbar.y).toBeGreaterThanOrEqual(b.y+b.height);expect(pdf.height).toBeGreaterThan(550);expect(pdf.width).toBeGreaterThanOrEqual((await page.locator(".review-workspace-source").boundingBox())!.width*.8);
  for(const label of ["解析","差換え"]){const button=(await controls.getByRole("button",{name:label,exact:true}).boundingBox())!;expect(Math.abs(button.y-dropdown.y)).toBeLessThan(8);}

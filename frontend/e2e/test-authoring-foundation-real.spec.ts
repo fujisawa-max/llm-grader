@@ -40,7 +40,7 @@ test("whole-test drafts preserve local caret, materials, section state and forma
   await page.getByRole("checkbox",{name:"問題",exact:true}).check();
   await expect(editor).toHaveValue(text.slice(0,at)+text.slice(at+1));
   await expect(page.getByText("未保存の変更があります",{exact:true})).toBeVisible();
-  await page.getByRole("button",{name:"保存",exact:true}).click();
+  await page.getByRole("button",{name:"保存",exact:true}).first().click();
   await expect(page.getByText("下書きを保存しました。",{exact:true})).toBeVisible();
   const saved=await (await page.request.get(base+"/authoring")).json();
   await page.reload();await openAuthoringEditors(page);
@@ -62,7 +62,7 @@ test("whole-test drafts preserve local caret, materials, section state and forma
   await page.getByLabel("利用資料",{exact:true}).selectOption(files[0].id);
   expect(await page.getByLabel("対象設問",{exact:true}).inputValue()).toBe(selected);
   await expect(page.getByLabel("模範解答本文",{exact:true})).toHaveValue("Answer draft");
-  await page.getByRole("button",{name:"保存",exact:true}).click();
+  await page.getByRole("button",{name:"保存",exact:true}).first().click();
   await expect(page.getByText("未保存の変更があります",{exact:true})).not.toBeVisible();
   await page.getByRole("button",{name:"最終確認へ"}).click();
   await expect(page.getByRole("heading",{name:"テスト全体確認",exact:true})).toBeVisible();

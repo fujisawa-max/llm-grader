@@ -65,7 +65,7 @@ test("saved source reviews integrate Question, answer diagrams and advanced Rubr
   await expect.poll(()=>page.evaluate(()=>!!document.activeElement?.closest('[aria-label="採点基準候補"]'))).toBe(true);
   expect((await (await page.request.get(base+"/authoring")).json()).revision.edit_version).toBe(beforeReview.revision.edit_version);
   await selector.selectOption("q1");await expect(editor).toHaveValue(initial+"\n教師が編集した問題文");
-  await page.getByRole("button",{name:"保存",exact:true}).click();await expect(page.getByText("下書きを保存しました。",{exact:true})).toBeVisible();
+  await page.getByRole("button",{name:"保存",exact:true}).first().click();await expect(page.getByText("下書きを保存しました。",{exact:true})).toBeVisible();
   const saved=await (await page.request.get(base+"/authoring")).json();expect(saved.revision.state).toBe("draft");
   await page.reload();await openAuthoringEditors(page);await expect(editor).toHaveValue(initial+"\n教師が編集した問題文");await expect(manual.getByLabel("模範解答本文",{exact:true})).toHaveValue("");await expect(manual.getByLabel("観点",{exact:true})).toHaveCount(2);await expect(manual.getByLabel("別解1",{exact:true})).toHaveValue("教師が入力した別解");
   await expect(diagrams.getByText("使用中",{exact:true})).toBeVisible();
@@ -78,6 +78,15 @@ test("saved source reviews integrate Question, answer diagrams and advanced Rubr
   await expect(editor).toHaveValue(initial+"\n教師が編集した問題文");await expect(diagrams.getByText("使用中",{exact:true})).toBeVisible();
   await page.getByRole("button",{name:"現在の下書きを継続",exact:true}).click();
   await editor.fill(initial+"\n教師が編集した問題文\n外部変更後も統合下書きを維持");
-  await page.getByRole("button",{name:"保存",exact:true}).click();await expect(page.getByText("下書きを保存しました。",{exact:true})).toBeVisible();
+  await page.getByRole("button",{name:"保存",exact:true}).first().click();await expect(page.getByText("下書きを保存しました。",{exact:true})).toBeVisible();
+  const kept=await (await page.request.get(base+"/authoring")).json();
+  expect(kept.external_source_change).toBe(false);
+  await page.getByRole("link",{name:"戻る",exact:true}).click();
+  await page.getByRole("region",{name:"次に行う作業"}).getByRole("button",{name:"編集を続ける ›",exact:true}).click();
+  await openAuthoringEditors(page);
+  await expect(editor).toHaveValue(initial+"\n教師が編集した問題文\n外部変更後も統合下書きを維持");
+  const resumed=await (await page.request.get(base+"/authoring")).json();
+  expect(resumed.revision).toEqual(kept.revision);
+  expect(resumed.external_source_change).toBe(false);
   expect(errors).toEqual([]);
 });

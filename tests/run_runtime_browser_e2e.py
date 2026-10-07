@@ -251,6 +251,18 @@ def seed(root):
                 split_pdf.save(split_path)
             geometry_env[f'AUTHORING_SPLIT_{kind}_PDF_PATH'] = str(split_path)
 
+        warning_path = root / 'sources' / 'authoring-save-warning.pdf'
+        with pymupdf.open() as warning_pdf:
+            p = warning_pdf.new_page(width=500, height=600)
+            p.insert_text((30, 30), '問題1 (10点)', fontname='japan')
+            p.insert_text((30, 70), 'Before illustration')
+            pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 40, 40), False)
+            pix.clear_with(120)
+            p.insert_image(pymupdf.Rect(50, 110, 150, 210), stream=pix.tobytes('png'))
+            p.insert_text((30, 260), 'After illustration')
+            warning_pdf.save(warning_path)
+        geometry_env['AUTHORING_SAVE_WARNING_PDF_PATH'] = str(warning_path)
+
         geometry_env.update(DIAGRAM_TEST_ID=diagram_test.id, DIAGRAM_SPLIT_TEST_ID=diagram_split_test.id, DIAGRAM_PDF_PATH=str(diagram_path),
             DIAGRAM_ANSWER_TEST_ID=diagram_answer_test.id, DIAGRAM_ANSWER_MATERIAL_ID=diagram_material.id)
         manual_diagram_test = domain.test(teacher_offering.id, name="Manual diagram-only answers", total_points=30)
@@ -517,6 +529,7 @@ def main():
                         "e2e/authoring-preview-materials-real.spec.ts",
                         "e2e/authoring-analysis-access-real.spec.ts",
                         "e2e/authoring-split-merge-real.spec.ts",
+                        "e2e/authoring-save-resume-real.spec.ts",
                     ]
                     subprocess.run(["npm", "run", "e2e", "--", *specs, "--workers=1"],
                                    cwd=REPO / "frontend", env=env, check=True)

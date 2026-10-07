@@ -38,6 +38,13 @@ class AuthoringQuestionReview(QuestionReviewService):
         current = {**deepcopy(previous['domains']['question']['snapshot']),
             'nodes': deepcopy(previous['nodes']), 'state': 'editing', 'reviewed': False}
         submitted = self._revision(review, store).snapshot
+        previous_nodes = {n['stable_key']: n for n in current['nodes']}
+        for node in submitted['nodes']:
+            prior = previous_nodes.get(node['stable_key'])
+            if prior and node['ordered_content'] == prior['ordered_content']:
+                # Raw authoring text is persisted separately. Never present an
+                # unresolved raw edit as a change to verified source anchors.
+                node['body_text'] = prior['body_text']
         self._verify_pin(store, current['vision_pin'])
         validated = validate_snapshot(submitted, current, automatic, current['vision_pin'], mark=False)
         for node in validated['nodes']:
@@ -53,4 +60,7 @@ class AuthoringQuestionReview(QuestionReviewService):
                 engine = question_diagram_review(self, review.id, node['stable_key'], self.row.edit_version,
                     snapshot_override=validated)
                 node['diagram_records'] = engine.validate(node['diagram_records'], self.row.edit_version+1)
+        for node in validated['nodes']:
+            if node['stable_key'] in self.working.get('question_text_buffers', {}):
+                node['body_text'] = self.working['question_text_buffers'][node['stable_key']]
         return validated['nodes']

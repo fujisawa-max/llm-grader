@@ -11,13 +11,16 @@ export interface AuthoringSnapshot {
   rubrics: Record<string, AuthoringCriterion[]>;
   rubric_histories?: Record<string,AuthoringCriterion[][]>;
   source_provenance: Record<string, unknown> & {analysis_materials?:{id:string;sha256:string}[];authoring_origins?: {identities: Record<string,{formal_question_id?:string|null}>}};
+  question_text_buffers?: Record<string,string>;
   materials: {id: string; sha256: string | null; role: string; replaces_material_id?:string}[];
   domains?: {
     question?: {document: Omit<ReviewDocument, "snapshot">; snapshot: Omit<ReviewSnapshot, "nodes">};
     answer?: {analysis_result?:{status:string;assigned_count:number;unresolved_count:number;candidate_count:number}; draft_id: string; revision: number; material_id: string; source_sha256: string; question_regions:{question_id:string;page_index:number;left:number;top:number;right:number;bottom:number;depth:number}[]; entries: (ModelAnswerDraftEntry & {authoring_question_key?: string | null; manual_alternative_answers?:{id:string;text:string}[]})[]};
   };
 }
-export interface AuthoringRevision {id: string; test_id: string; revision: number; edit_version: number; state: string; snapshot: AuthoringSnapshot; snapshot_sha256: string; baseline_sha256: string}
+export interface AnalysisReadiness {state:"ready"|"unsaved_changes"|"missing_material"|"unsupported"|"stale_source"|"busy"|"readonly";reason:string;analyzed?:boolean}
+export interface SourceWarning {question_key:string|null;code:string;message:string}
+export interface AuthoringRevision {analysis_readiness?:Record<string,AnalysisReadiness>;source_warnings?:SourceWarning[];id: string; test_id: string; revision: number; edit_version: number; state: string; snapshot: AuthoringSnapshot; snapshot_sha256: string; baseline_sha256: string}
 export interface AuthoringIssue {question_key: string | null; section: string; message: string; field?: string}
 export interface ArchiveImpact {test_id: string; name: string; questions: number; model_answers: number; rubrics: number; submissions: number; grading_jobs: number; results: number; impact_sha256: string}
 const path = (id: string) => `/tests/${encodeURIComponent(id)}`;

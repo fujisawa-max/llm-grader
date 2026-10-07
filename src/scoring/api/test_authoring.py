@@ -77,8 +77,13 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
         validate_material_replacements(snapshot)
 
     def view(row):
-        return {k: getattr(row, k) for k in ('id', 'test_id', 'revision', 'edit_version', 'state',
-            'snapshot', 'snapshot_sha256', 'baseline_sha256')}
+        from ..test_authoring import source_warnings, material_analysis_readiness
+        return {**{k: getattr(row, k) for k in ('id', 'test_id', 'revision', 'edit_version', 'state',
+            'snapshot', 'snapshot_sha256', 'baseline_sha256')},
+            'source_warnings': source_warnings(row.snapshot),
+            'analysis_readiness': {m['id']: material_analysis_readiness(row.snapshot, m,
+                editable=row.state in {'draft', 'final_review'}) for m in row.snapshot['materials']}}
+
 
     def error(exc, s):
         s.rollback()
@@ -109,12 +114,14 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
     def authoring_status(test_id: str, s=Depends(db)):
         owned(test_id, s)
         row = latest(s, test_id)
-        return {'state': row.state if row else None}
+        return {'state': row.state if row else None, 'revision_id': row.id if row else None, 'edit_version': row.edit_version if row else None}
 
     @r.get('/tests/{test_id}/authoring')
     def get_authoring(test_id: str, s=Depends(db)):
         test = owned(test_id, s)
         row = latest(s, test_id)
+        if not row and latest(s, test_id, include_backups=True):
+            raise HTTPException(409, 'AUTHORING_RESUME_UNAVAILABLE')
         from ..authoring_sources import source_tokens
         tokens = source_tokens(s, test_id)
         bound = (row.snapshot.get('source_provenance', {}).get('authoring_origins') or {}).get('tokens') if row else tokens
@@ -148,6 +155,10 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
         try:
             from ..authoring_sources import source_tokens
             current = latest(s, test_id)
+            if not current or current.state not in {'draft', 'final_review'}:
+                raise AuthoringError('AUTHORING_NOT_EDITABLE', '編集可能な保存版を開いてください。')
+            if current.edit_version != v.expected_edit_version:
+                raise AuthoringError('AUTHORING_SAVE_CONFLICT', '別の保存が行われました。再読み込みして確認してください。')
             origin = (current.snapshot.get('source_provenance', {}).get('authoring_origins') or {}) if current else {}
             if origin and origin.get('tokens') != source_tokens(s, test_id) and not v.continue_after_external_change:
                 raise AuthoringError('AUTHORING_EXTERNAL_REVIEW_CHANGED', '外部の保存済みレビューが更新されています。現在の下書きを継続するか、最新レビューを取り込んでください。')
@@ -162,7 +173,7 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
                     v.snapshot['nodes'] = AuthoringQuestionReview(s, question_root, current,
                         v.snapshot).validate_working(current.snapshot)
                 except (ReviewError, ValueError) as exc:
-                    raise AuthoringError(getattr(exc, 'code', str(exc)), '問題文と元資料の対応を確認してください。未保存の編集は保持されています。') from exc
+                    raise AuthoringError(getattr(exc, 'code', str(exc)), '保存できませんでした。設問構造または出典情報が無効です。編集内容は画面に保持されています。') from exc
             if v.snapshot.get('domains', {}).get('answer'):
                 from ..authoring_answers import AuthoringAnswers
                 try:
@@ -170,8 +181,19 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
                 except (ValueError, KeyError, TypeError) as exc:
                     import logging
                     logging.getLogger(__name__).warning('Authoring answer validation rejected: %s', exc, exc_info=True)
-                    raise AuthoringError('AUTHORING_ANSWER_SOURCE_INVALID', '解答・図・採点基準の出典を確認してください。未保存の編集は保持されています。') from exc
+                    raise AuthoringError('AUTHORING_ANSWER_SOURCE_INVALID', '保存できませんでした。解答・図・採点基準の出典情報が無効です。編集内容は画面に保持されています。') from exc
             row = save_draft(s, test, v.snapshot, v.expected_edit_version, s.info['auth_user'].id)
+            if origin and v.continue_after_external_change:
+                from copy import deepcopy
+                from ..pdf_native import canonical_hash
+                tokens = source_tokens(s, test_id)
+                acknowledged = deepcopy(row.snapshot)
+                saved_origin = acknowledged['source_provenance']['authoring_origins']
+                if saved_origin.get('tokens') != tokens:
+                    saved_origin['kept_authoring_after_external_change'] = tokens
+                    saved_origin['tokens'] = tokens
+                    row.snapshot = acknowledged
+                    row.snapshot_sha256 = canonical_hash(acknowledged)
             s.commit()
             return view(row)
         except AuthoringError as exc:
@@ -210,7 +232,7 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
             raise HTTPException(409, 'AUTHORING_SAVE_CONFLICT')
         if preserve:
             previous_id = row.id
-            row = TestAuthoringRevision(test_id=row.test_id, revision=row.revision+1,
+            row = TestAuthoringRevision(test_id=row.test_id, revision=latest(session, row.test_id, include_backups=True).revision+1,
                 edit_version=expected+1, state='draft', snapshot=snapshot,
                 snapshot_sha256=canonical_hash(snapshot), baseline_sha256=baseline or row.baseline_sha256,
                 created_by=session.info['auth_user'].id)
@@ -234,13 +256,18 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
             from copy import deepcopy
             from ..authoring_sources import source_tokens, merge_answer_analysis
             from ..db.models import ModelAnswerImportDraft
-            origin = row.snapshot.get('source_provenance', {}).get('authoring_origins', {})
-            if origin.get('tokens', {}).get('question') == source_tokens(s, test_id)['question']:
-                imported = snapshot.get('domains', {}).get('answer')
-                snapshot = deepcopy(row.snapshot)
-                if imported:
-                    merge_answer_analysis(snapshot, s.get(ModelAnswerImportDraft, imported['draft_id']))
-                snapshot['source_provenance'].setdefault('authoring_origins', {})['tokens'] = source_tokens(s, test_id)
+            imported = snapshot.get('domains', {}).get('answer')
+            snapshot = deepcopy(row.snapshot)
+            origin = snapshot['source_provenance'].setdefault('authoring_origins', {})
+            tokens = source_tokens(s, test_id)
+            old_tokens = origin.get('tokens', {})
+            # Saved legacy review import is domain-scoped. A changed Question
+            # review cannot restore the old hierarchy/text over teacher edits.
+            if imported and old_tokens.get('answer') != tokens['answer']:
+                merge_answer_analysis(snapshot, s.get(ModelAnswerImportDraft, imported['draft_id']))
+            if old_tokens.get('question') != tokens['question']:
+                origin['pending_question_review'] = tokens['question']
+            origin['tokens'] = tokens
         if v.analysis_material_id:
             from ..db.models import TestMaterial
             material = s.get(TestMaterial, v.analysis_material_id)
@@ -249,7 +276,7 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
                 raise HTTPException(409, 'AUTHORING_ANALYSIS_SOURCE_CHANGED')
             mark_analysis(snapshot, row.snapshot, material)
         row = apply_analysis_snapshot(s, row, snapshot, v.expected_edit_version,
-            v.preserve_previous, baseline_hash(baseline))
+            (v.preserve_previous or not v.analysis_material_id), baseline_hash(baseline))
         s.add(DomainEvent(entity_type='test', entity_id=test.id, actor_user_id=s.info['auth_user'].id,
             event_type='authoring_sources_imported', payload={'edit_version': v.expected_edit_version+1}))
         s.commit()
@@ -269,6 +296,20 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
         if not answer_create:
             raise HTTPException(503, 'AUTHORING_ANALYSIS_UNAVAILABLE')
         snapshot = deepcopy(row.snapshot)
+        from ..test_authoring import material_analysis_readiness
+        from ..db.models import TestMaterial
+        selected_material = s.get(TestMaterial, v.material_id)
+        if not selected_material or selected_material.test_id != test_id:
+            raise HTTPException(404, 'MATERIAL_NOT_FOUND')
+        ref = next((m for m in snapshot['materials'] if m['id'] == v.material_id), None)
+        if ref is None:
+            ref = {'id': selected_material.id, 'sha256': selected_material.sha256, 'role': selected_material.material_type}
+            snapshot['materials'].append(ref)
+        if ref['sha256'] != selected_material.sha256 or ref['role'] != selected_material.material_type:
+            raise HTTPException(409, 'AUTHORING_ANALYSIS_SOURCE_CHANGED')
+        readiness = material_analysis_readiness(snapshot, ref)
+        if readiness['state'] != 'ready':
+            raise HTTPException(409, {'error': {'code': 'AUTHORING_ANALYSIS_NOT_READY', 'message': readiness['reason']}})
         aliases, questions = authoring_questions(snapshot)
         draft = answer_create(test_id, ImportCreate(material_id=v.material_id), s,
             questions_override=questions, commit=False)

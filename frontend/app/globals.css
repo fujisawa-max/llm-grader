@@ -213,3 +213,8 @@
 .spinner{display:inline-block;width:14px;height:14px;margin-right:6px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:authoring-spin .8s linear infinite}
 @keyframes authoring-spin{to{transform:rotate(360deg)}}
 @media(prefers-reduced-motion:reduce){.spinner{animation:none}}
+
+.authoring-source-notice { background: #fff8e8; border: 1px solid #d8b867; border-radius: 6px; padding: .6rem .8rem; color: #5b450d; }
+.authoring-source-notice p { margin: 0 0 .35rem; }
+.authoring-source-notice button { margin-left: .4rem; }
+.authoring-save-success { color: #216343; }
