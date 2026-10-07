@@ -19,7 +19,7 @@ def authoring_questions(snapshot):
         parent_id=aliases.get(n['parent_key']), display_label=n['label']['raw'],
         question_text=n['body_text'], title=n['label']['raw'], node_type=n['node_type'], content={'items': n['ordered_content']},
         question_number=n['label']['raw'], sort_order=n['sort_order'],
-        is_gradable=n['score_semantics'] == 'direct', max_points=n.get('score_points'))
+        is_gradable=not any(c['included'] and c['parent_key'] == n['stable_key'] for c in snapshot['nodes']), max_points=n.get('score_points'))
         for n in snapshot['nodes'] if n['stable_key'] in aliases]
     return aliases, questions
 
@@ -31,8 +31,21 @@ class AuthoringAnswers:
         self.bound = self.snapshot.get('domains', {}).get('answer')
         if not self.bound:
             raise ValueError('authoring_answer_source_missing')
+        self.session, self.root = session, root
+        self.primary_bound = self.bound
+        self.sources = {self.bound['draft_id']: self.bound, **self.bound.get('sources', {})}
+        for source in self.sources.values():
+            self._select_source(source)
+        self._select_source(self.primary_bound)
+        self.aliases, self.questions = authoring_questions(self.snapshot)
+        self.entries = [{**deepcopy(e), 'question_id': self.aliases.get(e.get('authoring_question_key'))}
+            for e in self.primary_bound['entries']]
+
+    def _select_source(self, source):
+        self.bound = source
+        session, root = self.session, self.root
         draft = session.get(ModelAnswerImportDraft, self.bound['draft_id'])
-        if (not draft or draft.test_id != row.test_id or draft.material_id != self.bound['material_id']
+        if (not draft or draft.test_id != self.row.test_id or draft.material_id != self.bound['material_id']
                 or draft.source_sha256 != self.bound['source_sha256'] or draft.artifact_ref != self.bound['artifact_ref']):
             raise ValueError('model_answer_source_stale')
         _answer_valid(session, draft, root)
@@ -43,9 +56,7 @@ class AuthoringAnswers:
         path = (root / draft.artifact_ref).resolve()
         self.ir = json.loads(path.read_text())
         self.store = RunArtifactAdapter(path.parent)
-        self.aliases, self.questions = authoring_questions(self.snapshot)
-        self.entries = [{**deepcopy(e), 'question_id': self.aliases.get(e.get('authoring_question_key'))}
-            for e in self.bound['entries']]
+
 
     def entry(self, identifier, question_key=None):
         entry = next((e for e in self.entries if e['id'] == identifier), None)
@@ -59,6 +70,12 @@ class AuthoringAnswers:
             entry = {'id': identifier, 'source': {'kind': 'teacher_manual', 'segments': []}, 'diagram_records': []}
         else:
             entry = deepcopy(entry)
+        source_id = entry.get('source_draft_id', self.primary_bound['draft_id'])
+        if source_id not in self.sources:
+            raise ValueError('model_answer_source_foreign')
+        self._select_source(self.sources[source_id])
+        if any(m.get('replaces_material_id') == self.bound['material_id'] for m in self.snapshot.get('materials', [])):
+            raise ValueError('authoring_material_replaced')
         if question_key is not None:
             if question_key not in self.aliases:
                 raise ValueError('authoring_answer_target_missing')
@@ -66,19 +83,21 @@ class AuthoringAnswers:
         return entry
 
     def diagrams(self, entry):
+        self._select_source(self.sources[entry.get('source_draft_id', self.primary_bound['draft_id'])])
+        same_source = [e for e in self.entries if e.get('source_draft_id', self.primary_bound['draft_id']) == self.bound['draft_id']]
         return ModelAnswerDiagramReview(self.pdf, self.ir, self.store, entry=entry,
             question_regions=self.bound['question_regions'], questions=self.questions,
-            reuse_context={'draft_id': self.bound['draft_id'], 'entries': self.entries})
+            reuse_context={'draft_id': self.bound['draft_id'], 'entries': same_source})
 
     def validate(self):
         from .api.model_answer_imports import validate_rubric_edits
         gradable = {q.id for q in self.questions if q.is_gradable}
         saved = {e['id']: e for e in self.row.snapshot.get('domains', {}).get('answer', {}).get('entries', [])}
         previous_keys = {e.get('authoring_question_key') for e in saved.values()}
-        for entry, original in zip(self.entries, self.bound['entries'], strict=True):
+        for entry, original in zip(self.entries, self.primary_bound['entries'], strict=True):
             if entry.get('rubric_edits'):
                 validate_rubric_edits(entry['rubric_edits'], entry.get('semantic_classification') or {})
-            if entry.get('question_id') and entry['question_id'] not in gradable:
+            if original.get('authoring_question_key') and entry.get('question_id') not in gradable:
                 # Structural edits may turn a leaf into a parent. Preserve its
                 # previously verified source artifact as unresolved; never
                 # invent a child assignment or accept arbitrary new evidence.
@@ -96,10 +115,13 @@ class AuthoringAnswers:
                 continue
             if entry.get('diagram_records'):
                 original['diagram_records'] = self.diagrams(entry).validate(entry['diagram_records'], self.row.edit_version+1)
-        for key in (previous_keys | {e.get('authoring_question_key') for e in self.bound['entries']}) - {None}:
-            included = [e for e in self.bound['entries'] if e.get('authoring_question_key') == key
+        for key in (previous_keys | {e.get('authoring_question_key') for e in self.primary_bound['entries']}) - {None}:
+            included = [e for e in self.primary_bound['entries'] if e.get('authoring_question_key') == key
                 and e.get('disposition', 'include') == 'include']
-            primary = next((e for e in included if e.get('answer_kind', 'primary') == 'primary'), None)
+            primary_entries = [e for e in included if e.get('answer_kind', 'primary') == 'primary']
+            primary = next((e for e in primary_entries if e.get('answer_text', '').strip() or
+                           any(r.get('state') == 'accepted' for r in e.get('diagram_records', []))),
+                           primary_entries[0] if primary_entries else None)
             self.snapshot['answers'][key] = {'primary': primary.get('answer_text', '') if primary else '',
                 'alternatives': answer_alternatives(included),
                 'diagram_records': deepcopy(primary.get('diagram_records', [])) if primary else []}

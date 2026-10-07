@@ -237,6 +237,20 @@ def seed(root):
             storage_ref=str(diagram_answer_path), original_filename="authoring-answer.pdf", mime_type="application/pdf",
             sha256=hashlib.sha256(diagram_answer_path.read_bytes()).hexdigest())
         geometry_env.update(AUTHORING_SOURCE_TEST_ID=unified_test.id, AUTHORING_SOURCE_MATERIAL_ID=unified_material.id)
+        for kind, lines in {
+            'QUESTION': ['Common introduction', 'First task', 'Second task'],
+            'ANSWER': ['Shared completed solution', '(1) Correct answer one', '(2) Correct answer two'],
+            'RUBRIC': ['Shared marking guidance', '(1) 5 points: first criterion', '(2) 5 points: second criterion'],
+        }.items():
+            split_path = root / 'sources' / f'split-{kind.lower()}.pdf'
+            with pymupdf.open() as split_pdf:
+                p = split_pdf.new_page(width=500, height=600)
+                p.insert_text((30, 30), '問題1 (10点)', fontname='japan')
+                for line, y in zip(lines, (65, 120, 220), strict=True):
+                    p.insert_text((30, y), line, fontsize=11)
+                split_pdf.save(split_path)
+            geometry_env[f'AUTHORING_SPLIT_{kind}_PDF_PATH'] = str(split_path)
+
         geometry_env.update(DIAGRAM_TEST_ID=diagram_test.id, DIAGRAM_SPLIT_TEST_ID=diagram_split_test.id, DIAGRAM_PDF_PATH=str(diagram_path),
             DIAGRAM_ANSWER_TEST_ID=diagram_answer_test.id, DIAGRAM_ANSWER_MATERIAL_ID=diagram_material.id)
         manual_diagram_test = domain.test(teacher_offering.id, name="Manual diagram-only answers", total_points=30)
@@ -502,6 +516,7 @@ def main():
                         "e2e/authoring-entry-layout-real.spec.ts",
                         "e2e/authoring-preview-materials-real.spec.ts",
                         "e2e/authoring-analysis-access-real.spec.ts",
+                        "e2e/authoring-split-merge-real.spec.ts",
                     ]
                     subprocess.run(["npm", "run", "e2e", "--", *specs, "--workers=1"],
                                    cwd=REPO / "frontend", env=env, check=True)

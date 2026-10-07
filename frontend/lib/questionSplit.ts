@@ -2,6 +2,7 @@ import {parseMathText} from "./mathText";
 import type { ContentItem, ReviewNode } from "@/types/reviews";
 
 export interface SplitCandidate {
+  role?: "parent" | "child" | "exclude";
   label: string;
   items: ContentItem[];
   included: boolean;
@@ -17,6 +18,7 @@ export interface SplitSourceOption {
   evidence: Record<string, unknown>;
 }
 export interface SplitProposal {
+  targetKey?: string;
   parentItems: ContentItem[];
   children: SplitCandidate[];
   sourceOptions: SplitSourceOption[];
@@ -500,7 +502,7 @@ export function suggestSubquestions(node: ReviewNode, canonicalNode?: Pick<Revie
 export function splitQuestionRanges(node:ReviewNode, boundaries:number[], spans:{index:number;start:number;end:number;text:string}[],canonicalItems=node.ordered_content):SplitProposal|null {
   const length=spans.at(-1)?.end||0;
   if(boundaries.length<3||boundaries[0]!==0||boundaries.at(-1)!==length||boundaries.some((b,i)=>!Number.isInteger(b)||(i>0&&b<=boundaries[i-1])))return null;
-  const children:SplitCandidate[]=boundaries.slice(1).map(i=>({label:`(${i+1})`,items:[],included:true,mappingStatus:"automatic",contentValid:true,selectedSourceIds:[]}));
+  const children:SplitCandidate[]=boundaries.slice(1).map((_,i)=>({label:`(${i+1})`,items:[],included:true,mappingStatus:"automatic",contentValid:true,selectedSourceIds:[]}));
   const placements:SplitProposal["placements"]=[],parentItems:ContentItem[]=[];
   for(const item of node.ordered_content){
     const span=spans.find(s=>node.ordered_content[s.index]===item);

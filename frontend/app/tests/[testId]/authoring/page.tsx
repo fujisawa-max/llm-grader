@@ -17,7 +17,7 @@ import {localId} from "@/lib/localId";
 import {editQuestionContent, questionContent} from "@/lib/questionContent";
 import {DiagramReview, type DiagramSelection} from "@/components/reviews/DiagramReview";
 import {suggestSubquestions, splitQuestionAtCaret, splitQuestionRanges, mapCandidateToSources, type SplitProposal} from "@/lib/questionSplit";
-import {applyQuestionSplit} from "@/lib/questionSplitApply";
+import {applyQuestionSplit,reviewQuestionSplit,splitDuplicate} from "@/lib/questionSplitApply";
 import {AuthoringCandidates, type AuthoringEntry} from "@/components/reviews/AuthoringCandidates";
 import {rubricRows} from "@/lib/rubricEditing";
 import {effectiveQuestionScore} from "@/lib/questionScores";
@@ -41,6 +41,8 @@ export default function TestAuthoringPage() {
   const [externalChange,setExternalChange]=useState(false);
   const [continueExternal,setContinueExternal]=useState(false);
   const [diagramSelection,setDiagramSelection]=useState<DiagramSelection>();
+  const splitInFlight=useRef(false);
+  const [splitRunning,setSplitRunning]=useState(false);
   const [splitProposal,setSplitProposal]=useState<SplitProposal|null>(null);
   const [regionId,setRegionId]=useState("");
   const [revision,setRevision]=useState<AuthoringRevision|null>(null);
@@ -116,23 +118,25 @@ export default function TestAuthoringPage() {
     }));
   }
   async function suggestQuestionSplit(){
-    if(!node||!snapshot||!revision)return;
+    if(!node||!snapshot||!revision||splitInFlight.current)return;
+    if(!revision.snapshot.nodes.some(n=>n.stable_key===node.stable_key)){setError("新しく追加・分割した設問は、保存してからAIの分割案を作成してください。本文は保持されています。");return;}
     const scope=questionToolScope.current,text=buffers[selected]??questionContent(node,regions).text;
     const reconciled=editQuestionContent(node,regions,text);
     if(!reconciled){setError("元資料との対応を確認してください。");return;}
-    setBusy(true);setError("");
+    splitInFlight.current=true;setSplitRunning(true);setBusy(true);setError("");
     try{
       const result=await apiFetch<{split:boolean;parts:{start:number;end:number}[]}>(`/tests/${id}/authoring/nodes/${selected}/split-suggest`,json({expected_revision:revision.edit_version,candidate_id:selected,text}));
-      if(questionToolScope.current!==scope)return;
+      if(questionToolScope.current!==scope){setNotice("対象設問または本文が変わったため、この分割案は適用していません。現在の本文で再実行してください。");return;}
       if(!result.split){setNotice("分割が必要ないという提案です。必要ならカーソル位置を指定してください。");return;}
       const codepoints=Array.from(text),toOffset=(n:number)=>codepoints.slice(0,n).join("").length;
       const boundaries=[0,...result.parts.map(p=>toOffset(p.end))];
-      const proposal=splitQuestionRanges(reconciled,boundaries,questionContent(reconciled,regions).spans,questionDomain?.document.automatic_nodes.find(n=>n.stable_key===node.source_draft_stable_key)?.ordered_content);
+      const proposal=suggestSubquestions(reconciled,questionDomain?.document.automatic_nodes.find(n=>n.stable_key===node.source_draft_stable_key))||splitQuestionRanges(reconciled,boundaries,questionContent(reconciled,regions).spans,questionDomain?.document.automatic_nodes.find(n=>n.stable_key===node.source_draft_stable_key)?.ordered_content);
       if(!proposal){setError("分割案は元資料の範囲を安全に分けられません。カーソル位置や対応する読み取り項目を確認してください。");return;}
-      updateNode(reconciled);setSplitProposal(proposal);
-    }catch(e){if(questionToolScope.current===scope)setError(e instanceof Error?e.message:"分割案を取得できませんでした。");}finally{setBusy(false);}
+      updateNode(reconciled);setSplitProposal(reviewQuestionSplit(proposal,node,true));
+    }catch(e){if(questionToolScope.current===scope)setError(`分割案を取得できませんでした。本文は保持されています。時間をおいて再実行してください。${e instanceof Error?` (${e.message})`:""}`);}finally{splitInFlight.current=false;setSplitRunning(false);setBusy(false);}
   }
   async function analyzeSource(domain:"question"|"answer"){
+    if(splitProposal){setError("分割案を適用またはキャンセルしてから資料を解析してください。分割案は保持されています。");return;}
     if(!revision||!materialId||dirty){setError("資料を選び、現在の変更を保存してから解析してください。");return;}
     if(!window.confirm(`${analyzed?"再解析":"解析"}して新しい解析結果を取り込んだ下書きを作成します。現在の保存済み下書きは修正版の履歴として保持されます。問題資料の解析では最新の保存済みレビューから編集内容を構成します。続行しますか？`))return;
     setBusy(true);setAnalyzing(true);setError("");
@@ -150,7 +154,12 @@ export default function TestAuthoringPage() {
       setRevision(row);setSnapshot(row.snapshot);setDirty(false);setDirtyDomains({});setExternalChange(false);setContinueExternal(false);
       setBuffers(Object.fromEntries(row.snapshot.nodes.map(n=>[n.stable_key,questionContent(n,row.snapshot.domains?.question?.document.regions||[]).text])));
       setSelected(current=>row.snapshot.nodes.some(n=>n.stable_key===current)?current:row.snapshot.nodes[0]?.stable_key||"all");
-      setNotice("解析結果を新しい編集用下書きに取り込みました。解析前の保存済み下書きと正式内容は保持されています。");
+      const outcome=row.snapshot.domains?.answer?.analysis_result;
+      if(domain==="answer"&&outcome){
+        setVisible(v=>({...v,answer:true,rubric:true}));
+        if(!outcome.assigned_count){setSelected("unassigned");setError("解析結果を設問へ対応付けできませんでした。設問未割当の候補から対応する設問を選択してください。");}
+        setNotice(`解析結果: 対応済み${outcome.assigned_count}件・未対応${outcome.unresolved_count}件。問題の本文・分割・階層は保持されています。`);
+      }else setNotice("解析結果を新しい編集用下書きに取り込みました。解析前の保存済み下書きと正式内容は保持されています。");
     }catch(e){setError(`資料を解析できませんでした。保存済みの下書きは保持されています。資料を確認して再試行してください。${e instanceof Error?` (${e.message})`:""}`);}finally{setBusy(false);setAnalyzing(false);}
   }
   async function begin(){setBusy(true);setError("");try{
@@ -278,75 +287,76 @@ export default function TestAuthoringPage() {
       <label>対象設問<select aria-label="対象設問" value={selected} onChange={e=>{if(e.target.value==="all")void finalReview();else {setSelected(e.target.value);setDiagramSelection(undefined);setRegionId("");}}}>
         {orderedNodes().map(n=><option key={n.stable_key} value={n.stable_key}>{pathFor(n.stable_key)}</option>)}{snapshot.domains?.answer?.entries.some(e=>!e.authoring_question_key)&&<option value="unassigned">設問未割当の候補</option>}<option value="all">テスト全体確認</option>
       </select></label><span>表示</span>{([['question','問題'],['answer','解答'],['rubric','採点基準']] as const).map(([key,label])=><label key={key}><input type="checkbox" checked={visible[key]} onChange={e=>{const next={...visible,[key]:e.target.checked};setVisible(next);localStorage.setItem("test-authoring-visible",JSON.stringify(next));}}/>{label}</label>)}
-      <span className="authoring-add-question"><button disabled={readonly||saving} onClick={()=>{const n=newNode(nodes.length);change({...snapshot,nodes:[...nodes,n]});setBuffers(current=>({...current,[n.stable_key]:""}));setSelected(n.stable_key);}}>設問を追加</button></span>
+      <span className="authoring-add-question"><button disabled={readonly||saving||analyzing} onClick={()=>{const n=newNode(nodes.length);change({...snapshot,nodes:[...nodes,n]});setBuffers(current=>({...current,[n.stable_key]:""}));setSelected(n.stable_key);}}>設問を追加</button></span>
     </div>}>
       {selected==="all"?<section aria-label="テスト全体確認"><h2>テスト全体確認</h2>
-        <label>テスト名<input disabled={readonly||saving} value={snapshot.metadata.name} onChange={e=>change({...snapshot,metadata:{...snapshot.metadata,name:e.target.value}})}/></label>
-        <label>合計点<input type="number" disabled={readonly||saving} value={snapshot.metadata.total_points} onChange={e=>change({...snapshot,metadata:{...snapshot.metadata,total_points:Number(e.target.value)}})}/></label>
+        <label>テスト名<input disabled={readonly||saving||analyzing} value={snapshot.metadata.name} onChange={e=>change({...snapshot,metadata:{...snapshot.metadata,name:e.target.value}})}/></label>
+        <label>合計点<input type="number" disabled={readonly||saving||analyzing} value={snapshot.metadata.total_points} onChange={e=>change({...snapshot,metadata:{...snapshot.metadata,total_points:Number(e.target.value)}})}/></label>
         <ol>{nodes.filter(n=>n.included).map(n=><li key={n.stable_key}>{pathFor(n.stable_key)} — {effectiveQuestionScore(n.stable_key,nodes).points??"未設定"}点</li>)}</ol>
         <ul>{issues.map((issue,index)=><li key={index}>{issue.question_key||issue.section==="answer"?<button onClick={()=>navigate(issue)}>{issue.question_key?pathFor(issue.question_key):"設問未割当"} — {issue.message}</button>:issue.message}</li>)}</ul>
-        {questionDomain&&questionDomain.document.warnings.length>0&&<WarningPanel targetLabel={w=>{const owner=warningQuestion(w);return owner?pathFor(owner.stable_key):"試験全体";}} warnings={questionDomain.document.warnings} states={questionDomain.snapshot.warning_states||{}} readonly={readonly||saving}
+        {questionDomain&&questionDomain.document.warnings.length>0&&<WarningPanel targetLabel={w=>{const owner=warningQuestion(w);return owner?pathFor(owner.stable_key):"試験全体";}} warnings={questionDomain.document.warnings} states={questionDomain.snapshot.warning_states||{}} readonly={readonly||saving||analyzing}
             onChange={(key,resolution)=>change({...snapshot,domains:{...snapshot.domains,question:{...questionDomain,snapshot:{...questionDomain.snapshot,warning_states:{...questionDomain.snapshot.warning_states,[key]:resolution}}}}})}/>}
         <button disabled title="この画面からの試験内容確定は現在利用できません。">試験内容を確定</button>
       </section>:(node||selected==="unassigned")&&<>
         {visible.question&&node&&<section id="authoring-question" tabIndex={-1} aria-label="問題"><h2>問題</h2>
 
           <AuthoringPreviewEditor actions={<button aria-pressed={questionSettings} onClick={()=>{setQuestionSettings(v=>!v);setEditing(v=>({...v,question:false}));}}>{questionSettings?"プレビューに戻る":"設問設定の変更"}</button>} label="問題" editLabel="本文編集" editing={editing.question} auxiliaryEditing={questionSettings} onEditing={value=>{setQuestionSettings(false);setEditing(v=>({...v,question:value}));}} preview={<><p className="authoring-question-metadata">{node.parent_key?"小問":"大問"}：{pathFor(node.stable_key)} ／ 配点：{previewScore??"－"}点（{node.score_semantics==="sum_children"?"小問合計":node.score_semantics==="each_child"?"小問ごとの配点":previewScore===null?"未設定":"直接配点"}）</p><div className="authoring-question-preview-frame"><MarkdownMathText source={buffers[selected]??node.body_text}/><AcceptedDiagramPreview records={questionStale?[]:node.diagram_records} path={questionDomain?`/tests/${id}/authoring/nodes/${selected}/diagrams`:undefined}/></div></>}>
-          <NodeEditor editorMode={questionSettings?"settings":"body"} inlinePreview={false} key={node.stable_key} node={node} nodes={nodes} regions={activeRegions} readonly={readonly||saving}
+          <NodeEditor editorMode={questionSettings?"settings":"body"} inlinePreview={false} key={node.stable_key} node={node} nodes={nodes} regions={activeRegions} readonly={readonly||saving||analyzing}
             content={buffers[selected]??node.body_text} contentChanged={(buffers[selected]??node.body_text)!==questionContent(node,regions).text}
             mathContext={questionDomain&&!questionStale&&revision?{reviewId:questionDomain.document.id,revision:revision.edit_version,savedNode:revision.snapshot.nodes.find(n=>n.stable_key===selected),authoringTestId:id}:undefined}
-            activeRegionId={regionId} renderEvidence={questionDomain?(rid)=><EvidencePanel id={questionDomain.document.id} regionId={rid} ownerLabel={pathFor(selected)} readonly={readonly||saving}
+            activeRegionId={regionId} renderEvidence={questionDomain?(rid)=><EvidencePanel id={questionDomain.document.id} regionId={rid} ownerLabel={pathFor(selected)} readonly={readonly||saving||analyzing}
               decision={(regions.find(r=>r.region_id===rid)?.region_type==="formula"?node.formula_decisions:node.figure_decisions)[rid]||{decision:"unreviewed"}}
               onDecision={d=>{const field=regions.find(r=>r.region_id===rid)?.region_type==="formula"?"formula_decisions":"figure_decisions";updateNode({...node,[field]:{...node[field],[rid]:d}});}}/>:undefined}
             onCaret={offset=>{questionCaret.current=offset;}} onContentChange={(text,proposal)=>{setSplitProposal(null);setDirty(true);setDirtyDomains(d=>({...d,question:true}));setBuffers(current=>({...current,[selected]:text}));if(proposal?.apply_provenance)updateNode({...node,math_ocr_edits:[...(node.math_ocr_edits||[]),proposal.apply_provenance].slice(-16)});}}
             onConfirmContent={confirm=>{const next=editQuestionContent(node,regions,buffers[selected]??node.body_text);if(next)updateNode(confirm(next));else setError("問題文と元資料の対応を確認してください。");}} onChange={updateNode}
             onParent={parent=>reparentNode(node,parent)} onMove={direction=>moveNode(node,direction)} onRegion={setRegionId}/>
-          <div hidden={!questionSettings}><button disabled={readonly||saving} onClick={()=>{
+          <div hidden={questionSettings}><button disabled={readonly||saving||analyzing} onClick={()=>{
             const next=editQuestionContent(node,regions,buffers[selected]??node.body_text);
             if(!next){setError("元資料との対応を保った分割案を作成できません。");return;}
             updateNode(next);const proposal=suggestSubquestions(next,questionDomain?.document.automatic_nodes.find(n=>n.stable_key===node.source_draft_stable_key));
-            setSplitProposal(proposal);if(!proposal)setNotice("小問候補を検出できませんでした。必要なら設問を追加してください。");
+            setSplitProposal(proposal?reviewQuestionSplit(proposal,node):null);if(!proposal)setNotice("小問候補を検出できませんでした。必要なら設問を追加してください。");
           }}>小問の分割案を作成</button>
-          <button disabled={readonly||saving||busy} onClick={()=>void suggestQuestionSplit()}>AIで小問の分割案を作成</button>
-          <button disabled={readonly||saving} onClick={()=>{
+          <button disabled={readonly||saving||busy||splitRunning} aria-busy={splitRunning} onClick={()=>void suggestQuestionSplit()}>{splitRunning?<><span className="spinner" aria-hidden="true"/>分割案を作成中…</>:"AIで小問の分割案を作成"}</button>
+          <button disabled={readonly||saving||analyzing} onClick={()=>{
             const next=editQuestionContent(node,regions,buffers[selected]??node.body_text);
             const proposal=next&&splitQuestionAtCaret(next,questionCaret.current,questionContent(next,regions).spans,questionDomain?.document.automatic_nodes.find(n=>n.stable_key===node.source_draft_stable_key)?.ordered_content);
             if(!proposal){setError("この位置は元資料の範囲を安全に分割できません。数式や図の境界を避け、分割位置を確認してください。");return;}
-            updateNode(next!);setSplitProposal(proposal);
+            updateNode(next!);setSplitProposal(reviewQuestionSplit(proposal,node));
           }}>問題文のカーソル位置で分割</button>
-          {splitProposal&&<section aria-label="小問の分割案"><h3>小問の分割案</h3>
-            {splitProposal.children.map((child,index)=><div key={index}><strong>{child.label}</strong><pre>{questionContent({...node,ordered_content:child.items},regions).text}</pre><p>{child.mappingStatus==="automatic"?"元資料との対応を確認済み":"元資料との対応を確認できません。対応する読み取り項目を指定してください。"}</p>
+          {splitProposal&&splitProposal.targetKey===node.stable_key&&<section aria-label="小問の分割案"><h3>小問の分割案</h3>
+            {splitProposal.children.map((child,index)=><div key={index}><strong>{child.label}</strong><label>分割部分 {index+1}の扱い<select aria-label={`分割部分 ${index+1}の扱い`} value={child.role||"child"} onChange={e=>setSplitProposal({...splitProposal,children:splitProposal.children.map((c,i)=>i===index?{...c,role:e.target.value as "parent"|"child"|"exclude"}:c)})}><option value="parent">親本文に残す</option><option value="child">小問にする</option><option value="exclude">除外</option></select></label><pre>{questionContent({...node,ordered_content:child.items},regions).text}</pre><p>{child.mappingStatus==="automatic"?"元資料との対応を確認済み":"元資料との対応を確認できません。対応する読み取り項目を指定してください。"}</p>
               {child.mappingStatus==="manual_required"&&<fieldset><legend>対応する読み取り項目</legend>{splitProposal.sourceOptions.map(option=><label key={option.id}><input type="checkbox" checked={child.selectedSourceIds.includes(option.id)} onChange={e=>setSplitProposal({...splitProposal,children:splitProposal.children.map((c,i)=>i===index?{...c,selectedSourceIds:e.target.checked?[...c.selectedSourceIds,option.id]:c.selectedSourceIds.filter(id=>id!==option.id)}:c)})}/>{option.label} — {option.excerpt}</label>)}<button onClick={()=>{const items=mapCandidateToSources(child.items,child.selectedSourceIds,splitProposal.sourceOptions);if(items)setSplitProposal({...splitProposal,children:splitProposal.children.map((c,i)=>i===index?{...c,items,mappingStatus:"manual_mapped",included:true}:c)});}}>この対応を使用</button></fieldset>}
               <label>小問名<input value={child.label} onChange={e=>setSplitProposal({...splitProposal,children:splitProposal.children.map((c,i)=>i===index?{...c,label:e.target.value}:c)})}/></label>
             </div>)}
-            <button disabled={splitProposal.children.some(c=>c.included&&(!["automatic","manual_mapped"].includes(c.mappingStatus)||!c.contentValid))} onClick={()=>{
-              const result=applyQuestionSplit(node,splitProposal,()=>`teacher-${localId()}`);if(!result)return;
+            <button disabled={splitProposal.children.some(c=>c.included&&(c.role||"child")==="child"&&(!["automatic","manual_mapped"].includes(c.mappingStatus)||!c.contentValid))} onClick={()=>{
+              if(splitDuplicate(node,splitProposal,nodes)){setError("同じ本文・出典の小問が既に存在するか、選択中の小問を重複して切り出そうとしています。親本文に残すか、分割範囲を見直してください。");return;}
+              const result=applyQuestionSplit(node,splitProposal,()=>`teacher-${localId()}`,nodes);if(!result){setError("小問にする部分と元資料の対応を確認してください。");return;}
               const orderOffset=Math.max(-1,...snapshot.nodes.filter(n=>n.parent_key===node.stable_key).map(n=>n.sort_order))+1;
               result.children.forEach(n=>{n.sort_order+=orderOffset;});
               change({...snapshot,nodes:[...snapshot.nodes.map(n=>n.stable_key===node.stable_key?result.updated:n),...result.children]});
               setBuffers(current=>({...current,[node.stable_key]:questionContent(result.updated,regions).text,...Object.fromEntries(result.children.map(n=>[n.stable_key,questionContent(n,regions).text]))}));
               setSelected(result.children[0].stable_key);setSplitProposal(null);
-            }}>この内容で分割</button><button onClick={()=>setSplitProposal(null)}>キャンセル</button>
+            }}>分割を適用</button><button onClick={()=>setSplitProposal(null)}>キャンセル</button>
           </section>}
           </div><div hidden={questionSettings}>
           {questionDomain&&revision&&<DiagramReview path={`/tests/${id}/authoring/nodes/${selected}/diagrams`} revision={revision.edit_version}
-            records={node.diagram_records} sourceStale={questionStale} disabled={readonly||saving} label="図の確認" onSelect={setDiagramSelection}
+            records={node.diagram_records} sourceStale={questionStale} disabled={readonly||saving||analyzing} label="図の確認" onSelect={setDiagramSelection}
             onChange={records=>{setDirty(true);setDirtyDomains(d=>({...d,diagram:true}));setSnapshot(current=>current?{...current,nodes:current.nodes.map(n=>{if(n.stable_key!==node.stable_key)return n;const decisions={...n.figure_decisions};for(const record of records)for(const rid of record.legacy_region_ids||(record.legacy_region_id?[record.legacy_region_id]:[]))decisions[rid]={decision:record.state==="accepted"?"accepted_as_evidence":record.state==="excluded"?"excluded":"unreviewed"};return {...n,diagram_records:records,figure_decisions:decisions};})}:current);}}/>}
-          {questionDomain&&questionWarnings.length>0&&<WarningPanel warnings={questionWarnings} targetLabel={()=>pathFor(selected)} states={questionDomain.snapshot.warning_states||{}} readonly={readonly||saving}
+          {questionDomain&&questionWarnings.length>0&&<WarningPanel warnings={questionWarnings} targetLabel={()=>pathFor(selected)} states={questionDomain.snapshot.warning_states||{}} readonly={readonly||saving||analyzing}
             onChange={(key,resolution)=>change({...snapshot,domains:{...snapshot.domains,question:{...questionDomain,snapshot:{...questionDomain.snapshot,warning_states:{...questionDomain.snapshot.warning_states,[key]:resolution}}}}})}/>}
           </div>
         </AuthoringPreviewEditor></section>}
         {snapshot.domains?.answer&&(visible.answer||visible.rubric)&&revision&&<section id="authoring-answer" tabIndex={-1} aria-label="解答・採点基準"><span id="authoring-rubric" tabIndex={-1}/><h2>解答・採点基準</h2>
           <AuthoringCandidates key={snapshot.domains.answer.draft_id} testId={id} draftId={snapshot.domains.answer.draft_id} revision={revision.edit_version} questionKey={selected}
-            sourceStale={answerStale} entries={snapshot.domains.answer.entries} savedEntries={revision.snapshot.domains?.answer?.entries||[]} disabled={readonly||saving}
+            sourceStale={answerStale} entries={snapshot.domains.answer.entries} savedEntries={revision.snapshot.domains?.answer?.entries||[]} disabled={readonly||saving||analyzing}
             answerEditing={editing.answer} rubricEditing={editing.rubric} onAnswerEditing={value=>setEditing(v=>({...v,answer:value}))} onRubricEditing={value=>setEditing(v=>({...v,rubric:value}))}
-            showAnswer={visible.answer} showRubric={visible.rubric&&!formalRubricFallback} questions={orderedNodes().map(n=>({key:n.stable_key,label:pathFor(n.stable_key),gradable:n.score_semantics==="direct",sourceId:snapshot.source_provenance.authoring_origins?.identities[n.stable_key]?.formal_question_id||n.stable_key}))}
+            showAnswer={visible.answer} showRubric={visible.rubric&&!formalRubricFallback} questions={orderedNodes().map(n=>({key:n.stable_key,label:pathFor(n.stable_key),gradable:!nodes.some(c=>c.included&&c.parent_key===n.stable_key),sourceId:snapshot.source_provenance.authoring_origins?.identities[n.stable_key]?.formal_question_id||n.stable_key}))}
             onSelect={setDiagramSelection} onChange={(rawEntries,domain)=>{
               const entries=rawEntries.map(e=>hasRubricState(e)?{...e,rubric_edits:e.rubric_edits??rubricRows(e)}:e);
               const answers={...snapshot.answers},rubrics={...snapshot.rubrics};
               for(const key of new Set([...snapshot.domains!.answer!.entries,...entries].map(e=>e.authoring_question_key).filter(Boolean))){
                 const current=entries.filter(e=>e.authoring_question_key===key&&e.disposition!=="ignored"&&e.disposition!=="excluded"&&e.disposition!=="unassigned");
-                const primary=current.find(e=>(e.answer_kind||"primary")==="primary");
+                const primary=current.find(e=>(e.answer_kind||"primary")==="primary"&&(e.answer_text.trim()||e.diagram_records?.some(r=>r.state==="accepted")))||current.find(e=>(e.answer_kind||"primary")==="primary");
                 answers[key!]={primary:primary?.answer_text||"",alternatives:current.flatMap(e=>[...(e.answer_kind==="alternative"?[e.answer_text]:[]),...(e.manual_alternative_answers||e.semantic_classification?.manual_alternative_answers||e.semantic_classification?.alternative_answers||[]).map(a=>a.text)]),diagram_records:primary?.diagram_records||[]};
                 if(current.some(hasRubricState)||snapshot.domains!.answer!.entries.some(e=>e.authoring_question_key===key&&hasRubricState(e)))rubrics[key!]=current.flatMap(e=>rubricRows(e).filter(c=>!c.excluded));
               }
@@ -354,13 +364,13 @@ export default function TestAuthoringPage() {
             }}/></section>}
         {!snapshot.domains?.answer&&visible.answer&&<section id="authoring-answer" tabIndex={-1} aria-label="解答"><h2>解答</h2>
           <AuthoringPreviewEditor editLabel="本文編集" label="解答" editing={editing.answer} onEditing={value=>setEditing(v=>({...v,answer:value}))} preview={<><MarkdownMathText source={answer.primary||"本文なし"}/>{answer.alternatives.map((text,i)=><div key={i}><h4>別解{i+1}</h4><MarkdownMathText source={text}/></div>)}<AcceptedDiagramPreview records={answer.diagram_records}/></>}>
-          <label>模範解答本文<textarea aria-label="模範解答本文" rows={4} disabled={readonly||saving} value={answer.primary} onChange={e=>change({...snapshot,answers:{...snapshot.answers,[selected]:{...answer,primary:e.target.value}}})}/></label>
-          <LatexNormalizationControl text={answer.primary} contextType="model_answer" disabled={readonly||saving} onApply={text=>change({...snapshot,answers:{...snapshot.answers,[selected]:{...answer,primary:text}}})}/>
+          <label>模範解答本文<textarea aria-label="模範解答本文" rows={4} disabled={readonly||saving||analyzing} value={answer.primary} onChange={e=>change({...snapshot,answers:{...snapshot.answers,[selected]:{...answer,primary:e.target.value}}})}/></label>
+          <LatexNormalizationControl text={answer.primary} contextType="model_answer" disabled={readonly||saving||analyzing} onApply={text=>change({...snapshot,answers:{...snapshot.answers,[selected]:{...answer,primary:text}}})}/>
           {!!answer.diagram_records.length&&<p>保存済みの模範解答図: {answer.diagram_records.length}件（元の出典情報を保持）</p>}
         </AuthoringPreviewEditor></section>}
         {(!snapshot.domains?.answer||formalRubricFallback)&&visible.rubric&&<section id="authoring-rubric" tabIndex={-1} aria-label="採点基準"><h2>採点基準</h2>
           <AuthoringCandidates answerEditing={editing.answer} rubricEditing={editing.rubric} onAnswerEditing={value=>setEditing(v=>({...v,answer:value}))} onRubricEditing={value=>setEditing(v=>({...v,rubric:value}))} testId={id} draftId="" revision={revision?.edit_version||1} questionKey={selected} showAnswer={false} showRubric
-            disabled={readonly||saving} questions={orderedNodes().map(n=>({key:n.stable_key,label:pathFor(n.stable_key),gradable:n.score_semantics==="direct"}))}
+            disabled={readonly||saving||analyzing} questions={orderedNodes().map(n=>({key:n.stable_key,label:pathFor(n.stable_key),gradable:!nodes.some(c=>c.included&&c.parent_key===n.stable_key)}))}
             savedEntries={[]} entries={[{id:`formal-entry:${selected}`,mapping_state:"manual_mapped",question_id:null,authoring_question_key:selected,answer_text:"",source:{kind:"teacher_manual",material_id:null,source_sha256:null,segments:[]},
               rubric_edits:criteria,rubric_merge_history:snapshot.rubric_histories?.[selected]||[]}]}
             onSelect={setDiagramSelection} onChange={entries=>change({...snapshot,rubrics:{...snapshot.rubrics,[selected]:entries[0].rubric_edits||[]},

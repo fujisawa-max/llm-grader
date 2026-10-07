@@ -310,3 +310,151 @@ def test_analysis_backup_does_not_exist_when_native_analysis_fails(workspace):
     assert w.client.get(path).json()['revision'] == row
     with w.sf() as s:
         assert s.scalar(select(func.count()).select_from(TestAuthoringRevision)) == 1
+
+
+def test_analysis_after_split_maps_unscored_children_and_preserves_tree(workspace):
+    import pymupdf
+    from scoring.db.models import TestMaterial, TestAuthoringRevision
+    from scoring.pdf_native import sha256_file
+    w = workspace
+    path, row = begin(w, w.answer['test_id'])
+    formal_before = w.client.get(f'/api/v1/tests/{w.answer["test_id"]}/questions').json()
+    snapshot = deepcopy(row['snapshot'])
+    parent = snapshot['nodes'][0]
+    parent.update(score_semantics='sum_children', score_points=None, body_text='Teacher retained context')
+    for index in range(2):
+        child = deepcopy(parent)
+        child.update(stable_key=f'teacher-{uuid4()}', review_node_id=str(uuid4()),
+            parent_key=parent['stable_key'], node_type='subquestion', depth=1, sort_order=index,
+            label={'raw': f'({index+1})', 'normalized': f'({index+1})'},
+            body_text=f'Teacher changed child {index}', ordered_content=[{'type': 'text', 'order': 0, 'text': f'Teacher changed child {index}'}],
+            score_semantics='unset', score_points=None)
+        snapshot['nodes'].append(child)
+    row = save(w, path, row, snapshot)
+    source = w.root/'split-answer.pdf'
+    with pymupdf.open() as doc:
+        p = doc.new_page()
+        p.insert_text((40, 40), '問題3', fontname='japan')
+        p.insert_text((40, 90), '(1) Answer one')
+        p.insert_text((40, 180), '(2) Answer two')
+        doc.save(source)
+    with w.sf() as s:
+        material = TestMaterial(test_id=w.answer['test_id'], material_type='model_answer_source',
+            original_filename=source.name, mime_type='application/pdf', storage_ref=str(source), sha256=sha256_file(source))
+        s.add(material)
+        s.commit()
+        mid = material.id
+    response = w.client.post(path+'/analyze-answer', json={'material_id': mid,
+        'expected_edit_version': row['edit_version'], 'preserve_previous': True})
+    assert response.status_code == 200, response.text
+    analyzed = response.json()
+    assert analyzed['snapshot']['nodes'] == row['snapshot']['nodes']
+    bound = analyzed['snapshot']['domains']['answer']
+    assert bound['analysis_result']['assigned_count'] == 2
+    children = snapshot['nodes'][-2:]
+    for index, child in enumerate(children):
+        entry = next(e for e in bound['entries'] if e['authoring_question_key'] == child['stable_key'])
+        assert ('Answer one' if index == 0 else 'Answer two') in entry['candidate_text']
+        assert child['stable_key'] in analyzed['snapshot']['answers']
+    with w.sf() as s:
+        previous = s.get(TestAuthoringRevision, row['id'])
+        assert previous.state == 'analysis_backup'
+        assert previous.snapshot == row['snapshot']
+    assert w.client.get(path).json()['revision'] == analyzed
+    assert w.client.get(f'/api/v1/tests/{w.answer["test_id"]}/questions').json() == formal_before
+
+
+def test_cross_material_merge_preserves_answer_rubric_sources_and_unresolved():
+    from types import SimpleNamespace
+    from scoring.authoring_sources import merge_answer_analysis
+    snapshot = {'nodes': [{'stable_key': 'leaf', 'parent_key': None, 'included': True,
+        'label': {'raw': '問題1'}, 'body_text': 'Teacher text', 'node_type': 'major_question',
+        'ordered_content': [], 'sort_order': 0, 'score_semantics': 'unset', 'score_points': None}],
+        'source_provenance': {}, 'answers': {}, 'rubrics': {}}
+    def draft(identifier, material, entries):
+        return SimpleNamespace(id=identifier, material_id=material, revision=1,
+            source_sha256=material, artifact_ref=identifier, snapshot={'entries': entries})
+    original_nodes = deepcopy(snapshot['nodes'])
+    merge_answer_analysis(snapshot, draft('answer', 'pdf-a', [{'id': 'a', 'question_id': 'leaf', 'answer_text': 'correct answer'}]))
+    result = merge_answer_analysis(snapshot, draft('rubric', 'pdf-b', [
+        {'id': 'r', 'question_id': 'leaf', 'answer_text': '', 'rubric_edits': [{'id': 'c', 'description': 'criterion', 'points': 5}]},
+        {'id': 'unresolved', 'question_id': 'foreign', 'answer_text': 'not guessed'}]))
+    assert snapshot['nodes'] == original_nodes
+    assert snapshot['answers']['leaf']['primary'] == 'correct answer'
+    assert snapshot['rubrics']['leaf'][0]['description'] == 'criterion'
+    assert result == {'status': 'partial', 'assigned_count': 1, 'unresolved_count': 1, 'candidate_count': 2}
+    bound = snapshot['domains']['answer']
+    assert bound['sources']['answer']['material_id'] == 'pdf-a'
+    assert next(e for e in bound['entries'] if e['id'] == 'a')['source_draft_id'] == 'answer'
+    assert next(e for e in bound['entries'] if e['id'] == 'unresolved')['authoring_question_key'] is None
+    zero = merge_answer_analysis(snapshot, draft('unknown', 'pdf-c', [{'id': 'u', 'question_id': 'other', 'answer_text': 'unknown'}]))
+    assert zero['status'] == 'needs_assignment' and zero['assigned_count'] == 0
+    assert snapshot['nodes'] == original_nodes
+
+
+def test_source_import_after_teacher_structure_change_does_not_restore_legacy_tree(workspace):
+    w = workspace
+    path, row = begin(w, w.answer['test_id'])
+    snapshot = deepcopy(row['snapshot'])
+    first = snapshot['nodes'][0]
+    first.update(body_text='Teacher changed text', sort_order=10, score_points=7)
+    first['ordered_content'] = [{'type': 'text', 'order': 0, 'text': first['body_text']}]
+    child = deepcopy(first)
+    child.update(stable_key=f'teacher-{uuid4()}', review_node_id=str(uuid4()),
+        parent_key=first['stable_key'], node_type='subquestion', depth=1, sort_order=0,
+        label={'raw': '(1)', 'normalized': '(1)'}, score_semantics='unset', score_points=None)
+    first.update(score_semantics='sum_children', score_points=None)
+    snapshot['nodes'].append(child)
+    row = save(w, path, row, snapshot)
+    result = w.client.post(path+'/source-import', json={'expected_edit_version': row['edit_version'], 'preserve_previous': True})
+    assert result.status_code == 200, result.text
+    assert result.json()['snapshot']['nodes'] == row['snapshot']['nodes']
+
+
+def test_forged_candidate_source_binding_is_rejected(workspace):
+    w = workspace
+    path, row = begin(w, w.answer['test_id'])
+    snapshot = deepcopy(row['snapshot'])
+    snapshot['domains']['answer']['entries'][0]['source_draft_id'] = 'foreign-source'
+    result = w.client.put(path, json={'snapshot': snapshot, 'expected_edit_version': row['edit_version']})
+    assert result.status_code == 409
+    assert w.client.get(path).json()['revision'] == row
+
+
+def test_retained_material_keeps_authorized_diagram_context_after_other_analysis(workspace):
+    from scoring.db.models import TestMaterial
+    from scoring.pdf_native import sha256_file
+    w = workspace
+    path, row = begin(w, w.answer['test_id'])
+    entry = next(e for e in row['snapshot']['domains']['answer']['entries'] if e['authoring_question_key'])
+    endpoint = path+f'/entries/{entry["id"]}/diagrams'
+    result = w.client.post(endpoint, json={'expected_revision': row['edit_version']})
+    assert result.status_code == 200, result.text
+    record = result.json()['diagrams'][0]
+    snapshot = deepcopy(row['snapshot'])
+    next(e for e in snapshot['domains']['answer']['entries'] if e['id'] == entry['id'])['diagram_records'] = [{**clean(record), 'state': 'accepted'}]
+    row = save(w, path, row, snapshot)
+    original_material = row['snapshot']['domains']['answer']['material_id']
+    with w.sf() as s:
+        old = s.get(TestMaterial, original_material)
+        material = TestMaterial(test_id=w.answer['test_id'], material_type='rubric_source',
+            original_filename='other-rubric.pdf', mime_type='application/pdf', storage_ref=old.storage_ref,
+            sha256=sha256_file(w.root/'answer.pdf'))
+        s.add(material)
+        s.commit()
+        mid = material.id
+    result = w.client.post(path+'/analyze-answer', json={'material_id': mid,
+        'expected_edit_version': row['edit_version'], 'preserve_previous': True})
+    assert result.status_code == 200, result.text
+    row = result.json()
+    bound = row['snapshot']['domains']['answer']
+    retained = next(e for e in bound['entries'] if e['id'] == entry['id'])
+    assert bound['material_id'] == mid
+    assert bound['sources'][retained['source_draft_id']]['material_id'] == original_material
+    result = w.client.get(endpoint)
+    assert result.status_code == 200, result.text
+    selected = next(r for r in result.json()['diagrams'] if r['id'] == record['id'])
+    assert selected['state'] == 'accepted' and selected['material_id'] == original_material
+    assert w.client.get(selected['preview_url']).status_code == 200
+    saved = save(w, path, row, row['snapshot'])
+    assert w.client.get(path).json()['revision'] == saved

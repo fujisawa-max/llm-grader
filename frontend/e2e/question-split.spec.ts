@@ -315,3 +315,30 @@ test("numbered split keeps a multi-line OCR formula block and its native anchor 
   expect(proposal?.placements.filter(p=>p.item===formula)).toHaveLength(1);
   expect(proposal?.children.flatMap(c=>c.items).filter(i=>"merged_source_segments" in i)).toHaveLength(1);
 });
+
+test("review classifications keep source-backed parent, child and excluded blocks atomic", async()=>{
+  const {reviewQuestionSplit,applyQuestionSplit}=await import("../lib/questionSplitApply");
+  const original=node("共通導入\n(1) first\n(2) second\n(3) discarded");
+  const proposal=reviewQuestionSplit(suggestSubquestions(original)!,original);
+  expect(proposal.children.map(c=>c.role)).toEqual(["parent","child","child","child"]);
+  proposal.children[2].role="parent";proposal.children[3].role="exclude";
+  const result=applyQuestionSplit(original,proposal,()=>"new-child")!;
+  expect(result.children).toHaveLength(1);expect(result.children[0].body_text).toContain("first");
+  expect(result.updated.body_text).toContain("共通導入");expect(result.updated.body_text).toContain("second");
+  expect(JSON.stringify(result)).not.toContain("discarded");expect(result.children[0].ordered_content[0]).toHaveProperty("source_slice");
+});
+test("repeated child wrapper defaults to parent and cannot become a duplicate grandchild",async()=>{
+  const {reviewQuestionSplit,applyQuestionSplit}=await import("../lib/questionSplitApply");
+  const original={...node("(2) 共通文\n(1) genuine first\n(2) genuine second"),parent_key:"parent",label:{raw:"(2)",normalized:"(2)"}};
+  const proposal=reviewQuestionSplit(suggestSubquestions(original)!,original);
+  expect(proposal.children[0].role).toBe("parent");let i=0;
+  const result=applyQuestionSplit(original,proposal,()=>`grandchild-${++i}`)!;
+  expect(result.children.map(c=>c.label.raw)).toEqual(["(1)","(2)"]);expect(result.updated.body_text).toContain("共通文");
+  proposal.children[0].role="child";expect(applyQuestionSplit(original,proposal,()=>"bad")).toBeUndefined();
+});
+test("existing source block cannot be split into a duplicate child",async()=>{
+  const {reviewQuestionSplit,applyQuestionSplit}=await import("../lib/questionSplitApply");
+  const original=node("intro\n(1) first\n(2) second"),proposal=reviewQuestionSplit(suggestSubquestions(original)!,original);
+  const first=applyQuestionSplit(original,proposal,()=>"existing")!;
+  expect(applyQuestionSplit(original,proposal,()=>"bad",first.children)).toBeUndefined();
+});

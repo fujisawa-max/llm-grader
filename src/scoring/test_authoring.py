@@ -260,7 +260,10 @@ def preflight(snapshot):
     for key in {e.get('authoring_question_key') for e in entries} - {None}:
         current = [e for e in entries if e.get('authoring_question_key') == key and
             e.get('disposition', 'include') == 'include']
-        if sum(e.get('answer_kind', 'primary') == 'primary' for e in current) > 1:
+        from .authoring_sources import has_rubric_state
+        answer_candidates = [e for e in current if e.get('answer_text', '').strip() or
+            e.get('diagram_records') or not has_rubric_state(e)]
+        if sum(e.get('answer_kind', 'primary') == 'primary' for e in answer_candidates) > 1:
             issue(key, 'answer', '主な模範解答を1件にしてください。別解は別解として指定してください。')
     for entry in entries:
         classification = entry.get('semantic_classification') or {}
@@ -299,7 +302,9 @@ def replacement_problems(snapshot):
         sha = (context.get('document', {}).get('source_pdf_sha256') if name == 'question'
                else context.get('source_sha256'))
         affected = (any(m.get('role') == 'question_sheet' and m.get('sha256') == sha for m in superseded)
-                    if name == 'question' else any(m['id'] == context.get('material_id') for m in superseded))
+                    if name == 'question' else any(m['id'] in {context.get('material_id'),
+                        *(source.get('material_id') for source in context.get('sources', {}).values())}
+                        for m in superseded))
         if sha and affected:
             result.append({'domain': name, 'code': 'authoring_material_replaced'})
     return result

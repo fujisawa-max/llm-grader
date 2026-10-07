@@ -230,6 +230,17 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
             raise HTTPException(409, 'AUTHORING_SAVE_CONFLICT')
         baseline = projection(s, test)
         snapshot = source_projection(s, test, baseline, question_root, answer_root)
+        if not v.analysis_material_id:
+            from copy import deepcopy
+            from ..authoring_sources import source_tokens, merge_answer_analysis
+            from ..db.models import ModelAnswerImportDraft
+            origin = row.snapshot.get('source_provenance', {}).get('authoring_origins', {})
+            if origin.get('tokens', {}).get('question') == source_tokens(s, test_id)['question']:
+                imported = snapshot.get('domains', {}).get('answer')
+                snapshot = deepcopy(row.snapshot)
+                if imported:
+                    merge_answer_analysis(snapshot, s.get(ModelAnswerImportDraft, imported['draft_id']))
+                snapshot['source_provenance'].setdefault('authoring_origins', {})['tokens'] = source_tokens(s, test_id)
         if v.analysis_material_id:
             from ..db.models import TestMaterial
             material = s.get(TestMaterial, v.analysis_material_id)
@@ -263,14 +274,8 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
             questions_override=questions, commit=False)
         from ..db.models import TestMaterial
         mark_analysis(snapshot, row.snapshot, s.get(TestMaterial, draft.material_id))
-        inverse = {identifier: key for key, identifier in aliases.items()}
-        entries = deepcopy(draft.snapshot['entries'])
-        for entry in entries:
-            entry['authoring_question_key'] = inverse.get(entry.get('question_id'))
-        snapshot.setdefault('domains', {})['answer'] = {
-            'draft_id': draft.id, 'revision': draft.revision, 'material_id': draft.material_id,
-            'source_sha256': draft.source_sha256, 'artifact_ref': draft.artifact_ref,
-            'question_regions': deepcopy(draft.snapshot.get('question_regions', [])), 'entries': entries}
+        from ..authoring_sources import merge_answer_analysis
+        merge_answer_analysis(snapshot, draft)
         origin = snapshot['source_provenance'].setdefault('authoring_origins', {})
         tokens = deepcopy(origin.get('tokens') or source_tokens(s, test_id))
         tokens['answer'] = source_tokens(s, test_id)['answer']

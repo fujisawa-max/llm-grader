@@ -14,7 +14,7 @@ export interface AuthoringSnapshot {
   materials: {id: string; sha256: string | null; role: string; replaces_material_id?:string}[];
   domains?: {
     question?: {document: Omit<ReviewDocument, "snapshot">; snapshot: Omit<ReviewSnapshot, "nodes">};
-    answer?: {draft_id: string; revision: number; material_id: string; source_sha256: string; question_regions:{question_id:string;page_index:number;left:number;top:number;right:number;bottom:number;depth:number}[]; entries: (ModelAnswerDraftEntry & {authoring_question_key?: string | null; manual_alternative_answers?:{id:string;text:string}[]})[]};
+    answer?: {analysis_result?:{status:string;assigned_count:number;unresolved_count:number;candidate_count:number}; draft_id: string; revision: number; material_id: string; source_sha256: string; question_regions:{question_id:string;page_index:number;left:number;top:number;right:number;bottom:number;depth:number}[]; entries: (ModelAnswerDraftEntry & {authoring_question_key?: string | null; manual_alternative_answers?:{id:string;text:string}[]})[]};
   };
 }
 export interface AuthoringRevision {id: string; test_id: string; revision: number; edit_version: number; state: string; snapshot: AuthoringSnapshot; snapshot_sha256: string; baseline_sha256: string}

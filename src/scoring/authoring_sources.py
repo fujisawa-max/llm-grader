@@ -180,7 +180,7 @@ def validate_domains(value, previous):
                 original = entries.get(e['id'])
                 if e.get('authoring_question_key') is not None and e['authoring_question_key'] not in keys:
                     raise AuthoringError('AUTHORING_INVALID_TARGET', '候補の対応先を確認してください。')
-                if original and any(e.get(k) != original.get(k) for k in ('source', 'candidate_text', 'extraction_method')):
+                if original and any(e.get(k) != original.get(k) for k in ('source', 'candidate_text', 'extraction_method', 'source_draft_id')):
                     raise AuthoringError('AUTHORING_SOURCE_CHANGED', '候補の元資料は編集できません。')
                 if not original:
                     from uuid import UUID
@@ -188,6 +188,8 @@ def validate_domains(value, previous):
                         if not e['id'].startswith('teacher-entry-'):
                             raise ValueError()
                         UUID(e['id'].removeprefix('teacher-entry-'))
+                        if e.get('source_draft_id', old[name]['draft_id']) != old[name]['draft_id']:
+                            raise ValueError()
                         source = e.get('source', {})
                         if (source.get('kind') != 'teacher_manual' or source.get('segments') != []
                                 or source.get('material_id') or source.get('source_sha256')
@@ -221,3 +223,54 @@ def validate_domains(value, previous):
                         e['semantic_classification'] = canonical
                     except (ValueError, KeyError, TypeError, ClassificationOutputError) as exc:
                         raise AuthoringError('AUTHORING_SOURCE_CHANGED', '分類と元segmentの対応を確認してください。') from exc
+
+
+def merge_answer_analysis(snapshot, draft):
+    """Merge source-bound candidates into the current tree, without inference."""
+    from .authoring_answers import authoring_questions
+    aliases, questions = authoring_questions(snapshot)
+    gradable = {q.id for q in questions if q.is_gradable}
+    inverse = {identifier: key for key, identifier in aliases.items() if identifier in gradable}
+    entries = deepcopy(draft.snapshot.get('entries', []))
+    for entry in entries:
+        entry['authoring_question_key'] = inverse.get(entry.get('question_id'))
+        entry['source_draft_id'] = draft.id
+        if not entry['authoring_question_key']:
+            entry.update(disposition='unassigned', mapping_state='needs_review')
+    old = snapshot.get('domains', {}).get('answer') or {}
+    sources = deepcopy(old.get('sources', {}))
+    if old:
+        sources[old['draft_id']] = {k: deepcopy(v) for k, v in old.items()
+                                  if k not in {'entries', 'sources', 'analysis_result'}}
+    retained = []
+    for entry in old.get('entries', []):
+        source_id = entry.get('source_draft_id', old.get('draft_id'))
+        source = sources.get(source_id, {})
+        # Reanalysis supersedes only this material; other sources remain intact.
+        if source.get('material_id') != draft.material_id:
+            retained.append({**deepcopy(entry), 'source_draft_id': source_id})
+    used_sources = {e['source_draft_id'] for e in retained}
+    sources = {k: v for k, v in sources.items() if k in used_sources}
+    assigned = sum(bool(e['authoring_question_key']) for e in entries)
+    result = {'status': 'assigned' if assigned == len(entries) and assigned else
+              'partial' if assigned else 'needs_assignment',
+              'assigned_count': assigned, 'unresolved_count': len(entries)-assigned,
+              'candidate_count': len(entries)}
+    snapshot.setdefault('domains', {})['answer'] = {
+        'draft_id': draft.id, 'revision': draft.revision, 'material_id': draft.material_id,
+        'source_sha256': draft.source_sha256, 'artifact_ref': draft.artifact_ref,
+        'question_regions': deepcopy(draft.snapshot.get('question_regions', [])),
+        'entries': retained+entries, 'sources': sources, 'analysis_result': result}
+    for key in {e['authoring_question_key'] for e in retained+entries if e.get('authoring_question_key')}:
+        current = [e for e in retained+entries if e.get('authoring_question_key') == key
+                   and e.get('disposition', 'include') == 'include']
+        answer_entries = [e for e in current if e.get('answer_text', '').strip() or
+                          any(r.get('state') == 'accepted' for r in e.get('diagram_records', []))]
+        primary = next((e for e in answer_entries if e.get('answer_kind', 'primary') == 'primary'), None)
+        if answer_entries:
+            snapshot['answers'][key] = {'primary': primary.get('answer_text', '') if primary else '',
+                'alternatives': answer_alternatives(answer_entries),
+                'diagram_records': deepcopy(primary.get('diagram_records', [])) if primary else []}
+        if any(has_rubric_state(e) for e in current):
+            snapshot['rubrics'][key] = [c for e in current for c in rubric_projection(e)]
+    return result

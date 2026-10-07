@@ -13,9 +13,9 @@ test("unified Question math OCR applies locally, remains editable and saves with
   expect((await (await page.request.get(base)).json()).revision.snapshot.nodes[0].math_ocr_edits||[]).toHaveLength(0);expect(await (await page.request.get(`/api/v1/question-import-reviews/${review.id}`)).json()).toEqual(review);
   await page.getByRole("button",{name:"保存",exact:true}).click();await expect(page.getByText("下書きを保存しました。",{exact:true})).toBeVisible();await page.reload();await openAuthoringEditors(page);await expect(editor).toHaveValue(edited);expect(edited).not.toBe(original);const saved=(await (await page.request.get(base)).json()).revision;expect(saved.snapshot.nodes[0].math_ocr_edits).toHaveLength(1);expect(saved.state).toBe("draft");expect(await (await page.request.get(`/api/v1/tests/${tid}/questions`)).json()).toEqual([]);expect(errors).toEqual([]);
   const numbered=edited.replace("次の式の意味を説明せよ。","1. 次の式の意味を説明せよ。").replace("途中の数値を変更しないこと。","2. 途中の数値を変更しないこと。");
-  await editor.fill(numbered);await page.getByRole("button",{name:"設問設定の変更",exact:true}).click();await expect(editor).not.toBeVisible();
-  await page.getByRole("button",{name:"小問の分割案を作成",exact:true}).click();await expect(page.getByLabel("小問の分割案",{exact:true})).toBeVisible();await page.getByRole("button",{name:"この内容で分割",exact:true}).click();
-  await view.getByRole("button",{name:"本文編集",exact:true}).click();expect((await editor.inputValue()).trim().length).toBeGreaterThan(0);
+  await editor.fill(numbered);await expect(editor).toBeVisible();
+  await page.getByRole("button",{name:"小問の分割案を作成",exact:true}).click();await expect(page.getByLabel("小問の分割案",{exact:true})).toBeVisible();await page.getByRole("button",{name:"分割を適用",exact:true}).click();
+  await expect(editor).toBeVisible();expect((await editor.inputValue()).trim().length).toBeGreaterThan(0);
   await page.getByRole("button",{name:"保存",exact:true}).click();await expect(page.getByText("下書きを保存しました。",{exact:true})).toBeVisible();
   const split=(await(await page.request.get(base)).json()).revision.snapshot;expect(split.nodes.filter((n:{parent_key:string|null})=>n.parent_key===saved.snapshot.nodes[0].stable_key)).toHaveLength(2);expect(JSON.stringify(split.nodes)).toContain("Precision");expect(await(await page.request.get(`/api/v1/tests/${tid}/questions`)).json()).toEqual([]);
 });

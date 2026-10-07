@@ -56,8 +56,8 @@ test("current preview and retained editor history; explicit add/replace material
   await question.getByRole("button",{name:"プレビューに戻る",exact:true}).click();
   const before=await(await page.request.get(base+"/authoring")).json(),counts=await calls(page);
   const qtext=await exerciseEditor(page,page.getByLabel("問題文",{exact:true}),question);
-  await expect(page.getByLabel("設問の階層",{exact:true})).not.toBeVisible();await expect(page.getByRole("button",{name:"小問の分割案を作成",exact:true})).not.toBeVisible();
-  await page.getByRole("button",{name:"最終確認へ",exact:true}).click();await page.getByRole("button",{name:/問題1.*配点を確認/}).click();await expect.poll(()=>page.evaluate(()=>document.activeElement?.getAttribute("type"))).toBe("number");await expect(page.getByLabel("問題文",{exact:true})).not.toBeVisible();await expect(page.getByLabel("設問の階層",{exact:true})).toBeVisible();await expect(page.getByRole("button",{name:"小問の分割案を作成",exact:true})).toBeVisible();
+  await expect(page.getByLabel("設問の階層",{exact:true})).not.toBeVisible();await expect(page.getByRole("button",{name:"小問の分割案を作成",exact:true})).toBeVisible();
+  await page.getByRole("button",{name:"最終確認へ",exact:true}).click();await page.getByRole("button",{name:/問題1.*配点を確認/}).click();await expect.poll(()=>page.evaluate(()=>document.activeElement?.getAttribute("type"))).toBe("number");await expect(page.getByLabel("問題文",{exact:true})).not.toBeVisible();await expect(page.getByLabel("設問の階層",{exact:true})).toBeVisible();await expect(page.getByRole("button",{name:"小問の分割案を作成",exact:true})).not.toBeVisible();
   await question.getByRole("button",{name:"本文編集",exact:true}).click();await expect(page.getByLabel("問題文",{exact:true})).toHaveValue(qtext);
   const atext=await exerciseEditor(page,page.getByLabel("模範解答本文",{exact:true}),answer);
   await question.getByRole("button",{name:"プレビューを見る",exact:true}).click();await expect(answer.getByRole("button",{name:"プレビューを見る",exact:true})).toBeVisible();

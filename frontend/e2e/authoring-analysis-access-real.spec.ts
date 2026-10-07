@@ -31,7 +31,7 @@ test("compact material controls, role-aware explicit analysis and every Test edi
  const key=await page.getByLabel("対象設問",{exact:true}).inputValue(),previous=(await(await page.request.get(base+"/authoring")).json()).revision;
  const observed:string[]=[];page.on("request",r=>{if(r.method()==="POST"&&(r.url().includes("analyze-answer")||r.url().includes("question-materials")))observed.push(r.url());});
  page.once("dialog",d=>{expect(d.message()).toContain("現在の保存済み下書き");void d.accept();});await controls.getByRole("button",{name:"解析",exact:true}).click();await expect(page.getByText("選択資料を解析しています。完了までお待ちください。",{exact:true})).toBeVisible();await expect(controls.getByRole("button",{name:"解析中…",exact:true})).toBeDisabled();
- await expect(page.getByText("解析結果を新しい編集用下書きに取り込みました。解析前の保存済み下書きと正式内容は保持されています。",{exact:true})).toBeVisible();await expect(controls.getByRole("button",{name:"再解析",exact:true})).toBeEnabled();await expect(page.getByLabel("対象設問",{exact:true})).toHaveValue(key);await expect(page.getByLabel("問題文",{exact:true})).toHaveValue("Teacher saved Question");
+ await expect(page.getByText(/解析結果: 対応済み/)).toBeVisible();await expect(controls.getByRole("button",{name:"再解析",exact:true})).toBeEnabled();await page.getByLabel("対象設問",{exact:true}).selectOption(key);await expect(page.getByLabel("問題文",{exact:true})).toHaveValue("Teacher saved Question");
  const analyzed=(await(await page.request.get(base+"/authoring")).json()).revision;expect(analyzed.id).not.toBe(previous.id);expect(analyzed.revision).toBe(previous.revision+1);expect(observed).toHaveLength(1);
  const after=await calls(page);expect(after[2]).toBeGreaterThan(before[2]);
  // Reanalysis requires explicit confirmation; cancelling changes neither revision nor runtime calls.
