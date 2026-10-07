@@ -54,9 +54,9 @@ test("current preview and retained editor history; explicit add/replace material
   await page.getByRole("checkbox",{name:"解答",exact:true}).uncheck();await page.getByRole("checkbox",{name:"解答",exact:true}).check();await expect(page.getByLabel("模範解答本文",{exact:true})).toHaveValue(atext);
   expect((await(await page.request.get(base+"/authoring")).json()).revision).toEqual(before.revision);expect(await calls(page)).toEqual(counts);
   const bytes=await(await page.request.get(`/api/v1/tests/${seed.id}/materials/${process.env.MODEL_ANSWER_CLASSIFICATION_MATERIAL_ID}/file`)).body();
-  await page.getByRole("button",{name:"資料を追加",exact:true}).click();await page.getByLabel("資料の種類",{exact:true}).selectOption("model_answer_source");
+  await page.getByRole("button",{name:"一覧",exact:true}).click();await page.getByRole("button",{name:"資料を追加",exact:true}).click();await page.getByLabel("資料の種類",{exact:true}).selectOption("model_answer_source");
   await page.getByLabel("資料を追加",{exact:true}).setInputFiles({name:"answer.pdf",mimeType:"application/pdf",buffer:bytes});await expect(page.getByLabel("利用資料",{exact:true})).toContainText("模範解答 — answer.pdf");
-  const old=await page.getByLabel("利用資料",{exact:true}).inputValue();await page.getByRole("button",{name:"差し替え",exact:true}).click();await expect(page.getByRole("alert").filter({hasText:"差し替え対象"})).toContainText("再確認が必要");
+  const old=await page.getByLabel("利用資料",{exact:true}).inputValue();await page.getByRole("group",{name:"利用資料の操作"}).getByRole("button",{name:"差換え",exact:true}).click();await expect(page.getByRole("alert").filter({hasText:"差し替え対象"})).toContainText("再確認が必要");
   const changed={name:"replacement.pdf",mimeType:"application/pdf",buffer:Buffer.concat([bytes,Buffer.from("\n% replacement source\n")])};
   page.once("dialog",d=>d.dismiss());await page.getByLabel("資料を追加",{exact:true}).setInputFiles(changed);await expect(page.getByLabel("資料を追加",{exact:true})).toHaveValue("");await expect(page.getByLabel("利用資料",{exact:true})).toHaveValue(old);
   page.once("dialog",d=>d.accept());await page.getByLabel("資料を追加",{exact:true}).setInputFiles(changed);

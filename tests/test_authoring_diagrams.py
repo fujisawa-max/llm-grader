@@ -276,3 +276,37 @@ def test_replaced_answer_source_keeps_evidence_but_rejects_diagram_operations(wo
     assert {'domain': 'answer', 'code': 'authoring_material_replaced'} in w.client.get(path).json()['source_problems']
     entry = bound['entries'][0]
     assert w.client.get(path+f'/entries/{entry["id"]}/diagrams').status_code == 409
+
+
+def test_reanalysis_retains_prior_working_copy_and_rejects_old_edit_version(workspace):
+    from scoring.db.models import TestAuthoringRevision
+    w = workspace
+    path, row = begin(w, w.answer['test_id'])
+    before = deepcopy(row['snapshot'])
+    result = w.client.post(path+'/analyze-answer', json={'material_id': w.answer['material_id'],
+        'expected_edit_version': row['edit_version'], 'preserve_previous': True})
+    assert result.status_code == 200, result.text
+    new = result.json()
+    assert new['id'] != row['id']
+    assert new['revision'] == row['revision']+1
+    assert new['edit_version'] == row['edit_version']+1
+    assert new['state'] == 'draft'
+    with w.sf() as s:
+        previous = s.get(TestAuthoringRevision, row['id'])
+        assert previous.snapshot == before
+        assert previous.state == 'analysis_backup'
+    assert w.client.put(path, json={'snapshot': before, 'expected_edit_version': row['edit_version']}).status_code == 409
+    assert w.client.get(path).json()['revision']['id'] == new['id']
+
+
+def test_analysis_backup_does_not_exist_when_native_analysis_fails(workspace):
+    from scoring.db.models import TestAuthoringRevision
+    from sqlalchemy import select, func
+    w = workspace
+    path, row = begin(w, w.answer['test_id'])
+    response = w.client.post(path+'/analyze-answer', json={'material_id': 'missing',
+        'expected_edit_version': row['edit_version'], 'preserve_previous': True})
+    assert response.status_code == 404
+    assert w.client.get(path).json()['revision'] == row
+    with w.sf() as s:
+        assert s.scalar(select(func.count()).select_from(TestAuthoringRevision)) == 1

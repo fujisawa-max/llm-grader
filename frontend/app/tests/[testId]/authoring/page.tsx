@@ -50,6 +50,7 @@ export default function TestAuthoringPage() {
   const [selected,setSelected]=useState("");
   const [materials,setMaterials]=useState<Material[]>([]),[materialId,setMaterialId]=useState("");
   const [editing,setEditing]=useState({question:false,answer:false,rubric:false});
+  const [analyzing,setAnalyzing]=useState(false);
   const [materialPanel,setMaterialPanel]=useState(false);
   const [replacement,setReplacement]=useState<string|null>(null);
   const [role,setRole]=useState("question_sheet");
@@ -129,24 +130,24 @@ export default function TestAuthoringPage() {
   }
   async function analyzeSource(domain:"question"|"answer"){
     if(!revision||!materialId||dirty){setError("資料を選び、現在の変更を保存してから解析してください。");return;}
-    if(!window.confirm("この資料を解析して保存済みの編集状態へ取り込みます。対象の解答・採点基準または問題の編集状態が置き換わります。続行しますか？"))return;
-    setBusy(true);setError("");
+    if(!window.confirm(`${analyzed?"再解析":"解析"}して新しい解析結果を取り込んだ下書きを作成します。現在の保存済み下書きは修正版の履歴として保持されます。問題資料の解析では最新の保存済みレビューから編集内容を構成します。続行しますか？`))return;
+    setBusy(true);setAnalyzing(true);setError("");
     try{
       let row:AuthoringRevision;
-      if(domain==="answer")row=await testAuthoring.analyzeAnswer(id,materialId,revision.edit_version);
+      if(domain==="answer")row=await testAuthoring.analyzeAnswer(id,materialId,revision.edit_version,true);
       else{
         const response=await fetch(`/api/v1/tests/${id}/materials/${materialId}/file`,{credentials:"include"});
         if(!response.ok)throw new Error("元PDFを取得できませんでした。");
         const extraction=await apiFetch<{id:string}>(`/tests/${id}/question-materials`,{method:"POST",headers:{"Content-Type":"application/pdf","X-Filename":materials.find(m=>m.id===materialId)?.original_filename||"question.pdf"},body:await response.blob()});
         const draft=await apiFetch<{id:string}>(`/question-imports/${extraction.id}/draft`,json({}));
         await apiFetch(`/question-import-drafts/${draft.id}/reviews`,json({}));
-        row=await testAuthoring.importSources(id,revision.edit_version);
+        row=await testAuthoring.importSources(id,revision.edit_version,true,materialId);
       }
       setRevision(row);setSnapshot(row.snapshot);setDirty(false);setDirtyDomains({});setExternalChange(false);setContinueExternal(false);
       setBuffers(Object.fromEntries(row.snapshot.nodes.map(n=>[n.stable_key,questionContent(n,row.snapshot.domains?.question?.document.regions||[]).text])));
       setSelected(current=>row.snapshot.nodes.some(n=>n.stable_key===current)?current:row.snapshot.nodes[0]?.stable_key||"all");
-      setNotice("解析結果を編集用下書きに取り込みました。正式内容は変更していません。");
-    }catch(e){setError(e instanceof Error?e.message:"資料を解析できませんでした。");}finally{setBusy(false);}
+      setNotice("解析結果を新しい編集用下書きに取り込みました。解析前の保存済み下書きと正式内容は保持されています。");
+    }catch(e){setError(`資料を解析できませんでした。保存済みの下書きは保持されています。資料を確認して再試行してください。${e instanceof Error?` (${e.message})`:""}`);}finally{setBusy(false);setAnalyzing(false);}
   }
   async function begin(){setBusy(true);setError("");try{
     const row=await testAuthoring.begin(id);setRevision(row);setSnapshot(row.snapshot);setDirty(false);setDirtyDomains({});
@@ -210,6 +211,14 @@ export default function TestAuthoringPage() {
   const questionStale=!!questionDomain&&superseded.some(m=>m?.role==="question_sheet"&&m.sha256===questionDomain.document.source_pdf_sha256);
   const answerStale=!!snapshot.domains?.answer&&superseded.some(m=>m?.id===snapshot.domains?.answer?.material_id);
   const viewed=materials.find(m=>m.id===materialId);
+  const analysisDomain=viewed?.material_type==="question_sheet"?"question":
+    viewed&&["model_answer_source","rubric_source"].includes(viewed.material_type)?"answer":undefined;
+  const boundAnalyzed=analysisDomain==="question"?!!questionDomain&&viewed?.sha256===questionDomain.document.source_pdf_sha256:
+    analysisDomain==="answer"&&materialId===snapshot.domains?.answer?.material_id;
+  const analyzed=!!boundAnalyzed||snapshot.source_provenance.analysis_materials?.some(m=>m.id===materialId&&m.sha256===viewed?.sha256);
+  const analysisReason=readonly?"編集用の下書きを作成してください。":busy?"処理中です。完了までお待ちください。":
+    !materialId?"資料を選択してください。":!analysisDomain?"この資料は解析対象ではありません。":dirty?"変更を保存してから解析してください。":"";
+  const replaceMaterial=(mid:string)=>{setReplacement(mid);setRole(materials.find(m=>m.id===mid)?.material_type||"question_sheet");setMaterialPanel(true);};
   let mappedLocation:{id:string;page:number;bbox?:number[]}|undefined;
   if(node&&viewed?.sha256===questionDomain?.document.source_pdf_sha256){
     const selectedRegion=regions.find(r=>r.region_id===regionId&&activeRegions.includes(r));
@@ -226,27 +235,31 @@ export default function TestAuthoringPage() {
       <button disabled={busy} onClick={importSources}>最新レビューを取り込む</button></section>}
     {error&&<p role="alert" className="error">{error}</p>}{notice&&<p role="status">{notice}</p>}
     {(sourceProblems.length>0||questionStale||answerStale)&&<p role="alert">元PDFとの対応が無効になっています。資料と保存済みレビューを確認し、必要なら明示的に再解析してください。</p>}
+    {analysisReason&&<p id="authoring-analysis-reason" className="muted" role="status">選択資料の解析: {analysisReason}</p>}{analyzing&&<p role="status">選択資料を解析しています。完了までお待ちください。</p>}
     <ReviewWorkspaceLayout actions={<div className="review-toolbar" aria-busy={busy}>
       {readonly?<button className="button" disabled={busy} onClick={begin}>編集用の下書きを作成</button>:<button className="button" disabled={busy||!dirty} onClick={save}>保存</button>}
       {!readonly&&<button disabled={busy} onClick={importSources}>保存済みレビューを取り込む</button>}
       <button className="button secondary" disabled={busy} onClick={finalReview}>最終確認へ</button><Link className="button secondary" href={`/tests/${id}`}>戻る</Link>
       {dirty&&<><span role="status">未保存の変更があります</span><span className="muted">{Object.entries(dirtyDomains).filter(([,v])=>v).map(([k])=>({question:"問題",answer:"解答",rubric:"採点基準",diagram:"図"}[k])).filter(Boolean).join("・")}</span></>}
     </div>} source={<>
-      <label>利用資料<select aria-label="利用資料" value={materialId} onChange={e=>setMaterialId(e.target.value)}>
-        <option value="">資料を選択</option>{materials.map(m=><option key={m.id} value={m.id}>{roles[m.material_type]||"資料"} — {m.original_filename}{snapshot.materials.some(ref=>ref.replaces_material_id===m.id)?"（差し替え済み）":""}</option>)}
-      </select></label>
-      <div className="review-toolbar authoring-material-actions"><button disabled={readonly||busy} onClick={()=>{setReplacement(null);setMaterialPanel(true);}}>資料を追加</button><button disabled={readonly||busy||!materialId} onClick={()=>{setReplacement(materialId);setRole(viewed?.material_type||"question_sheet");setMaterialPanel(true);}}>差し替え</button><button onClick={()=>setMaterialPanel(v=>!v)}>資料一覧</button></div>
+      <div className="authoring-source-controls" role="group" aria-label="利用資料の操作">
+        <label><span>利用資料</span><select aria-label="利用資料" value={materialId} onChange={e=>setMaterialId(e.target.value)}>
+          <option value="">資料を選択</option>{materials.map(m=><option key={m.id} value={m.id}>{roles[m.material_type]||"資料"} — {m.original_filename}{snapshot.materials.some(ref=>ref.replaces_material_id===m.id)?"（差し替え済み）":""}</option>)}
+        </select></label>
+        <div className="authoring-current-material-actions"><span title={analysisReason||undefined}><button aria-describedby={analysisReason?"authoring-analysis-reason":undefined} disabled={!!analysisReason} onClick={()=>analysisDomain&&void analyzeSource(analysisDomain)}>{analyzing?"解析中…":analyzed?"再解析":"解析"}</button></span>
+          <button disabled={readonly||busy||!materialId} onClick={()=>replaceMaterial(materialId)}>差換え</button><span aria-hidden="true">|</span><button aria-expanded={materialPanel} onClick={()=>setMaterialPanel(v=>!v)}>一覧</button>
+        </div>
+      </div>
       {materialId&&<SourcePdfPreview key={materialId} testId={id} material={materials.find(m=>m.id===materialId)} label="利用資料PDF" inline paneZoom diagramSelection={diagramSelection?.record.material_id===materialId?diagramSelection:undefined} targetLocation={diagramSelection?.record.material_id===materialId?{id:diagramSelection.record.id,page:diagramSelection.record.page_index+1,bbox:diagramSelection.record.final_bbox||diagramSelection.record.automatic_bbox}:mappedLocation}/>}
     </>} selector={<div className="review-toolbar">
       <label>対象設問<select aria-label="対象設問" value={selected} onChange={e=>{if(e.target.value==="all")void finalReview();else {setSelected(e.target.value);setDiagramSelection(undefined);setRegionId("");}}}>
         {orderedNodes().map(n=><option key={n.stable_key} value={n.stable_key}>{pathFor(n.stable_key)}</option>)}{snapshot.domains?.answer?.entries.some(e=>!e.authoring_question_key)&&<option value="unassigned">設問未割当の候補</option>}<option value="all">テスト全体確認</option>
       </select></label><span>表示</span>{([['question','問題'],['answer','解答'],['rubric','採点基準']] as const).map(([key,label])=><label key={key}><input type="checkbox" checked={visible[key]} onChange={e=>{const next={...visible,[key]:e.target.checked};setVisible(next);localStorage.setItem("test-authoring-visible",JSON.stringify(next));}}/>{label}</label>)}
     </div>}>
-      <details open={materialPanel} onToggle={e=>setMaterialPanel(e.currentTarget.open)}><summary>試験資料</summary><p>資料を追加してから編集できます。差し替えは元資料を保持し、出典の再確認が必要です。解析は明示操作のみです。</p><ul>{materials.map(m=><li key={m.id}>{roles[m.material_type]||"資料"} — {m.original_filename}<details><summary>出典情報</summary>SHA: {m.sha256||"なし"}<p>{snapshot.materials.some(ref=>ref.replaces_material_id===m.id)?"差し替え済み・元資料を保持":"登録済み"}</p></details></li>)}</ul>{replacement&&<p role="alert">差し替え対象: {materials.find(m=>m.id===replacement)?.original_filename}。既存の出典確認は再確認が必要です。自動解析は行いません。</p>}
+      <details open={materialPanel} onToggle={e=>setMaterialPanel(e.currentTarget.open)}><summary>試験資料</summary><p>資料を追加してから編集できます。差し替えは元資料を保持し、出典の再確認が必要です。解析は明示操作のみです。</p><button disabled={readonly||busy} onClick={()=>{setReplacement(null);fileInput.current?.focus();}}>資料を追加</button><ul>{materials.map(m=><li key={m.id}>{roles[m.material_type]||"資料"} — {m.original_filename}<details><summary>出典情報</summary>SHA: {m.sha256||"なし"}<p>{snapshot.materials.some(ref=>ref.replaces_material_id===m.id)?"差し替え済み・元資料を保持":"利用中"}{materialId===m.id?"・選択中の資料":""}</p></details><button onClick={()=>setMaterialId(m.id)}>選択</button><button disabled={readonly||busy} onClick={()=>replaceMaterial(m.id)}>差換え</button></li>)}</ul>{replacement&&<p role="alert">差し替え対象: {materials.find(m=>m.id===replacement)?.original_filename}。既存の出典確認は再確認が必要です。自動解析は行いません。</p>}
         <label>資料の種類<select aria-label="資料の種類" disabled={!!replacement} value={role} onChange={e=>setRole(e.target.value)}>{Object.entries(roles).map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label>
         <input ref={fileInput} aria-label="資料を追加" type="file" accept="application/pdf,.pdf" multiple={!replacement} disabled={readonly||busy} onChange={e=>void upload(e.target.files)}/>
-        <button disabled={readonly||busy||dirty||!materialId} onClick={()=>void analyzeSource("question")}>選択資料から問題を解析</button>
-        <button disabled={readonly||busy||dirty||!materialId} onClick={()=>void analyzeSource("answer")}>選択資料から解答・採点基準を解析</button>
+        <p>選択した資料の解析は左ペインの「解析」「再解析」から開始してください。未保存の変更がある場合は先に保存してください。</p>
         <p><Link href={`/tests/${id}?section=questions`}>既存の資料解析・出典付きレビューを開く</Link></p>
       </details>
       {selected==="all"?<section aria-label="テスト全体確認"><h2>テスト全体確認</h2>

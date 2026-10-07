@@ -501,6 +501,7 @@ def main():
                         "e2e/authoring-source-backed-real.spec.ts",
                         "e2e/authoring-entry-layout-real.spec.ts",
                         "e2e/authoring-preview-materials-real.spec.ts",
+                        "e2e/authoring-analysis-access-real.spec.ts",
                     ]
                     subprocess.run(["npm", "run", "e2e", "--", *specs, "--workers=1"],
                                    cwd=REPO / "frontend", env=env, check=True)

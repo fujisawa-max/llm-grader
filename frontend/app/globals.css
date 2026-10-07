@@ -188,3 +188,9 @@
 .authoring-edit-body label{max-width:100%}
 .authoring-material-actions{flex:none;margin:0;gap:8px}
 .authoring-accepted-diagrams figure{margin:12px 0}
+
+.authoring-source-controls{display:flex;align-items:center;flex-wrap:wrap;gap:6px;flex:none;min-width:0}
+.authoring-source-controls>label{display:flex;align-items:center;gap:6px;flex:1 1 240px;min-width:0;white-space:nowrap;font-size:13px}
+.authoring-source-controls select{flex:1;width:0;min-width:120px;max-width:100%;padding:6px}
+.authoring-current-material-actions{display:flex;align-items:center;gap:5px;flex:none;white-space:nowrap}
+.authoring-current-material-actions button{padding:5px 7px;font:inherit;font-size:13px}

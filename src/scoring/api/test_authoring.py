@@ -18,6 +18,8 @@ class SaveAuthoring(BaseModel):
 
 class SourceImport(BaseModel):
     expected_edit_version: int = Field(ge=1)
+    preserve_previous: bool = False
+    analysis_material_id: str | None = None
 
 
 class AnalyzeSource(SourceImport):
@@ -166,25 +168,68 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
         except AuthoringError as exc:
             error(exc, s)
 
+    def mark_analysis(snapshot, previous, material):
+        from copy import deepcopy
+        refs = deepcopy(previous.get('source_provenance', {}).get('analysis_materials', []))
+        ref = {'id': material.id, 'sha256': material.sha256}
+        if ref not in refs:
+            refs.append(ref)
+        snapshot['source_provenance']['analysis_materials'] = refs
+
+    def apply_analysis_snapshot(session, row, snapshot, expected, preserve, baseline=None):
+        from sqlalchemy import update
+        from ..db.models import TestAuthoringRevision, now
+        from ..pdf_native import canonical_hash
+        previous_refs = {m['id']: m for m in row.snapshot.get('materials', [])}
+        for ref in snapshot.get('materials', []):
+            old = previous_refs.get(ref['id'], {})
+            if old.get('replaces_material_id'):
+                ref['replaces_material_id'] = old['replaces_material_id']
+        previous_analyses = row.snapshot.get('source_provenance', {}).get('analysis_materials')
+        if previous_analyses and 'analysis_materials' not in snapshot['source_provenance']:
+            from copy import deepcopy
+            snapshot['source_provenance']['analysis_materials'] = deepcopy(previous_analyses)
+        values = {'state': 'analysis_backup'} if preserve else {
+            'snapshot': snapshot, 'snapshot_sha256': canonical_hash(snapshot),
+            'baseline_sha256': baseline or row.baseline_sha256,
+            'edit_version': expected+1, 'updated_at': now()}
+        result = session.execute(update(TestAuthoringRevision).where(
+            TestAuthoringRevision.id == row.id, TestAuthoringRevision.edit_version == expected,
+            TestAuthoringRevision.state == 'draft').values(**values))
+        if result.rowcount != 1:
+            session.rollback()
+            raise HTTPException(409, 'AUTHORING_SAVE_CONFLICT')
+        if preserve:
+            previous_id = row.id
+            row = TestAuthoringRevision(test_id=row.test_id, revision=row.revision+1,
+                edit_version=expected+1, state='draft', snapshot=snapshot,
+                snapshot_sha256=canonical_hash(snapshot), baseline_sha256=baseline or row.baseline_sha256,
+                created_by=session.info['auth_user'].id)
+            session.add(row)
+            session.flush()
+            session.add(DomainEvent(entity_type='test', entity_id=row.test_id,
+                actor_user_id=session.info['auth_user'].id, event_type='authoring_analysis_revision_created',
+                payload={'previous_revision_id': previous_id, 'revision_id': row.id}))
+        return row
+
     @r.post('/tests/{test_id}/authoring/source-import')
     def import_sources(test_id: str, v: SourceImport, s=Depends(db)):
         from ..authoring_sources import source_projection
-        from ..pdf_native import canonical_hash
-        from ..db.models import TestAuthoringRevision, now
-        from sqlalchemy import update
         test = owned(test_id, s)
         row = latest(s, test_id)
         if not row or row.state != 'draft' or row.edit_version != v.expected_edit_version:
             raise HTTPException(409, 'AUTHORING_SAVE_CONFLICT')
         baseline = projection(s, test)
         snapshot = source_projection(s, test, baseline, question_root, answer_root)
-        result = s.execute(update(TestAuthoringRevision).where(TestAuthoringRevision.id == row.id,
-            TestAuthoringRevision.edit_version == v.expected_edit_version, TestAuthoringRevision.state == 'draft')
-            .values(snapshot=snapshot, snapshot_sha256=canonical_hash(snapshot),
-                baseline_sha256=baseline_hash(baseline), edit_version=v.expected_edit_version+1, updated_at=now()))
-        if result.rowcount != 1:
-            s.rollback()
-            raise HTTPException(409, 'AUTHORING_SAVE_CONFLICT')
+        if v.analysis_material_id:
+            from ..db.models import TestMaterial
+            material = s.get(TestMaterial, v.analysis_material_id)
+            sha = snapshot.get('domains', {}).get('question', {}).get('document', {}).get('source_pdf_sha256')
+            if not material or material.test_id != test_id or material.material_type != 'question_sheet' or material.sha256 != sha:
+                raise HTTPException(409, 'AUTHORING_ANALYSIS_SOURCE_CHANGED')
+            mark_analysis(snapshot, row.snapshot, material)
+        row = apply_analysis_snapshot(s, row, snapshot, v.expected_edit_version,
+            v.preserve_previous, baseline_hash(baseline))
         s.add(DomainEvent(entity_type='test', entity_id=test.id, actor_user_id=s.info['auth_user'].id,
             event_type='authoring_sources_imported', payload={'edit_version': v.expected_edit_version+1}))
         s.commit()
@@ -194,9 +239,6 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
     @r.post('/tests/{test_id}/authoring/analyze-answer')
     def analyze_answer(test_id: str, v: AnalyzeSource, s=Depends(db)):
         from copy import deepcopy
-        from sqlalchemy import update
-        from ..db.models import TestAuthoringRevision, now
-        from ..pdf_native import canonical_hash
         from ..authoring_answers import authoring_questions
         from ..authoring_sources import source_tokens
         from .model_answer_imports import ImportCreate
@@ -210,6 +252,8 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
         aliases, questions = authoring_questions(snapshot)
         draft = answer_create(test_id, ImportCreate(material_id=v.material_id), s,
             questions_override=questions, commit=False)
+        from ..db.models import TestMaterial
+        mark_analysis(snapshot, row.snapshot, s.get(TestMaterial, draft.material_id))
         inverse = {identifier: key for key, identifier in aliases.items()}
         entries = deepcopy(draft.snapshot['entries'])
         for entry in entries:
@@ -222,13 +266,7 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
         tokens = deepcopy(origin.get('tokens') or source_tokens(s, test_id))
         tokens['answer'] = source_tokens(s, test_id)['answer']
         origin['tokens'] = tokens
-        result = s.execute(update(TestAuthoringRevision).where(TestAuthoringRevision.id == row.id,
-            TestAuthoringRevision.edit_version == v.expected_edit_version, TestAuthoringRevision.state == 'draft')
-            .values(snapshot=snapshot, snapshot_sha256=canonical_hash(snapshot),
-                edit_version=v.expected_edit_version+1, updated_at=now()))
-        if result.rowcount != 1:
-            s.rollback()
-            raise HTTPException(409, 'AUTHORING_SAVE_CONFLICT')
+        row = apply_analysis_snapshot(s, row, snapshot, v.expected_edit_version, v.preserve_previous)
         s.commit()
         s.refresh(row)
         return view(row)

@@ -124,3 +124,57 @@ def test_replaced_question_source_remains_saved_but_tools_require_reanalysis(wor
     assert restored['revision']['snapshot']['nodes'] == snapshot['nodes']
     assert fixture.client.get(path+'/nodes/q1/diagrams').status_code == 409
     assert fixture.client.get(f'/api/v1/question-import-reviews/{data["id"]}').json() == data
+
+
+def test_source_import_keeps_prior_question_copy_when_requested(workspace):
+    from scoring.db.models import TestAuthoringRevision
+    fixture, data = workspace
+    path, row = start(fixture, data)
+    result = fixture.client.post(path+'/source-import', json={'expected_edit_version': row['edit_version'], 'preserve_previous': True})
+    assert result.status_code == 200, result.text
+    new = result.json()
+    assert new['id'] != row['id']
+    assert new['edit_version'] == row['edit_version']+1
+    with fixture.sf() as session:
+        old = session.get(TestAuthoringRevision, row['id'])
+        assert old.snapshot == row['snapshot']
+        assert old.state == 'analysis_backup'
+    assert fixture.client.get(f'/api/v1/question-import-reviews/{data["id"]}').json() == data
+
+
+def test_analysis_marker_requires_selected_question_source_sha(workspace):
+    from scoring.db.models import TestMaterial
+    fixture, data = workspace
+    path, row = start(fixture, data)
+    with fixture.sf() as session:
+        material = TestMaterial(test_id=data['test_id'], material_type='question_sheet',
+            original_filename='different.pdf', storage_ref='different.pdf', sha256='b'*64)
+        session.add(material)
+        session.flush()
+        material_id = material.id
+        session.commit()
+    response = fixture.client.post(path+'/source-import', json={
+        'expected_edit_version': row['edit_version'], 'preserve_previous': True,
+        'analysis_material_id': material_id})
+    assert response.status_code == 409
+    assert 'AUTHORING_ANALYSIS_SOURCE_CHANGED' in response.text
+    assert fixture.client.get(path).json()['revision'] == row
+
+
+def test_question_analysis_marker_survives_resume(workspace):
+    from scoring.db.models import TestMaterial
+    fixture, data = workspace
+    path, row = start(fixture, data)
+    with fixture.sf() as session:
+        material = TestMaterial(test_id=data['test_id'], material_type='question_sheet',
+            original_filename='question.pdf', storage_ref='question.pdf', sha256=data['source_pdf_sha256'])
+        session.add(material)
+        session.flush()
+        ref = {'id': material.id, 'sha256': material.sha256}
+        session.commit()
+    response = fixture.client.post(path+'/source-import', json={
+        'expected_edit_version': row['edit_version'], 'preserve_previous': True,
+        'analysis_material_id': ref['id']})
+    assert response.status_code == 200, response.text
+    assert response.json()['snapshot']['source_provenance']['analysis_materials'] == [ref]
+    assert fixture.client.get(path).json()['revision'] == response.json()
