@@ -88,5 +88,14 @@ test("saved source reviews integrate Question, answer diagrams and advanced Rubr
   const resumed=await (await page.request.get(base+"/authoring")).json();
   expect(resumed.revision).toEqual(kept.revision);
   expect(resumed.external_source_change).toBe(false);
+  const treeBeforeImport=resumed.revision.snapshot.nodes,sourceBeforeImport=await(await page.request.get(`/api/v1/model-answer-import-drafts/${answer.id}`)).json();
+  const importEntries=sourceBeforeImport.entries.map((entry:Record<string,unknown>,index:number)=>({id:entry.id,question_id:entry.question_id,disposition:entry.disposition||"include",answer_kind:entry.answer_kind||"primary",answer_text:index===0?String(entry.answer_text)+" 明示取込":String(entry.answer_text)}));
+  const externalImport=await page.request.put(`/api/v1/model-answer-import-drafts/${answer.id}`,{data:{expected_revision:sourceBeforeImport.revision,entries:importEntries}});expect(externalImport.status(),await externalImport.text()).toBe(200);
+  page.once("dialog",dialog=>dialog.accept());await page.getByRole("button",{name:"保存済みレビューを取り込む",exact:true}).click();
+  await expect(page.getByText("保存済みレビューを取り込みました。現在の設問本文・分割・階層と取り込み前の編集版は保持されています。",{exact:true})).toBeVisible();
+  const explicitlyImported=await(await page.request.get(base+"/authoring")).json();expect(explicitlyImported.revision.snapshot.nodes).toEqual(treeBeforeImport);
+  expect(explicitlyImported.revision.snapshot.question_text_buffers["q1"]).toContain("外部変更後も統合下書きを維持");
+  expect(explicitlyImported.revision.snapshot.domains.answer.entries.some((entry:{answer_text:string})=>entry.answer_text.includes("明示取込"))).toBe(true);
+  expect(await Promise.all(["questions","model-answers","rubrics"].map(async suffix=>(await page.request.get(base+`/${suffix}`)).json()))).toEqual(formal);
   expect(errors).toEqual([]);
 });

@@ -10,7 +10,9 @@ test("compact material controls, role-aware explicit analysis and every Test edi
  await page.setViewportSize({width:1920,height:1080});await page.goto("/login");await page.getByLabel("メールアドレス").fill(process.env.MODEL_ANSWER_CLASSIFICATION_EMAIL!);await page.getByLabel("パスワード").fill(process.env.MODEL_ANSWER_CLASSIFICATION_PASSWORD!);await page.getByRole("button",{name:"ログイン"}).click();await expect(page).not.toHaveURL(/login/);
  const errors:string[]=[];page.on("pageerror",e=>errors.push(e.message));page.on("console",e=>{if(e.type()==="error")errors.push(e.text());});
  const seed=await(await page.request.get(`/api/v1/tests/${process.env.MODEL_ANSWER_CLASSIFICATION_TEST_ID}`)).json();
- const exams=[];for(const name of ["Analysis access A","Analysis access B","Analysis access C"]){const result=await page.request.post(`/api/v1/offerings/${seed.course_offering_id}/tests`,{data:{name,total_points:10}});expect(result.status()).toBe(201);exams.push(await result.json());}
+ // Each runner repeat uses the same disposable database. Keep this fixture unique
+ // so a prior repeat cannot make the course table locator ambiguous.
+ const run=`${Date.now()}`;const exams=[];for(const name of ["Analysis access A","Analysis access B","Analysis access C"]){const result=await page.request.post(`/api/v1/offerings/${seed.course_offering_id}/tests`,{data:{name:`${name} ${run}`,total_points:10}});expect(result.status()).toBe(201);exams.push(await result.json());}
  const base=`/api/v1/tests/${exams[1].id}`,before=await calls(page);
  await page.goto(`/offerings/${seed.course_offering_id}`);for(const exam of exams){const row=page.getByRole("row").filter({hasText:exam.name});await expect(row.getByRole("link",{name:"編集",exact:true})).toHaveAttribute("href",`/tests/${exam.id}/authoring`);}
  await page.getByRole("row").filter({hasText:exams[1].name}).getByRole("link",{name:"編集",exact:true}).click();await expect(page).toHaveURL(new RegExp(`/tests/${exams[1].id}/authoring$`));

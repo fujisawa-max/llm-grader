@@ -20,9 +20,14 @@ test("AI split feedback/review and sequential answer/rubric analysis preserve th
  page.once("dialog",d=>d.accept());await controls.getByRole("button",{name:"解析",exact:true}).click();await expect(controls.getByRole("button",{name:"再解析",exact:true})).toBeEnabled();
  const view=page.getByLabel("問題の表示切替",{exact:true});await view.getByRole("button",{name:"本文編集",exact:true}).click();const editor=page.getByLabel("問題文",{exact:true});
  await expect(editor).toContainText("First task");const text=(await editor.inputValue()).replace("First task","(1) First task").replace("Second task","(2) Second task");await editor.fill(text);
+ await page.getByRole("button",{name:"保存",exact:true}).first().click();await expect(page.getByText("下書きを保存しました。",{exact:true})).toBeVisible();
  let requests=0;await page.route("**/authoring/nodes/*/split-suggest",async route=>{requests++;await new Promise(r=>setTimeout(r,450));await route.continue();});
  await page.getByRole("button",{name:"AIで小問の分割案を作成",exact:true}).click();const running=page.getByRole("button",{name:"分割案を作成中…",exact:true});await expect(running).toBeDisabled();await expect(running.locator(".spinner")).toBeVisible();await running.evaluate(el=>(el as HTMLButtonElement).click());
  const proposal=page.getByLabel("小問の分割案",{exact:true});await expect(proposal).toBeVisible();expect(requests).toBe(1);await expect(page.getByRole("button",{name:"AIで小問の分割案を作成",exact:true})).toBeEnabled();
+ const pendingRevision=(await(await page.request.get(base+"/authoring")).json()).revision;
+ await select.selectOption(materials.find((m:{material_type:string})=>m.material_type==="model_answer_source").id);
+ await expect(controls.getByRole("button",{name:"解析",exact:true})).toBeDisabled();await expect(proposal.getByRole("status")).toContainText("資料解析は分割案を適用またはキャンセルしてから実行できます");await expect(proposal).toBeVisible();expect((await(await page.request.get(base+"/authoring")).json()).revision).toEqual(pendingRevision);
+ await select.selectOption(materials.find((m:{material_type:string})=>m.material_type==="question_sheet").id);
  await expect(proposal.locator('select[aria-label^="分割部分"]')).toHaveCount(3);await expect(proposal.getByLabel("分割部分 1の扱い",{exact:true})).toHaveValue("parent");
  const noCalls=await calls(page);await proposal.getByLabel("分割部分 3の扱い",{exact:true}).selectOption("exclude");await proposal.getByLabel("分割部分 3の扱い",{exact:true}).selectOption("child");
  await page.getByRole("button",{name:"分割を適用",exact:true}).click();await expect(editor).toContainText("First task");await editor.fill((await editor.inputValue())+"\nTeacher changed first child");

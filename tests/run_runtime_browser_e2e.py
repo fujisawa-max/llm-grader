@@ -446,6 +446,7 @@ def main():
     parser.add_argument("--skip-build", action="store_true")
     parser.add_argument("--insecure-origin", action="store_true", help="exercise non-loopback HTTP without secure-context Web Crypto")
     parser.add_argument("--spec", action="append", help="run selected browser specifications")
+    parser.add_argument("--repeat-each", type=int, default=1, help="repeat each selected browser scenario with an isolated test context")
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="llm-grader-runtime-e2e-") as temporary:
         root = Path(temporary)
@@ -530,8 +531,13 @@ def main():
                         "e2e/authoring-analysis-access-real.spec.ts",
                         "e2e/authoring-split-merge-real.spec.ts",
                         "e2e/authoring-save-resume-real.spec.ts",
+                        "e2e/authoring-endurance-real.spec.ts",
                     ]
-                    subprocess.run(["npm", "run", "e2e", "--", *specs, "--workers=1"],
+                    if args.repeat_each < 1:
+                        parser.error("--repeat-each must be positive")
+                    with factory() as session:
+                        assert session.scalar(select(func.count()).select_from(GradingJob)) == 0
+                    subprocess.run(["npm", "run", "e2e", "--", *specs, "--workers=1", f"--repeat-each={args.repeat_each}"],
                                    cwd=REPO / "frontend", env=env, check=True)
                     if any("diagram-review" not in spec for spec in specs):
                         assert any("POST /v1/chat/completions" in line
