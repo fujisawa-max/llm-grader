@@ -22,6 +22,7 @@ export interface AuthoringIssue {question_key: string | null; section: string; m
 export interface ArchiveImpact {test_id: string; name: string; questions: number; model_answers: number; rubrics: number; submissions: number; grading_jobs: number; results: number; impact_sha256: string}
 const path = (id: string) => `/tests/${encodeURIComponent(id)}`;
 export const testAuthoring = {
+  status: (id:string) => apiFetch<{state:string|null}>(path(id)+"/authoring/status"),
   get: (id: string) => apiFetch<{revision: AuthoringRevision | null; legacy: AuthoringSnapshot; publication_available: boolean; external_source_change: boolean; source_problems:{domain:string;code:string}[]}>(path(id)+"/authoring"),
   begin: (id: string) => apiFetch<AuthoringRevision>(path(id)+"/authoring/revisions", {method: "POST"}),
   save: (id: string, snapshot: AuthoringSnapshot, expected: number, continue_after_external_change=false) => apiFetch<AuthoringRevision>(path(id)+"/authoring", {...json({snapshot, expected_edit_version: expected, continue_after_external_change}), method: "PUT"}),

@@ -1,7 +1,7 @@
 """Domain-authorized whole-test drafts and reversible Test management."""
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import select, delete, func
+from sqlalchemy import select, delete, func, case
 
 from ..review_document import ReviewError
 from ..db.models import (Test, CourseOffering, Course,
@@ -98,6 +98,12 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
             except (ReviewError, ValueError, OSError, KeyError) as exc:
                 problems.append({'domain': 'answer', 'code': str(exc) if isinstance(exc, ValueError) else 'model_answer_source_stale'})
         return problems
+
+    @r.get('/tests/{test_id}/authoring/status')
+    def authoring_status(test_id: str, s=Depends(db)):
+        owned(test_id, s)
+        row = latest(s, test_id)
+        return {'state': row.state if row else None}
 
     @r.get('/tests/{test_id}/authoring')
     def get_authoring(test_id: str, s=Depends(db)):
@@ -554,8 +560,13 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
         from ..db.models import TestAuthoringRevision
         edits = select(TestAuthoringRevision.test_id,
             func.max(TestAuthoringRevision.updated_at).label('last_saved')).group_by(TestAuthoringRevision.test_id).subquery()
+        current_state = select(TestAuthoringRevision.state).where(TestAuthoringRevision.test_id == Test.id).order_by(
+            TestAuthoringRevision.revision.desc()).limit(1).correlate(Test).scalar_subquery()
+        last_changed = case((edits.c.last_saved > Test.updated_at, edits.c.last_saved), else_=Test.updated_at)
         values = s.scalars(select(Test).join(CourseOffering).outerjoin(edits, edits.c.test_id == Test.id).where(CourseOffering.course_id == course_id,
-            ~Test.id.in_(select(TestArchive.test_id))).order_by(func.coalesce(edits.c.last_saved, Test.updated_at).desc(), Test.id).limit(3))
+            ~Test.id.in_(select(TestArchive.test_id))).order_by(
+                case((current_state.in_(['draft', 'final_review']), 0), else_=1),
+                last_changed.desc(), Test.id).limit(1))
         result = []
         for test in values:
             row = latest(s, test.id)

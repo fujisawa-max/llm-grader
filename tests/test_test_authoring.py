@@ -228,3 +228,33 @@ def test_changed_formal_baseline_is_actionable_and_not_overwritten(workspace):
     issues = w.client.get(base(w)+'/authoring/review').json()['issues']
     assert any(i['section'] == 'source' for i in issues)
     assert w.client.get(base(w)+'/authoring').json()['revision']['snapshot']['nodes'][0]['body_text'] == 'Original\nsecond line'
+
+
+def test_status_is_read_only_and_domain_authorized(workspace):
+    w = workspace
+    assert w.client.get(base(w)+'/authoring/status').json() == {'state': None}
+    assert w.client.get(base(w, 'foreign')+'/authoring/status').status_code == 403
+    with w.sf() as s:
+        assert s.scalar(select(func.count()).select_from(Revision)) == 0
+    row = begin(w)
+    assert w.client.get(base(w)+'/authoring/status').json() == {'state': 'draft'}
+    assert w.client.get(base(w)+'/authoring').json()['revision'] == row
+
+
+def test_recent_card_selects_one_active_draft_before_newer_legacy_test(workspace):
+    from datetime import timedelta
+    from scoring.db.models import now
+    w = workspace
+    row = begin(w)
+    with w.sf() as s:
+        s.get(Exam, w.fresh).updated_at = now()+timedelta(days=1)
+        s.commit()
+    values = w.client.get(f'/api/v1/courses/{w.course}/recent-tests').json()['tests']
+    assert len(values) == 1
+    assert values[0]['id'] == w.legacy
+    with w.sf() as s:
+        s.get(Revision, row['id']).state = 'confirmed'
+        s.commit()
+    values = w.client.get(f'/api/v1/courses/{w.course}/recent-tests').json()['tests']
+    assert len(values) == 1
+    assert values[0]['id'] == w.fresh

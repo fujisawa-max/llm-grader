@@ -115,10 +115,12 @@ for (const savedAnswer of [false, true]) {
     await expect(page.getByRole("navigation", {name: "作業の進み具合"}).locator(".workflow-step").first()).toContainText("完了");
     const testGuidance = page.getByRole("region", {name: "次に行う作業"});
     await expect(testGuidance).toHaveClass("next-action compact");
-    await expect(testGuidance).toContainText("未登録または未確認の模範解答があります。");
-    await expect(testGuidance.getByRole("button", {name: "模範解答を確認 ›"})).toBeVisible();
-    await testGuidance.getByRole("button", {name: "模範解答を確認 ›"}).click();
-    await expect(page).toHaveURL(new RegExp(`/tests/${testId}\\?section=answers$`));
+    await expect(testGuidance).toContainText("テスト内容を編集してください。");
+    await expect(testGuidance.getByRole("button", {name: "テスト内容を編集 ›"})).toBeVisible();
+    await testGuidance.getByRole("button", {name: "テスト内容を編集 ›"}).click();
+    await expect(page).toHaveURL(new RegExp(`/tests/${testId}/authoring$`));
+    await page.goto(`/tests/${testId}?section=answers`);
+    await expect(sources).toBeVisible();
     if (savedAnswer) {
       await sources.getByRole("button", {name: "saved-completion-answer.pdfの前回の解析結果を編集"}).click();
       await expect(page).toHaveURL(new RegExp(`/model-answer-import-reviews/${answerBefore.id}$`));
