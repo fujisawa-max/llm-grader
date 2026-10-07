@@ -27,8 +27,10 @@ test("Test and single right-hand recent shortcut open authoring; source stacks v
   await page.goto(`/tests/${exam.id}`);
   const guidance=page.getByRole("region",{name:"次に行う作業"});await expect(guidance).toContainText("テスト内容を編集してください。");
   await guidance.getByRole("button",{name:"テスト内容を編集 ›",exact:true}).click();await expect(page).toHaveURL(new RegExp(`/tests/${exam.id}/authoring$`));
-  expect((await (await page.request.get(base+"/authoring")).json()).revision).toBeNull();
-  await page.getByRole("button",{name:"編集用の下書きを作成",exact:true}).click();
+  await expect.poll(async()=>(await (await page.request.get(base+"/authoring")).json()).revision?.state).toBe("draft");
+  await page.getByRole("button",{name:"設問を追加",exact:true}).waitFor();
+  await expect(page.getByRole("button",{name:/下書き.*作成/})).toHaveCount(0);
+  const initial=(await (await page.request.get(base+"/authoring")).json()).revision;await page.reload();await page.getByRole("button",{name:"設問を追加",exact:true}).waitFor();expect((await (await page.request.get(base+"/authoring")).json()).revision.id).toBe(initial.id);expect(await modelCalls(page)).toEqual(callsBefore);
   await page.getByRole("button",{name:"設問を追加",exact:true}).click();
   await page.getByLabel("問題文",{exact:true}).waitFor({state:"attached"});await openAuthoringEditors(page);const text=page.getByLabel("問題文",{exact:true});await text.fill("第1行\n第2行\n第3行");
   await page.getByRole("checkbox",{name:"採点基準",exact:true}).uncheck();

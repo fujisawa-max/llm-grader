@@ -124,6 +124,7 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
 
     @r.post('/tests/{test_id}/authoring/revisions')
     def begin(test_id: str, s=Depends(db)):
+        from sqlalchemy.exc import IntegrityError
         test = owned(test_id, s)
         try:
             row = create_draft(s, test, s.info['auth_user'].id,
@@ -132,6 +133,14 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
             return view(row)
         except AuthoringError as exc:
             error(exc, s)
+        except IntegrityError:
+            # SQLite lacks SELECT FOR UPDATE; the existing unique revision key
+            # resolves simultaneous first opens without a duplicate active draft.
+            s.rollback()
+            row = latest(s, test_id)
+            if row and row.state in {'draft', 'final_review'}:
+                return view(row)
+            raise HTTPException(409, 'AUTHORING_SAVE_CONFLICT')
 
     @r.put('/tests/{test_id}/authoring')
     def save(test_id: str, v: SaveAuthoring, s=Depends(db)):

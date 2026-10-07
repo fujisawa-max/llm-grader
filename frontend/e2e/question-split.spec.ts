@@ -304,3 +304,14 @@ test("manual caret split keeps ordered repeated-token native ranges",()=>{
   expect(proposal?.children[0].items[0].source_slice).toEqual([0,3,8]);
   expect(proposal?.children[1].items[0].source_slice).toEqual([3,8,8]);
 });
+
+test("numbered split keeps a multi-line OCR formula block and its native anchor intact", () => {
+  const value=node("1. 第一小問");
+  const formula:ContentItem={type:"text",order:1,text:"$$\n\\frac{TP}{TP+FP}\n$$",
+    merged_source_segments:[{type:"formula_region",region_id:"formula-1",page_index:0,source_element_ids:["formula-source"]}]};
+  value.ordered_content.push(formula,{type:"text",order:2,text:"2. 第二小問"});
+  const proposal=suggestSubquestions(value);
+  expect(proposal?.children[0].items).toContainEqual(formula);
+  expect(proposal?.placements.filter(p=>p.item===formula)).toHaveLength(1);
+  expect(proposal?.children.flatMap(c=>c.items).filter(i=>"merged_source_segments" in i)).toHaveLength(1);
+});

@@ -3,21 +3,21 @@ import {useId, useRef, type ReactNode} from "react";
 import type {DiagramRecord} from "@/types/diagrams";
 
 /** Switching presentation keeps the active editor DOM and native editing history. */
-export function AuthoringPreviewEditor({label, editing, onEditing, preview, children}:{
-  label:string; editing:boolean; onEditing:(value:boolean)=>void; preview:ReactNode; children:ReactNode;
+export function AuthoringPreviewEditor({label, editLabel="編集する", auxiliaryEditing=false, actions, editing, onEditing, preview, children}:{
+  label:string; editLabel?:string; auxiliaryEditing?:boolean; actions?:ReactNode; editing:boolean; onEditing:(value:boolean)=>void; preview:ReactNode; children:ReactNode;
 }) {
   const id=useId(),body=useRef<HTMLDivElement>(null);
   const lastEditor=useRef<HTMLTextAreaElement|null>(null);
   return <div className="authoring-preview-editor" aria-label={`${label}の表示切替`}>
-    <button type="button" aria-expanded={editing} aria-controls={id} onClick={()=>{
+    <div className="authoring-mode-actions"><button type="button" aria-expanded={editing||auxiliaryEditing} aria-controls={id} onClick={()=>{
       onEditing(!editing);
       if(!editing)requestAnimationFrame(()=>{
         const target=lastEditor.current?.isConnected?lastEditor.current:body.current?.querySelector<HTMLTextAreaElement>("textarea");
         target?.focus({preventScroll:true});
       });
-    }}>{editing?"プレビューを見る":"編集する"}</button>
-    <div hidden={editing} className="authoring-current-preview" aria-label={`${label}プレビュー`}>{preview}</div>
-    <div ref={body} id={id} hidden={!editing} className="authoring-edit-body" onFocusCapture={e=>{
+    }}>{editing?"プレビューを見る":editLabel}</button>{actions}</div>
+    <div hidden={editing||auxiliaryEditing} className="authoring-current-preview" aria-label={`${label}プレビュー`}>{preview}</div>
+    <div ref={body} id={id} hidden={!editing&&!auxiliaryEditing} className="authoring-edit-body" onFocusCapture={e=>{
       if(e.target instanceof HTMLTextAreaElement)lastEditor.current=e.target;
     }}>{children}</div>
   </div>;

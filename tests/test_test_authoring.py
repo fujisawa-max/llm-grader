@@ -296,3 +296,15 @@ def test_material_replacement_roundtrips_without_formal_or_legacy_mutation(works
     with w.sf() as s:
         assert s.get(TestMaterial, refs[0]['id']).sha256 == 'a'*64
         assert s.scalar(select(func.count()).select_from(Exam)) == 3
+
+
+def test_simultaneous_initial_open_resumes_single_draft(workspace):
+    from concurrent.futures import ThreadPoolExecutor
+    w = workspace
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        rows = list(pool.map(lambda _: begin(w, 'fresh'), range(2)))
+    assert rows[0]['id'] == rows[1]['id']
+    with w.sf() as session:
+        assert session.scalar(select(func.count()).select_from(Revision).where(
+            Revision.test_id == w.fresh, Revision.state == 'draft')) == 1
+    assert begin(w, 'fresh')['id'] == rows[0]['id']

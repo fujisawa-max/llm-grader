@@ -17,7 +17,7 @@ test("saved source reviews integrate Question, answer diagrams and advanced Rubr
   const review=await (await page.request.post(`/api/v1/question-import-drafts/${draft.id}/reviews`)).json();
   const answerResult=await page.request.post(base+"/model-answer-imports",{data:{material_id:process.env.AUTHORING_SOURCE_MATERIAL_ID}});
   expect(answerResult.status()).toBe(201);const answer=await answerResult.json();
-  await page.goto(`/tests/${tid}/authoring`);await page.getByRole("button",{name:"編集用の下書きを作成"}).click();
+  await page.goto(`/tests/${tid}/authoring`);await page.getByRole("button",{name:"設問を追加",exact:true}).waitFor();
   await page.getByLabel("問題文",{exact:true}).waitFor({state:"attached"});await openAuthoringEditors(page);const editor=page.getByLabel("問題文",{exact:true});await expect(editor).toContainText("図の範囲");
   const initial=await editor.inputValue();
   await editor.fill("第1行\n第2行\n第3行");

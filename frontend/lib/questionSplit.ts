@@ -1,3 +1,4 @@
+import {parseMathText} from "./mathText";
 import type { ContentItem, ReviewNode } from "@/types/reviews";
 
 export interface SplitCandidate {
@@ -159,8 +160,13 @@ function sourceOrigins(item: ContentItem, decisions: ReviewNode["formula_decisio
       const regionId = String(segment.region_id || "");
       const transcription = decisions[regionId]?.teacher_transcription;
       if (!transcription) return null;
+      const math = parseMathText(String("text" in item ? item.text : ""), false)
+        .filter(part => part.kind !== "text" && part.value.trim() === transcription.trim());
+      if (math.length > 1) return null;
+      const delimiter = math[0]?.kind === "display" ? "$$" : "$";
+      const rendered = math.length ? `${delimiter}${math[0].value}${delimiter}` : `$${transcription}$`;
       origins.push({
-        evidence: segment, canonicalText: `$${transcription}$`, sourceStart: 0,
+        evidence: segment, canonicalText: rendered, sourceStart: 0,
         sourceEnd: 0, sourceTotal: 0, segment,
       });
       continue;
@@ -378,6 +384,13 @@ export function suggestSubquestions(node: ReviewNode, canonicalNode?: Pick<Revie
   for (const item of node.ordered_content) {
     if (item.type === "text" && typeof item.text === "string") {
       const source = item.text;
+      // No numbered boundary means this source-backed block belongs wholly
+      // to the current owner. In particular, never slice a multi-line OCR
+      // formula into prose lines with duplicated native formula anchors.
+      if (!source.split("\n").some(line => marker.test(line))) {
+        append(item, current ? children.length - 1 : null);
+        continue;
+      }
       const sourcePoints = points(source);
       const lines: { start: number; end: number; value: string; match: RegExpMatchArray | null }[] = [];
       let start = 0;
@@ -390,7 +403,12 @@ export function suggestSubquestions(node: ReviewNode, canonicalNode?: Pick<Revie
           previous.end = end;
           previous.value += value;
         } else if (value.trim()) {
-          lines.push({ start, end, value, match: value.match(marker) });
+          const match = value.match(marker);
+          if (!match && lines.length) {
+            const previous = lines[lines.length - 1];
+            previous.end = end;
+            previous.value += value;
+          } else lines.push({ start, end, value, match });
         }
         start = end;
       }

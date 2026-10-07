@@ -18,7 +18,7 @@ export interface AuthoringSnapshot {
   };
 }
 export interface AuthoringRevision {id: string; test_id: string; revision: number; edit_version: number; state: string; snapshot: AuthoringSnapshot; snapshot_sha256: string; baseline_sha256: string}
-export interface AuthoringIssue {question_key: string | null; section: string; message: string}
+export interface AuthoringIssue {question_key: string | null; section: string; message: string; field?: string}
 export interface ArchiveImpact {test_id: string; name: string; questions: number; model_answers: number; rubrics: number; submissions: number; grading_jobs: number; results: number; impact_sha256: string}
 const path = (id: string) => `/tests/${encodeURIComponent(id)}`;
 export const testAuthoring = {

@@ -20,7 +20,7 @@ test("whole-test drafts preserve local caret, materials, section state and forma
   const exam=await response.json();
   const base=`/api/v1/tests/${exam.id}`;
   await page.goto(`/tests/${exam.id}/authoring`);
-  await page.getByRole("button",{name:"編集用の下書きを作成"}).click();
+  await page.getByRole("button",{name:"設問を追加",exact:true}).waitFor();
   await page.getByRole("button",{name:"設問を追加",exact:true}).click();
   await page.getByLabel("問題文",{exact:true}).waitFor({state:"attached"});await openAuthoringEditors(page);const editor=page.getByLabel("問題文",{exact:true});
   const text="2変数 x1, x2 に対して、\nx1 + x2 - 3 の値が\n0以上ならクラス1";
@@ -30,7 +30,7 @@ test("whole-test drafts preserve local caret, materials, section state and forma
   await page.keyboard.press("Delete");
   await expect(editor).toHaveValue(text.slice(0,at)+text.slice(at+1));
   expect(await editor.evaluate(el=>({caret:(el as HTMLTextAreaElement).selectionStart,same:el===(window as unknown as {authorEditor:HTMLTextAreaElement}).authorEditor}))).toEqual({caret:at,same:true});
-  await page.getByRole("spinbutton",{name:/^配点/}).fill("10");
+  await page.getByRole("button",{name:"設問設定の変更",exact:true}).click();await page.getByRole("spinbutton",{name:/^配点/}).fill("10");await page.getByLabel("問題の表示切替",{exact:true}).getByRole("button",{name:"本文編集",exact:true}).click();
   await page.getByLabel("模範解答本文",{exact:true}).fill("Answer draft");
   await page.getByRole("button",{name:"観点を追加"}).click();
   await page.getByLabel("観点",{exact:true}).fill("Correct result");
@@ -51,10 +51,10 @@ test("whole-test drafts preserve local caret, materials, section state and forma
   const source=await page.request.get(`/api/v1/tests/${process.env.MODEL_ANSWER_CLASSIFICATION_TEST_ID}/materials/${process.env.MODEL_ANSWER_CLASSIFICATION_MATERIAL_ID}/file`);
   expect(source.status()).toBe(200);
   const bytes=await source.body();
-  await page.getByText("試験資料",{exact:true}).click();
+  await page.getByLabel("利用資料",{exact:true}).selectOption("action:add");
   await page.getByLabel("資料を追加",{exact:true}).setInputFiles({name:"question.pdf",mimeType:"application/pdf",buffer:bytes});
   await expect(page.getByLabel("利用資料",{exact:true})).toContainText("問題用紙 — question.pdf");
-  await page.getByLabel("資料の種類",{exact:true}).selectOption("model_answer_source");
+  await page.getByLabel("利用資料",{exact:true}).selectOption("action:add");await page.getByLabel("資料の種類",{exact:true}).selectOption("model_answer_source");
   await page.getByLabel("資料を追加",{exact:true}).setInputFiles({name:"answer.pdf",mimeType:"application/pdf",buffer:bytes});
   await expect(page.getByLabel("利用資料",{exact:true})).toContainText("模範解答 — answer.pdf");
   const files=await (await page.request.get(base+"/materials")).json();

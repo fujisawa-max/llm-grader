@@ -204,8 +204,8 @@ def save_draft(session, test, value, expected, actor=None):
 
 def preflight(snapshot):
     issues = []
-    def issue(key, section, message):
-        issues.append({'question_key': key, 'section': section, 'message': message})
+    def issue(key, section, message, field=None):
+        issues.append({'question_key': key, 'section': section, 'message': message, **({'field': field} if field else {})})
     nodes = [n for n in snapshot['nodes'] if n.get('included', True)]
     if not nodes:
         issue(None, 'question', '設問がありません。')
@@ -218,7 +218,7 @@ def preflight(snapshot):
         if not children:
             points = n.get('score_points')
             if not points or not math.isfinite(points):
-                issue(key, 'question', '配点を確認してください。')
+                issue(key, 'question', '配点を確認してください。', 'score')
             else:
                 total += points
             a = snapshot['answers'].get(key, {})

@@ -9,7 +9,8 @@ import { LatexNormalizationControl } from "@/components/LatexNormalizationContro
 import { questionMathSource, questionMathReference } from "@/lib/questionMathSource";
 import type { LatexProposal } from "@/lib/api/textTools";
 
-export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange, onParent, onMove, onRegion, activeRegionId, renderEvidence, issues = {}, mathContext, content, contentChanged, onContentChange, onConfirmContent, onCaret, inlinePreview = true }: {
+export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange, onParent, onMove, onRegion, activeRegionId, renderEvidence, issues = {}, mathContext, content, contentChanged, onContentChange, onConfirmContent, onCaret, inlinePreview = true, editorMode = "all" }: {
+  editorMode?: "all"|"body"|"settings";
   inlinePreview?: boolean;
   content: string; contentChanged: boolean;
   onCaret?: (offset:number)=>void;
@@ -54,7 +55,7 @@ export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange
     <h3>{node.label.raw || "名称未設定の設問"} {(modified || contentChanged) && <span className="badge badge-rubric_review">自動解析から変更あり</span>}</h3>
     {errors("node")}
     <fieldset disabled={readonly} className="review-fields"><legend>設問の編集</legend>
-      <label id={reviewFieldId(node.stable_key, "label")} className={fieldIssues("label").length ? "review-field-target has-error" : "review-field-target"}>設問番号・見出し <span className="review-required" aria-label="必須">*</span>{needsCheck("label")}<input maxLength={200} value={node.label.raw} aria-invalid={!!fieldIssues("label").length} onChange={e => onChange({ ...node, label: { raw: e.target.value, normalized: e.target.value } })} />{errors("label")}</label>
+      <div className="review-node-mode" style={editorMode==="all"?{display:"contents"}:undefined} hidden={editorMode==="body"}><label id={reviewFieldId(node.stable_key, "label")} className={fieldIssues("label").length ? "review-field-target has-error" : "review-field-target"}>設問番号・見出し <span className="review-required" aria-label="必須">*</span>{needsCheck("label")}<input maxLength={200} value={node.label.raw} aria-invalid={!!fieldIssues("label").length} onChange={e => onChange({ ...node, label: { raw: e.target.value, normalized: e.target.value } })} />{errors("label")}</label>
       <label><input type="checkbox" checked={node.included} onChange={e => onChange({ ...node, included: e.target.checked })} /> この設問を含める（チェックを外すと除外）</label>
       <label id={reviewFieldId(node.stable_key, "parent")} className={fieldIssues("parent").length ? "review-field-target has-error" : "review-field-target"}>設問の階層{needsCheck("parent")}<select aria-label="設問の階層" aria-invalid={!!fieldIssues("parent").length} value={node.parent_key || ""} onChange={e => onParent(e.target.value || null)}>
         <option value="">大問（最上位）</option>{nodes.filter(n => !descendants.has(n.stable_key)).map(n => <option key={n.stable_key} value={n.stable_key}>{n.label.raw || "名称未設定の設問"}の小問</option>)}
@@ -82,10 +83,10 @@ export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange
           : <label id={reviewFieldId(node.stable_key, "score")} className={fieldIssues("score").length ? "review-field-target has-error" : "review-field-target"}>配点{node.score_semantics === "direct" ? <span className="review-required" aria-label="必須">*</span> : null}{needsCheck("score")}<input type="number" min="0" max="1000000000" step="any" disabled={node.score_semantics === "ambiguous" || hasChildren} value={node.score_points ?? ""} aria-invalid={!!fieldIssues("score").length}
             onChange={e => onChange({ ...node, score_points: e.target.value === "" ? null : Number(e.target.value) })} />{hasChildren && <p className="muted">小問がある設問は、この画面では直接配点できません。小問の個別配点を合計する方式を選んでください。</p>}{errors("score")}</label>}
       {automatic && <p className="muted">自動解析による配点: {scoreSemanticsLabel(automatic.score.semantics)} {automatic.score.points ?? "—"}</p>}
-      <section id={reviewFieldId(node.stable_key, "content")} className={fieldIssues("content").length ? "review-content-item has-error" : "review-content-item"} data-content-type="question-content" aria-label="問題文の編集">
+      </div><div className="review-node-mode" style={editorMode==="all"?{display:"contents"}:undefined} hidden={editorMode==="settings"}><section id={reviewFieldId(node.stable_key, "content")} className={fieldIssues("content").length ? "review-content-item has-error" : "review-content-item"} data-content-type="question-content" aria-label="問題文の編集">
         {Object.keys(issues).filter(key => key.startsWith("text:") || key.startsWith("formula:")).map(key =>
           <span key={key} id={reviewFieldId(node.stable_key, key)} />)}
-        <label>問題文<textarea aria-label="問題文" maxLength={20000} rows={14} value={content} aria-invalid={!!fieldIssues("content").length}
+        <label>問題文<textarea aria-label="問題文" maxLength={20000} rows={editorMode==="all"?14:4} value={content} aria-invalid={!!fieldIssues("content").length}
           onSelect={event=>onCaret?.(event.currentTarget.selectionStart)} onChange={event => onContentChange(event.target.value)} /></label>
         {errors("content")}
         <small className="math-help">{markdownMathHelp}</small>{inlinePreview && <MarkdownMathPreview source={content} />}
@@ -119,6 +120,7 @@ export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange
           {activeRegionId === r.region_id && renderEvidence?.(r.region_id)}
         </section>)}
       </details>
+      </div>
     </fieldset>
     <details><summary>保存済みの問題文を表示</summary><MarkdownMathText source={node.body_text} /></details>
     {automatic && <details><summary>自動解析された問題文を表示</summary><MarkdownMathText source={automatic.body_text} /></details>}

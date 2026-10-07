@@ -133,7 +133,7 @@ for (const savedAnswer of [false, true]) {
     }
     await page.goto(reviewUrl);
     await expect(guidance).toBeVisible();
-    expect(writes).toEqual([]); // Navigation/resume creates no revisions, analysis, or duplicate reviews.
+    expect(writes).toHaveLength(1);expect(writes[0]).toMatch(new RegExp(`/tests/${testId}/authoring/revisions$`)); // Initial authoring draft only; no analysis or duplicate native review.
     expect(await runtimeEvidence(page)).toEqual(runtimeBefore);
     expect(errors).toEqual([]);
   });
