@@ -803,6 +803,8 @@ def create_app(session_factory=None, *, allowed_roots=None, runtime_client=None,
         s.info["teacher_user_id"] = user.id
         return user
 
+    from .test_authoring import router as authoring_router
+    app.include_router(authoring_router(db), dependencies=[Depends(domain_authorized)])
     app.include_router(domain_router(db, import_root, roots, visual_options,
                                      storage_root=action_root),
                        dependencies=[Depends(domain_authorized)])

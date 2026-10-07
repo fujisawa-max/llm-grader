@@ -12,7 +12,7 @@ from .domain import DomainService
 MAX_SOURCE_BYTES = 25 * 1024 * 1024
 MIMES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
          ".pdf": "application/pdf"}
-ROLES = {"question_sheet", "model_answer_source", "student_answer_source"}
+ROLES = {"question_sheet", "model_answer_source", "student_answer_source", "rubric_source", "supplementary_source"}
 MAX_PAGES = 100
 
 

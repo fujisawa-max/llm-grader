@@ -619,3 +619,30 @@ class TestQuestionCorrection(Base):
     source_revision_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     artifact_ref: Mapped[str | None] = mapped_column(String(512), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class TestAuthoringRevision(Base):
+    """Whole-test working copy. Formal entities remain separate and untouched."""
+    __tablename__ = "test_authoring_revisions"
+    __table_args__ = (UniqueConstraint("test_id", "revision", name="uq_test_authoring_revision"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    test_id: Mapped[str] = mapped_column(ForeignKey("tests.id"), index=True)
+    revision: Mapped[int] = mapped_column(Integer)
+    edit_version: Mapped[int] = mapped_column(Integer, default=1)
+    state: Mapped[str] = mapped_column(String(24), default="draft")
+    snapshot: Mapped[dict] = mapped_column(JSON)
+    snapshot_sha256: Mapped[str] = mapped_column(String(64))
+    baseline_sha256: Mapped[str] = mapped_column(String(64))
+    created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class TestArchive(Base):
+    """Recoverable archive marker; never cascades into grades or source files."""
+    __tablename__ = "test_archives"
+    test_id: Mapped[str] = mapped_column(ForeignKey("tests.id"), primary_key=True)
+    archived_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    archived_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    previous_status: Mapped[str] = mapped_column(String(32))
+    impact: Mapped[dict] = mapped_column(JSON)

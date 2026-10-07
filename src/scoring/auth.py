@@ -215,10 +215,10 @@ def _test_id_for_resource(s, resource: str, identifier: str) -> str | None:
 
 def authorize_domain_path(request: Request, s, user: User) -> User:
     """Enforce Course owner isolation for the shared domain router."""
-    if user.role == ADMIN:
-        return user
+    # Archive is recoverable, but ordinary Test/review URLs must not remain an
+    # editing back door. Ownership is still checked before the archive guard.
     path = request.url.path.removeprefix("/api/v1").strip("/").split("/")
-    if not path or path[0] == "users":
+    if (not path or path[0] == "users") and user.role != ADMIN:
         raise _auth_error("ADMIN_ROLE_REQUIRED", 403)
     owner_id = None
     if path[0] == "courses" and len(path) >= 2:
@@ -246,10 +246,25 @@ def authorize_domain_path(request: Request, s, user: User) -> User:
         "answer-reconstruction-results", "answer-reconstructions",
     }:
         owner_id = _course_owner_id(s, test_id=_test_id_for_resource(s, path[0], path[1]))
-    if owner_id is not None and owner_id != user.id:
+    if user.role != ADMIN and owner_id is not None and owner_id != user.id:
         raise _auth_error("COURSE_ACCESS_DENIED", 403)
-    if owner_id is None and path[0] not in {"courses", "health"}:
+    if user.role != ADMIN and owner_id is None and path[0] not in {"courses", "health"}:
         raise _auth_error("RESOURCE_NOT_FOUND", 404)
+    from .db.models import TestArchive
+    archived_test_id = None
+    if len(path) >= 2:
+        if path[0] == 'tests':
+            archived_test_id = path[1]
+        elif path[0] in {'questions', 'test-questions', 'model-answers', 'rubrics', 'sample-answers'}:
+            model = {'questions': TestQuestion, 'test-questions': TestQuestion,
+                'model-answers': ModelAnswer, 'rubrics': RubricVersion, 'sample-answers': SampleAnswer}[path[0]]
+            value = s.get(model, path[1])
+            archived_test_id = value.test_id if value else None
+        else:
+            archived_test_id = _test_id_for_resource(s, path[0], path[1])
+    if (archived_test_id and s.get(TestArchive, archived_test_id)
+            and not (path[0] == 'tests' and path[-1] == 'restore')):
+        raise _auth_error('TEST_ARCHIVED', 410)
     return user
 
 

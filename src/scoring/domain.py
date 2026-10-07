@@ -115,6 +115,11 @@ class DomainService:
     def student(self, offering_id, **v):
         x=Student(id=str(uuid4()), course_offering_id=offering_id, **v); self.s.add(x); self.s.flush(); self._event("student",x.id,"student_created"); return x
     def submission(self, test_id, student_id, **v):
+        from .test_authoring import latest
+        draft = latest(self.s, test_id)
+        if draft and draft.state != 'confirmed' and not self.s.scalar(
+                select(TestQuestion.id).where(TestQuestion.test_id == test_id).limit(1)):
+            raise ValueError("AUTHORING_TEST_NOT_CONFIRMED")
         t=self.s.get(Test,test_id); st=self.s.get(Student,student_id)
         material=self.s.get(TestMaterial,v.get("material_id"))
         if not t or not st or st.course_offering_id != t.course_offering_id: raise ValueError("student/test offering mismatch")

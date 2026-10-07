@@ -31,6 +31,8 @@ def router(db, artifact_root=None, allowed_roots=None, grading_visual_config=Non
         return course
     def owned_test_or_error(test_id, s):
         test = get(Test, test_id, s)
+        if s.get(TestArchive, test_id):
+            raise HTTPException(410, "TEST_ARCHIVED")
         offering = get(CourseOffering, test.course_offering_id, s)
         owned_course_or_error(offering.course_id, s)
         return test
@@ -124,7 +126,7 @@ def router(db, artifact_root=None, allowed_roots=None, grading_visual_config=Non
     @r.get("/offerings/{oid}/tests")
     def tests_list(oid,s=Depends(db)):
         offering_obj = get(CourseOffering, oid, s); owned_course_or_error(offering_obj.course_id,s)
-        return [obj(x) for x in s.scalars(select(Test).where(Test.course_offering_id==oid))]
+        return [obj(x) for x in s.scalars(select(Test).where(Test.course_offering_id==oid, ~Test.id.in_(select(TestArchive.test_id))))]
     @r.get("/tests/{i}")
     def test(i,s=Depends(db)): return obj(owned_test_or_error(i,s))
     @r.patch("/tests/{i}")

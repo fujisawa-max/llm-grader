@@ -486,6 +486,7 @@ def main():
                         "e2e/question-completion-real.spec.ts",
                         "e2e/diagram-review-real.spec.ts",
                         "e2e/model-answer-nested-navigation-real-isolated.spec.ts",
+                        "e2e/test-authoring-foundation-real.spec.ts",
                     ]
                     subprocess.run(["npm", "run", "e2e", "--", *specs, "--workers=1"],
                                    cwd=REPO / "frontend", env=env, check=True)
