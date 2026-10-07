@@ -20,9 +20,10 @@ import {suggestSubquestions, splitQuestionAtCaret, splitQuestionRanges, mapCandi
 import {applyQuestionSplit} from "@/lib/questionSplitApply";
 import {AuthoringCandidates, type AuthoringEntry} from "@/components/reviews/AuthoringCandidates";
 import {rubricRows} from "@/lib/rubricEditing";
+import {effectiveQuestionScore} from "@/lib/questionScores";
 import {WarningPanel} from "@/components/reviews/WarningPanel";
 import {EvidencePanel} from "@/components/reviews/EvidencePanel";
-import type {ReviewNode} from "@/types/reviews";
+import type {ReviewNode, ReviewWarning} from "@/types/reviews";
 import type {Material} from "@/types/domain";
 
 const roles: Record<string,string> = {question_sheet:"問題用紙", model_answer_source:"模範解答", rubric_source:"採点基準", supplementary_source:"補足資料"};
@@ -204,6 +205,16 @@ export default function TestAuthoringPage() {
   if(error&&!snapshot)return <ErrorState message={error}/>;
   if(!snapshot)return <LoadingState/>;
   const questionDomain=snapshot.domains?.question;
+  const warningQuestion=(warning:ReviewWarning)=>{
+    const region=questionDomain?.document.regions.find(r=>r.region_id===warning.source_id);
+    const owner=warning.owner||region?.assigned_question_key||warning.source_id;
+    const exact=nodes.find(n=>n.included&&n.stable_key===owner);
+    if(exact)return exact;
+    const sourceOwners=nodes.filter(n=>n.included&&n.source_draft_stable_key===owner);
+    return sourceOwners.length===1?sourceOwners[0]:undefined;
+  };
+  const questionWarnings=(questionDomain?.document.warnings||[]).filter(w=>warningQuestion(w)?.stable_key===node?.stable_key&&!!node);
+  const previewScore=node?effectiveQuestionScore(node.stable_key,nodes).points:null;
   const regions=questionDomain?.document.regions||[];
   const activeRegions=regions.filter(r=>node?.ordered_content.some(item=>"region_id" in item&&item.region_id===r.region_id)||!!node?.formula_decisions[r.region_id]||!!node?.figure_decisions[r.region_id]);
   const answer=snapshot.answers[selected]||{primary:"",alternatives:[],diagram_records:[]};
@@ -263,21 +274,24 @@ export default function TestAuthoringPage() {
         <p><Link href={`/tests/${id}?section=questions`}>既存の資料解析・出典付きレビューを開く</Link></p>
       </>}</section>)}
       {sourceMode==="pdf"&&materialId&&<SourcePdfPreview key={materialId} testId={id} material={materials.find(m=>m.id===materialId)} label="利用資料PDF" inline paneZoom diagramSelection={diagramSelection?.record.material_id===materialId?diagramSelection:undefined} targetLocation={diagramSelection?.record.material_id===materialId?{id:diagramSelection.record.id,page:diagramSelection.record.page_index+1,bbox:diagramSelection.record.final_bbox||diagramSelection.record.automatic_bbox}:mappedLocation}/>}
-    </>} selector={<div className="review-toolbar">
+    </>} selector={<div className="review-toolbar authoring-target-controls">
       <label>対象設問<select aria-label="対象設問" value={selected} onChange={e=>{if(e.target.value==="all")void finalReview();else {setSelected(e.target.value);setDiagramSelection(undefined);setRegionId("");}}}>
         {orderedNodes().map(n=><option key={n.stable_key} value={n.stable_key}>{pathFor(n.stable_key)}</option>)}{snapshot.domains?.answer?.entries.some(e=>!e.authoring_question_key)&&<option value="unassigned">設問未割当の候補</option>}<option value="all">テスト全体確認</option>
       </select></label><span>表示</span>{([['question','問題'],['answer','解答'],['rubric','採点基準']] as const).map(([key,label])=><label key={key}><input type="checkbox" checked={visible[key]} onChange={e=>{const next={...visible,[key]:e.target.checked};setVisible(next);localStorage.setItem("test-authoring-visible",JSON.stringify(next));}}/>{label}</label>)}
+      <span className="authoring-add-question"><button disabled={readonly||saving} onClick={()=>{const n=newNode(nodes.length);change({...snapshot,nodes:[...nodes,n]});setBuffers(current=>({...current,[n.stable_key]:""}));setSelected(n.stable_key);}}>設問を追加</button></span>
     </div>}>
       {selected==="all"?<section aria-label="テスト全体確認"><h2>テスト全体確認</h2>
         <label>テスト名<input disabled={readonly||saving} value={snapshot.metadata.name} onChange={e=>change({...snapshot,metadata:{...snapshot.metadata,name:e.target.value}})}/></label>
         <label>合計点<input type="number" disabled={readonly||saving} value={snapshot.metadata.total_points} onChange={e=>change({...snapshot,metadata:{...snapshot.metadata,total_points:Number(e.target.value)}})}/></label>
-        <ol>{nodes.filter(n=>n.included).map(n=><li key={n.stable_key}>{pathFor(n.stable_key)} — {n.score_points??"未設定"}点</li>)}</ol>
+        <ol>{nodes.filter(n=>n.included).map(n=><li key={n.stable_key}>{pathFor(n.stable_key)} — {effectiveQuestionScore(n.stable_key,nodes).points??"未設定"}点</li>)}</ol>
         <ul>{issues.map((issue,index)=><li key={index}>{issue.question_key||issue.section==="answer"?<button onClick={()=>navigate(issue)}>{issue.question_key?pathFor(issue.question_key):"設問未割当"} — {issue.message}</button>:issue.message}</li>)}</ul>
+        {questionDomain&&questionDomain.document.warnings.length>0&&<WarningPanel targetLabel={w=>{const owner=warningQuestion(w);return owner?pathFor(owner.stable_key):"試験全体";}} warnings={questionDomain.document.warnings} states={questionDomain.snapshot.warning_states||{}} readonly={readonly||saving}
+            onChange={(key,resolution)=>change({...snapshot,domains:{...snapshot.domains,question:{...questionDomain,snapshot:{...questionDomain.snapshot,warning_states:{...questionDomain.snapshot.warning_states,[key]:resolution}}}}})}/>}
         <button disabled title="この画面からの試験内容確定は現在利用できません。">試験内容を確定</button>
       </section>:(node||selected==="unassigned")&&<>
         {visible.question&&node&&<section id="authoring-question" tabIndex={-1} aria-label="問題"><h2>問題</h2>
 
-          <AuthoringPreviewEditor actions={<button aria-pressed={questionSettings} onClick={()=>{setQuestionSettings(v=>!v);setEditing(v=>({...v,question:false}));}}>{questionSettings?"プレビューを見る":"設問設定の変更"}</button>} label="問題" editLabel="本文編集" editing={editing.question} auxiliaryEditing={questionSettings} onEditing={value=>{setQuestionSettings(false);setEditing(v=>({...v,question:value}));}} preview={<><MarkdownMathText source={buffers[selected]??node.body_text}/><AcceptedDiagramPreview records={questionStale?[]:node.diagram_records} path={questionDomain?`/tests/${id}/authoring/nodes/${selected}/diagrams`:undefined}/></>}>
+          <AuthoringPreviewEditor actions={<button aria-pressed={questionSettings} onClick={()=>{setQuestionSettings(v=>!v);setEditing(v=>({...v,question:false}));}}>{questionSettings?"プレビューに戻る":"設問設定の変更"}</button>} label="問題" editLabel="本文編集" editing={editing.question} auxiliaryEditing={questionSettings} onEditing={value=>{setQuestionSettings(false);setEditing(v=>({...v,question:value}));}} preview={<><p className="authoring-question-metadata">{node.parent_key?"小問":"大問"}：{pathFor(node.stable_key)} ／ 配点：{previewScore??"－"}点（{node.score_semantics==="sum_children"?"小問合計":node.score_semantics==="each_child"?"小問ごとの配点":previewScore===null?"未設定":"直接配点"}）</p><div className="authoring-question-preview-frame"><MarkdownMathText source={buffers[selected]??node.body_text}/><AcceptedDiagramPreview records={questionStale?[]:node.diagram_records} path={questionDomain?`/tests/${id}/authoring/nodes/${selected}/diagrams`:undefined}/></div></>}>
           <NodeEditor editorMode={questionSettings?"settings":"body"} inlinePreview={false} key={node.stable_key} node={node} nodes={nodes} regions={activeRegions} readonly={readonly||saving}
             content={buffers[selected]??node.body_text} contentChanged={(buffers[selected]??node.body_text)!==questionContent(node,regions).text}
             mathContext={questionDomain&&!questionStale&&revision?{reviewId:questionDomain.document.id,revision:revision.edit_version,savedNode:revision.snapshot.nodes.find(n=>n.stable_key===selected),authoringTestId:id}:undefined}
@@ -318,7 +332,7 @@ export default function TestAuthoringPage() {
           {questionDomain&&revision&&<DiagramReview path={`/tests/${id}/authoring/nodes/${selected}/diagrams`} revision={revision.edit_version}
             records={node.diagram_records} sourceStale={questionStale} disabled={readonly||saving} label="図の確認" onSelect={setDiagramSelection}
             onChange={records=>{setDirty(true);setDirtyDomains(d=>({...d,diagram:true}));setSnapshot(current=>current?{...current,nodes:current.nodes.map(n=>{if(n.stable_key!==node.stable_key)return n;const decisions={...n.figure_decisions};for(const record of records)for(const rid of record.legacy_region_ids||(record.legacy_region_id?[record.legacy_region_id]:[]))decisions[rid]={decision:record.state==="accepted"?"accepted_as_evidence":record.state==="excluded"?"excluded":"unreviewed"};return {...n,diagram_records:records,figure_decisions:decisions};})}:current);}}/>}
-          {questionDomain&&<WarningPanel warnings={questionDomain.document.warnings} states={questionDomain.snapshot.warning_states||{}} readonly={readonly||saving}
+          {questionDomain&&questionWarnings.length>0&&<WarningPanel warnings={questionWarnings} targetLabel={()=>pathFor(selected)} states={questionDomain.snapshot.warning_states||{}} readonly={readonly||saving}
             onChange={(key,resolution)=>change({...snapshot,domains:{...snapshot.domains,question:{...questionDomain,snapshot:{...questionDomain.snapshot,warning_states:{...questionDomain.snapshot.warning_states,[key]:resolution}}}}})}/>}
           </div>
         </AuthoringPreviewEditor></section>}
@@ -354,6 +368,6 @@ export default function TestAuthoringPage() {
 
         </section>}
       </>}
-      <button disabled={readonly||saving} onClick={()=>{const n=newNode(nodes.length);change({...snapshot,nodes:[...nodes,n]});setBuffers(current=>({...current,[n.stable_key]:""}));setSelected(n.stable_key);}}>設問を追加</button>
+
     </ReviewWorkspaceLayout></>;
 }

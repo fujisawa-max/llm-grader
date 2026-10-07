@@ -19,6 +19,13 @@ test("saved source reviews integrate Question, answer diagrams and advanced Rubr
   expect(answerResult.status()).toBe(201);const answer=await answerResult.json();
   await page.goto(`/tests/${tid}/authoring`);await page.getByRole("button",{name:"設問を追加",exact:true}).waitFor();
   await page.getByLabel("問題文",{exact:true}).waitFor({state:"attached"});await openAuthoringEditors(page);const editor=page.getByLabel("問題文",{exact:true});await expect(editor).toContainText("図の範囲");
+  const authoring=await(await page.request.get(base+"/authoring")).json();
+  const warnings=authoring.revision.snapshot.domains.question.document.warnings;
+  const selectedKey=await page.getByLabel("対象設問",{exact:true}).inputValue();
+  const selectedNode=authoring.revision.snapshot.nodes.find((n:{stable_key:string})=>n.stable_key===selectedKey);
+  const expectedWarnings=warnings.filter((w:{owner:string|null;source_id:string})=>{const region=authoring.revision.snapshot.domains.question.document.regions.find((r:{region_id:string})=>r.region_id===w.source_id);const owner=w.owner||region?.assigned_question_key||w.source_id;return owner===selectedKey||owner===selectedNode.source_draft_stable_key;});
+  const panel=page.getByLabel("問題",{exact:true}).getByLabel("確認事項一覧",{exact:true});
+  if(expectedWarnings.length)await expect(panel.locator("fieldset")).toHaveCount(expectedWarnings.length);else await expect(panel).toHaveCount(0);
   const initial=await editor.inputValue();
   await editor.fill("第1行\n第2行\n第3行");
   await editor.evaluate(el=>{const t=el as HTMLTextAreaElement;(window as unknown as {activeAuthoringEditor:Element}).activeAuthoringEditor=t;t.focus();t.setSelectionRange(3,3);});
