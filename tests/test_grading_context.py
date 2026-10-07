@@ -16,6 +16,7 @@ from scoring.grading_inputs import apply_inputs
 from scoring.domain_adapter import DomainGradingJobAdapter
 from scoring.db.worker import JobWorker
 from scoring.pdf_native import canonical_hash, sha256_file
+from tests.http_auth import authenticate_fixture
 
 
 class GradingContextTests(unittest.TestCase):
@@ -256,7 +257,8 @@ class GradingContextTests(unittest.TestCase):
         p = self.parent()
         a, _ = self.figure(self.q)
         self.s.commit()
-        with TestClient(create_app(self.factory, question_import_root=self.root)) as client:
+        with TestClient(create_app(self.factory, question_import_root=self.root)) as raw:
+            client = authenticate_fixture(raw, self.s, self.u)
             self.assertEqual(client.get(f"/api/v1/tests/{self.t.id}/test-question-assets/{a.id}").status_code, 200)
             self.assertEqual(client.get(f"/api/v1/tests/other/test-question-assets/{a.id}").status_code, 404)
             self.assertEqual(client.post(f"/api/v1/tests/{self.t.id}/model-answers", json={
@@ -269,7 +271,8 @@ class GradingContextTests(unittest.TestCase):
         self.complete()
         self.s.commit()
         app = create_app(self.factory, allowed_roots=[self.root], question_import_root=self.root)
-        with TestClient(app) as client:
+        with TestClient(app) as raw:
+            client = authenticate_fixture(raw, self.s, self.u)
             result = client.get(f"/api/v1/tests/{self.t.id}/grading-readiness")
             self.assertEqual(result.status_code, 200)
             self.assertTrue(result.json()["can_start_grading"])
@@ -296,7 +299,8 @@ class GradingContextTests(unittest.TestCase):
                          execution_mode="resident_serial", total_items=1)
         self.s.add(job)
         self.s.commit()
-        with TestClient(create_app(self.factory, allowed_roots=[self.root], question_import_root=self.root)) as client:
+        with TestClient(create_app(self.factory, allowed_roots=[self.root], question_import_root=self.root)) as raw:
+            client = authenticate_fixture(raw, self.s, self.u)
             with patch("scoring.domain_adapter.DomainGradingJobAdapter.create_legacy_job", return_value=(job, {})) as adapter:
                 response = client.post(f"/api/v1/tests/{self.t.id}/grading-jobs", json={
                     "assignment_path": str(self.root), "run_path": str(self.root),

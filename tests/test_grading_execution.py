@@ -1,9 +1,10 @@
 from copy import deepcopy
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from sqlalchemy import select
 
@@ -17,6 +18,7 @@ from scoring.grading_mapping import GradingInputAssembler
 from scoring.pdf_native import canonical_hash
 from scoring.student_answer import StudentAnswerExtractionPipeline
 from tests.mapping_fixture import create_mapping_fixture
+from tests.http_auth import authenticate_fixture
 
 
 def response(bundle):
@@ -362,14 +364,16 @@ class ExecutionTests(unittest.TestCase):
     def test_api_guard_result_isolation_and_snapshot_answer(self):
         from fastapi.testclient import TestClient
         from scoring.api.app import create_app
-        app = create_app(self.sf, allowed_roots=[self.root], question_import_root=self.root)
+        with patch.dict(os.environ, {"LLM_GRADER_ARTIFACT_ROOT": str(self.root)}):
+            app = create_app(self.sf, allowed_roots=[self.root], question_import_root=self.root)
         prefix = f"/api/v1/tests/{self.f['test'].id}"
         body = {'input_stage': 'selected_reconstruction', 'submission_id': self.f['submission'].id,
                 'question_id': self.f['questions']['A1'].id, 'run_path': str(self.root/'run'),
                 'config_path': str(self.config)}
         self.f['questions']['A1'].max_points = None
         self.s.commit()
-        with TestClient(app) as client:
+        with TestClient(app) as raw:
+            client = authenticate_fixture(raw, self.s, self.f["user"])
             self.assertEqual(client.post(prefix+'/grading-jobs', json=body).status_code, 409)
             self.assertEqual(len(self.s.scalars(select(GradingJob)).all()), 0)
             self.f['questions']['A1'].max_points = 10

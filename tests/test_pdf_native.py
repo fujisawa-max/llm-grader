@@ -94,7 +94,7 @@ class PdfNativeTests(unittest.TestCase):
                 self.assertEqual(summary["schema_version"], IR_SCHEMA_VERSION)
                 self.assertEqual(summary["pages"][0]["element_count"], 3)
 
-    def test_same_test_same_sha_is_rejected_but_different_test_is_allowed(self):
+    def test_same_test_same_sha_reuses_completed_extraction_but_different_test_is_isolated(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             engine, session_factory = create_session_factory(f"sqlite:///{root / 'db.sqlite'}")
@@ -112,14 +112,16 @@ class PdfNativeTests(unittest.TestCase):
             app = create_app(session_factory, question_import_root=root / "artifacts")
             route = _endpoint(app, "/api/v1/tests/{test_id}/question-materials")
             with session_factory() as session:
-                asyncio.run(route(first_id, _Request(source.read_bytes()), session))
+                first = asyncio.run(route(first_id, _Request(source.read_bytes()), session))
+                self.assertEqual(first["state"], "completed")
             with session_factory() as session:
-                with self.assertRaises(HTTPException) as caught:
-                    asyncio.run(route(first_id, _Request(source.read_bytes()), session))
-                self.assertEqual(caught.exception.status_code, 409)
+                repeated = asyncio.run(route(first_id, _Request(source.read_bytes()), session))
+                self.assertEqual(repeated["id"], first["id"])
+                self.assertEqual(repeated["state"], "completed")
             with session_factory() as session:
                 other = asyncio.run(route(second_id, _Request(source.read_bytes()), session))
                 self.assertEqual(other["state"], "completed")
+                self.assertNotEqual(other["id"], first["id"])
 
     def test_upload_rejects_traversal_and_non_pdf(self):
         with tempfile.TemporaryDirectory() as folder:

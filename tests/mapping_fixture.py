@@ -130,6 +130,7 @@ def create_mapping_fixture(session, root):
     (root / "assignment.json").write_text(json.dumps(assignment))
     session.flush()
     return dict(
+        user=user,
         test=test,
         questions=qs,
         parents=parents,

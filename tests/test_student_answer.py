@@ -1,6 +1,8 @@
 import json
+import os
 import tempfile
 import unittest
+from unittest.mock import patch
 from fastapi.testclient import TestClient
 from pathlib import Path
 
@@ -14,6 +16,7 @@ from scoring.student_answer import (
     validate_reconstruction_output,
 )
 from tests.mapping_fixture import create_mapping_fixture
+from tests.http_auth import authenticate_fixture
 
 
 class StudentAnswerReconstructionTests(unittest.TestCase):
@@ -146,7 +149,10 @@ class StudentAnswerReconstructionTests(unittest.TestCase):
     def test_http_input_preview_is_leak_safe_and_execute_does_not_start_runtime(self):
         self.session.commit()
         q = self.fixture["questions"]["A1"]
-        with TestClient(create_app(self.factory, allowed_roots=[self.root], question_import_root=self.root)) as client:
+        with patch.dict(os.environ, {"LLM_GRADER_ARTIFACT_ROOT": str(self.root)}):
+            app = create_app(self.factory, allowed_roots=[self.root], question_import_root=self.root)
+        with TestClient(app) as raw:
+            client = authenticate_fixture(raw, self.session, self.fixture["user"])
             prefix = f"/api/v1/tests/{self.fixture['test'].id}/submissions/{self.fixture['submission'].id}"
             response = client.get(prefix + f"/answer-reconstruction-input/{q.id}")
             self.assertEqual(response.status_code, 200, response.text)

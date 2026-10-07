@@ -20,6 +20,7 @@ from scoring.grading_mapping import (
 )
 from scoring.pdf_native import sha256_file
 from tests.mapping_fixture import create_mapping_fixture
+from tests.http_auth import authenticate_fixture
 
 
 class GradingMappingTests(unittest.TestCase):
@@ -260,7 +261,8 @@ class GradingMappingTests(unittest.TestCase):
         self.s.commit()
         with TestClient(
             create_app(self.sf, allowed_roots=[self.root], question_import_root=self.root)
-        ) as client:
+        ) as raw:
+            client = authenticate_fixture(raw, self.s, self.f["user"])
             base = f"/api/v1/tests/{self.f['test'].id}/submissions/{self.f['submission'].id}"
             response = client.get(base + "/grading-input-readiness")
             self.assertEqual(response.status_code, 200, response.text)

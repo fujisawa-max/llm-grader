@@ -1,6 +1,7 @@
 """Production visual path tests use isolated synthetic SQLite fixtures only."""
 from copy import deepcopy
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -17,6 +18,7 @@ from scoring.pdf_native import canonical_hash, sha256_file
 from scoring.student_answer_runtime import normalize_ricoh_regions, RuntimeStudentAnswerStages
 from scoring.student_visual import StudentVisualAssetService, EVENT
 from tests.mapping_fixture import create_mapping_fixture
+from tests.http_auth import authenticate_fixture
 
 
 class CoordinateRepairTests(unittest.TestCase):
@@ -179,10 +181,12 @@ class VisualPreflightTests(unittest.TestCase):
     def test_api_visual_preview_and_asset_do_not_generate_or_expose_host_paths(self):
         from fastapi.testclient import TestClient
         from scoring.api.app import create_app
-        app = create_app(self.sf, question_import_root=self.root, allowed_roots=[self.root],
-                         grading_visual_config={'visual_capability': self.cap})
+        with patch.dict(os.environ, {"LLM_GRADER_ARTIFACT_ROOT": str(self.root)}):
+            app = create_app(self.sf, question_import_root=self.root, allowed_roots=[self.root],
+                             grading_visual_config={'visual_capability': self.cap})
         url = f'/api/v1/tests/{self.f["test"].id}/submissions/{self.sub.id}/questions/{self.qid}'
-        with TestClient(app) as client:
+        with TestClient(app) as raw:
+            client = authenticate_fixture(raw, self.s, self.f["user"])
             response = client.get(url + '/grading-input-preview')
             self.assertEqual(response.status_code, 200, response.text)
             self.assertEqual(response.json()['execution_state'], 'READY')
