@@ -41,7 +41,7 @@ test("whole-test drafts preserve local caret, materials, section state and forma
   await expect(editor).toHaveValue(text.slice(0,at)+text.slice(at+1));
   await expect(page.getByText("未保存の変更があります",{exact:true})).toBeVisible();
   await page.getByRole("button",{name:"保存",exact:true}).first().click();
-  await expect(page.getByText("下書きを保存しました。",{exact:true})).toBeVisible();
+  await expect(page.locator(".authoring-toast").filter({hasText:"保存しました"}).last()).toBeVisible();
   const saved=await (await page.request.get(base+"/authoring")).json();
   await page.reload();await openAuthoringEditors(page);
   await expect(editor).toHaveValue(saved.revision.snapshot.nodes[0].body_text);

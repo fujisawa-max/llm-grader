@@ -1,5 +1,5 @@
 "use client";
-import {useEffect, useRef, useState} from "react";
+import {useCallback, useEffect, useRef, useState} from "react";
 import {useParams} from "next/navigation";
 import Link from "next/link";
 import {ReviewWorkspaceLayout} from "@/components/reviews/ReviewWorkspaceLayout";
@@ -22,6 +22,7 @@ import {applyQuestionSplit,reviewQuestionSplit,splitDuplicate} from "@/lib/quest
 import {AuthoringCandidates, type AuthoringEntry} from "@/components/reviews/AuthoringCandidates";
 import {rubricRows} from "@/lib/rubricEditing";
 import {effectiveQuestionScore} from "@/lib/questionScores";
+import {useAuthoringNotifications} from "@/components/reviews/AuthoringNotificationCenter";
 import {WarningPanel} from "@/components/reviews/WarningPanel";
 import {EvidencePanel} from "@/components/reviews/EvidencePanel";
 import type {ReviewNode, ReviewWarning} from "@/types/reviews";
@@ -42,7 +43,7 @@ export default function TestAuthoringPage() {
   const [externalChange,setExternalChange]=useState(false);
   const [continueExternal,setContinueExternal]=useState(false);
   const [diagramSelection,setDiagramSelection]=useState<DiagramSelection>();
-  const saveInFlight=useRef(false),editEpoch=useRef(0);
+  const saveInFlight=useRef(false),editEpoch=useRef(0),issueEpoch=useRef(0);
   const [saveStatus,setSaveStatus]=useState<"idle"|"saving"|"success"|"error">("idle");
   const splitInFlight=useRef(false);
   const [splitRunning,setSplitRunning]=useState(false);
@@ -61,14 +62,34 @@ export default function TestAuthoringPage() {
   const [questionSettings,setQuestionSettings]=useState(false);
   const [replacement,setReplacement]=useState<string|null>(null);
   const [role,setRole]=useState("question_sheet");
+  const currentEditVersion=revision?.edit_version;
   const [visible,setVisible]=useState({question:true,answer:true,rubric:true});
   const [issues,setIssues]=useState<AuthoringIssue[]>([]);
+  const [issuesOpen,setIssuesOpen]=useState(false);
+  const [analysisRequest,setAnalysisRequest]=useState<{domain:"question"|"answer";materialId:string}|null>(null);
   const [saving,setSaving]=useState(false);
-  const [busy,setBusy]=useState(false),[error,setError]=useState(""),[notice,setNotice]=useState("");
+  const [busy,setBusy]=useState(false),[error,setError]=useState("");
+  const {notify,view:notificationView}=useAuthoringNotifications();
   const questionCaret=useRef(0);
+  const analysisTrigger=useRef<HTMLButtonElement|null>(null);
   const questionToolScope=useRef("");questionToolScope.current=`${selected}:${revision?.edit_version}:${buffers[selected]}`;
   const fileInput=useRef<HTMLInputElement>(null);
   const readonly=!revision || revision.state==="confirmed";
+  const closeAnalysis=useCallback(()=>{setAnalysisRequest(null);requestAnimationFrame(()=>analysisTrigger.current?.focus());},[]);
+  useEffect(()=>{
+    if(!analysisRequest)return;
+    const dialog=document.querySelector<HTMLElement>(".authoring-analysis-dialog");
+    const focusable=()=>Array.from(dialog?.querySelectorAll<HTMLElement>('button:not([disabled]),[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])')||[]);
+    focusable()[0]?.focus();
+    const onKeyDown=(event:KeyboardEvent)=>{
+      if(event.key==="Escape"){event.preventDefault();closeAnalysis();return;}
+      if(event.key!=="Tab")return;
+      const controls=focusable();if(!controls.length)return;
+      if(event.shiftKey&&document.activeElement===controls[0]){event.preventDefault();controls[controls.length-1].focus();}
+      else if(!event.shiftKey&&document.activeElement===controls[controls.length-1]){event.preventDefault();controls[0].focus();}
+    };
+    document.addEventListener("keydown",onKeyDown);return()=>document.removeEventListener("keydown",onKeyDown);
+  },[analysisRequest,closeAnalysis]);
   useEffect(()=>{
     let active=true;
     void Promise.all([testAuthoring.get(id),testData.materials(id)]).then(async ([data,files])=>{
@@ -80,6 +101,7 @@ export default function TestAuthoringPage() {
       setBuffers(authoringBuffers(value));
       setSelected(value.nodes[0]?.stable_key||"all");
       setMaterials(files.filter(m=>m.material_type!=="student_answer_source"));
+      void testAuthoring.review(id).then(result=>{if(active)setIssues(result.issues);}).catch(()=>{/* Review issues can be refreshed from the Test-wide review action. */});
       const superseded=new Set(value.materials.map(m=>m.replaces_material_id));
       const activeFiles=files.filter(m=>m.material_type!=="student_answer_source"&&!superseded.has(m.id));
       setMaterialId(activeFiles.find(m=>m.material_type==="question_sheet")?.id||activeFiles[0]?.id||"");
@@ -98,10 +120,19 @@ export default function TestAuthoringPage() {
     const guard=(event:BeforeUnloadEvent)=>{event.preventDefault();event.returnValue="";};
     window.addEventListener("beforeunload",guard);return()=>window.removeEventListener("beforeunload",guard);
   },[dirty,saving]);
-  function markDirty(){editEpoch.current++;setDirty(true);setSaveStatus("idle");setNotice("");}
+  useEffect(()=>{
+    if(!snapshot||currentEditVersion===undefined)return;
+    const epoch=++issueEpoch.current;
+    const timer=window.setTimeout(()=>{
+      const request=dirty?testAuthoring.reviewLocal(id,prepareAuthoringSave(snapshot,buffers),currentEditVersion):testAuthoring.review(id);
+      void request.then(result=>{if(issueEpoch.current===epoch)setIssues(result.issues);}).catch(()=>{/* Keep the last known actionable issue list on transient review failures. */});
+    },350);
+    return()=>window.clearTimeout(timer);
+  },[snapshot,buffers,currentEditVersion,dirty,id]);
+  function markDirty(){editEpoch.current++;setDirty(true);setSaveStatus("idle");}
   function synchronize(row:AuthoringRevision){
     setRevision(row);setSnapshot(row.snapshot);setBuffers(authoringBuffers(row.snapshot));
-    setDirty(false);setDirtyDomains({});setIssues([]);
+    setDirty(false);setDirtyDomains({});
   }
   function change(value:AuthoringSnapshot,domain?:string){setSnapshot(value);markDirty();setDirtyDomains(d=>({...d,...(domain?{[domain]:true}:{question:value.nodes!==snapshot?.nodes||value.domains?.question!==snapshot?.domains?.question||d.question,answer:value.answers!==snapshot?.answers||d.answer,rubric:value.rubrics!==snapshot?.rubrics||d.rubric})}));}
   function updateNode(value:ReviewNode){markDirty();setDirtyDomains(d=>({...d,question:true}));setSnapshot(s=>s?{...s,nodes:s.nodes.map(n=>n.stable_key===value.stable_key?value:n)}:s);}
@@ -139,8 +170,8 @@ export default function TestAuthoringPage() {
     splitInFlight.current=true;setSplitRunning(true);setBusy(true);setError("");
     try{
       const result=await apiFetch<{split:boolean;parts:{start:number;end:number}[]}>(`/tests/${id}/authoring/nodes/${selected}/split-suggest`,json({expected_revision:revision.edit_version,candidate_id:selected,text}));
-      if(questionToolScope.current!==scope){setNotice("対象設問または本文が変わったため、この分割案は適用していません。現在の本文で再実行してください。");return;}
-      if(!result.split){setNotice("分割が必要ないという提案です。必要ならカーソル位置を指定してください。");return;}
+      if(questionToolScope.current!==scope){notify("warning","分割案を適用しませんでした","対象設問または本文が変わりました。現在の本文で再実行してください。");return;}
+      if(!result.split){notify("info","分割案はありませんでした","必要ならカーソル位置を指定してください。");return;}
       const codepoints=Array.from(text),toOffset=(n:number)=>codepoints.slice(0,n).join("").length;
       const boundaries=[0,...result.parts.map(p=>toOffset(p.end))];
       const proposal=suggestSubquestions(reconciled,questionDomain?.document.automatic_nodes.find(n=>n.stable_key===node.source_draft_stable_key))||splitQuestionRanges(reconciled,boundaries,questionContent(reconciled,regions).spans,questionDomain?.document.automatic_nodes.find(n=>n.stable_key===node.source_draft_stable_key)?.ordered_content);
@@ -148,38 +179,44 @@ export default function TestAuthoringPage() {
       updateNode(reconciled);setSplitProposal(reviewQuestionSplit(proposal,node,true));
     }catch(e){if(questionToolScope.current===scope)setError(`分割案を取得できませんでした。本文は保持されています。時間をおいて再実行してください。${e instanceof Error?` (${e.message})`:""}`);}finally{splitInFlight.current=false;setSplitRunning(false);setBusy(false);}
   }
-  async function analyzeSource(domain:"question"|"answer"){
+  async function analyzeSource(domain:"question"|"answer",requestedMaterialId:string){
     if(splitProposal){setError("分割案を適用またはキャンセルしてから資料を解析してください。分割案は保持されています。");return;}
-    if(!revision||!materialId||dirty){setError("資料を選び、現在の変更を保存してから解析してください。");return;}
-    if(!window.confirm(`${analyzed?"再解析":"解析"}して新しい解析結果を取り込んだ下書きを作成します。現在の保存済み下書きは修正版の履歴として保持されます。問題資料の解析では最新の保存済みレビューから編集内容を構成します。続行しますか？`))return;
+    if(!revision||!requestedMaterialId||dirty){setError("資料を選び、現在の変更を保存してから解析してください。");return;}
+    const requestedMaterial=materials.find(m=>m.id===requestedMaterialId);
+    const materialRole=requestedMaterial?.material_type;
     setBusy(true);setAnalyzing(true);setError("");
     try{
       let row:AuthoringRevision;
-      if(domain==="answer")row=await testAuthoring.analyzeAnswer(id,materialId,revision.edit_version,true);
+      if(domain==="answer")row=await testAuthoring.analyzeAnswer(id,requestedMaterialId,revision.edit_version,true);
       else{
-        const response=await fetch(`/api/v1/tests/${id}/materials/${materialId}/file`,{credentials:"include"});
+        const response=await fetch(`/api/v1/tests/${id}/materials/${requestedMaterialId}/file`,{credentials:"include"});
         if(!response.ok)throw new Error("元PDFを取得できませんでした。");
-        const extraction=await apiFetch<{id:string}>(`/tests/${id}/question-materials`,{method:"POST",headers:{"Content-Type":"application/pdf","X-Filename":materials.find(m=>m.id===materialId)?.original_filename||"question.pdf"},body:await response.blob()});
+        const extraction=await apiFetch<{id:string}>(`/tests/${id}/question-materials`,{method:"POST",headers:{"Content-Type":"application/pdf","X-Filename":requestedMaterial?.original_filename||"question.pdf"},body:await response.blob()});
         const draft=await apiFetch<{id:string}>(`/question-imports/${extraction.id}/draft`,json({}));
         await apiFetch(`/question-import-drafts/${draft.id}/reviews`,json({}));
-        row=await testAuthoring.importSources(id,revision.edit_version,true,materialId);
+        row=await testAuthoring.importSources(id,revision.edit_version,true,requestedMaterialId);
       }
       setRevision(row);setSnapshot(row.snapshot);setDirty(false);setDirtyDomains({});setExternalChange(false);setContinueExternal(false);
       setBuffers(authoringBuffers(row.snapshot));
       setSelected(current=>row.snapshot.nodes.some(n=>n.stable_key===current)?current:row.snapshot.nodes[0]?.stable_key||"all");
       const outcome=row.snapshot.domains?.answer?.analysis_result;
+      const refreshed=await testAuthoring.review(id);setIssues(refreshed.issues);
       if(domain==="answer"&&outcome){
         setVisible(v=>({...v,answer:true,rubric:true}));
-        if(!outcome.assigned_count){setSelected("unassigned");setError("解析結果を設問へ対応付けできませんでした。設問未割当の候補から対応する設問を選択してください。");}
-        setNotice(`解析結果: 対応済み${outcome.assigned_count}件・未対応${outcome.unresolved_count}件。問題の本文・分割・階層は保持されています。`);
-      }else setNotice("解析結果を新しい編集用下書きに取り込みました。解析前の保存済み下書きと正式内容は保持されています。");
-    }catch(e){setError(`資料を解析できませんでした。保存済みの下書きは保持されています。資料を確認して再試行してください。${e instanceof Error?` (${e.message})`:""}`);}finally{setBusy(false);setAnalyzing(false);}
+        const detail=`対応済み${outcome.assigned_count}件 / 未対応${outcome.unresolved_count}件`;
+        const title=materialRole==="rubric_source"?"採点基準を解析しました":"模範解答を解析しました";
+        if(!outcome.assigned_count){setSelected("unassigned");const message=`解析結果を設問へ対応付けできませんでした。設問未割当の候補から${materialRole==="rubric_source"?"採点基準":"模範解答"}を選択してください。`;setError(message);notify("warning",title,`${detail}。未対応候補を確認してください。`);}
+        else if(outcome.unresolved_count)notify("warning",title,detail);
+        else notify("success",title,detail);
+      }else if(materialRole==="rubric_source")notify("success","採点基準を解析しました");
+      else notify("success","問題用紙の解析が完了しました","問題文・小問構成を更新する場合があります。模範解答・採点基準は保持されます。");
+    }catch(e){const message=`資料を解析できませんでした。保存済みの下書きは保持されています。資料を確認して再試行してください。${e instanceof Error?` (${e.message})`:""}`;setError(message);notify("error","解析に失敗しました",message);}finally{setBusy(false);setAnalyzing(false);}
   }
   async function begin(){setBusy(true);setError("");try{
     const row=await testAuthoring.begin(id);setRevision(row);setSnapshot(row.snapshot);setDirty(false);setDirtyDomains({});
     setSelected(current=>row.snapshot.nodes.some(n=>n.stable_key===current)?current:row.snapshot.nodes[0]?.stable_key||"all");
     setBuffers(authoringBuffers(row.snapshot));
-    setNotice("下書きを開きました。保存しても正式な問題・解答・採点基準は変更されません。");
+    notify("info","編集用ワークスペースを開きました","保存しても正式な問題・解答・採点基準は変更されません。");
   }catch(e){setError(e instanceof Error?e.message:"下書きを開けませんでした。");}finally{setBusy(false);}}
   async function importSources(){if(!revision)return;
     if(dirty){setError("先に現在の編集内容を保存してください。保存済みレビューは自動では取り込みません。");return;}
@@ -187,24 +224,24 @@ export default function TestAuthoringPage() {
     setBusy(true);setError("");try{
       const row=await testAuthoring.importSources(id,revision.edit_version,true);setRevision(row);setSnapshot(row.snapshot);setDirty(false);setDirtyDomains({});
       setBuffers(authoringBuffers(row.snapshot));
-      setSelected(current=>row.snapshot.nodes.some(n=>n.stable_key===current)?current:row.snapshot.nodes[0]?.stable_key||"all");setExternalChange(false);setContinueExternal(false);setNotice("保存済みレビューを取り込みました。現在の設問本文・分割・階層と取り込み前の編集版は保持されています。");
-    }catch(e){setError(e instanceof Error?e.message:"取り込めませんでした。");}finally{setBusy(false);}
+      setSelected(current=>row.snapshot.nodes.some(n=>n.stable_key===current)?current:row.snapshot.nodes[0]?.stable_key||"all");setExternalChange(false);setContinueExternal(false);notify("success","保存済みレビューを取り込みました","現在の設問本文・分割・階層は保持されています。");
+    }catch(e){const message=e instanceof Error?e.message:"取り込めませんでした。";setError(message);notify("error","レビューを取り込めませんでした",message);}finally{setBusy(false);}
   }
   async function save(){
     if(!snapshot||!revision||saveInFlight.current)return;
     saveInFlight.current=true;const epoch=editEpoch.current;
-    setBusy(true);setSaving(true);setSaveStatus("saving");setError("");setNotice("");
+    setBusy(true);setSaving(true);setSaveStatus("saving");setError("");
     try{
       const value=prepareAuthoringSave(snapshot,buffers);
       const row=await testAuthoring.save(id,value,revision.edit_version,continueExternal);
       if(editEpoch.current===epoch){
-        synchronize(row);setSaveStatus("success");setNotice("下書きを保存しました。");
+        synchronize(row);setSaveStatus("success");notify("success","保存しました");
         void testAuthoring.get(id).then(data=>{
           if(data.revision?.id===row.id&&data.revision.edit_version===row.edit_version&&editEpoch.current===epoch){setSourceProblems(data.source_problems||[]);setExternalChange(data.external_source_change);}
         }).catch(()=>{/* Persisted response remains authoritative even if status refresh fails. */});
       }
-      else {setRevision(row);setSnapshot(current=>current?{...current,source_provenance:row.snapshot.source_provenance}:current);setNotice("送信した内容は保存しました。その後の変更は未保存です。");}
-    }catch(e){setSaveStatus("error");setError(`保存できませんでした。編集内容は画面に保持されています。${e instanceof Error?` (${e.message})`:""}`);}
+      else {setRevision(row);setSnapshot(current=>current?{...current,source_provenance:row.snapshot.source_provenance}:current);notify("warning","送信した内容は保存しました","その後の変更は未保存です。もう一度保存してください。");}
+    }catch(e){setSaveStatus("error");const message=`保存できませんでした。編集内容は画面に保持されています。${e instanceof Error?` (${e.message})`:""}`;setError(message);notify("error","保存に失敗しました",message);}
     finally{saveInFlight.current=false;setBusy(false);setSaving(false);}
   }
   async function finalReview(){
@@ -227,8 +264,8 @@ export default function TestAuthoringPage() {
     if(old&&uploaded[0].sha256===old.sha256)throw new Error("同じ内容の資料です。差し替えは行いませんでした。");
     setMaterials(current=>[...current,...uploaded.filter(m=>!current.some(old=>old.id===m.id))]);
     setSnapshot(current=>current?{...current,materials:[...current.materials.filter(ref=>!uploaded.some(m=>m.id===ref.id)),...uploaded.map(m=>({id:m.id,sha256:m.sha256||null,role:m.material_type,...(old?{replaces_material_id:old.id}:{})}))]}:current);
-    markDirty();setMaterialId(uploaded[0].id);setSourceMode("pdf");setNotice(old?"資料を差し替えました。元資料と出典情報は保持されています。変更を保存してから明示的に再解析してください。":"資料を追加しました。既存の資料と解析結果は保持されています。");setReplacement(null);
-  }catch(e){setError(e instanceof Error?e.message:"資料を追加できませんでした。");}finally{setBusy(false);if(fileInput.current)fileInput.current.value="";}}
+    markDirty();setMaterialId(uploaded[0].id);setSourceMode("pdf");notify("info",old?"資料を差し替えました":"資料を追加しました",old?"元資料と出典情報は保持されています。保存後に明示的に再解析してください。":"既存の資料と解析結果は保持されています。");setReplacement(null);
+  }catch(e){const message=e instanceof Error?e.message:"資料を追加できませんでした。";setError(message);notify("error","資料を追加できませんでした",message);}finally{setBusy(false);if(fileInput.current)fileInput.current.value="";}}
   if(error&&!snapshot)return <ErrorState message={error}/>;
   if(!snapshot)return <LoadingState/>;
   const questionDomain=snapshot.domains?.question;
@@ -259,6 +296,7 @@ export default function TestAuthoringPage() {
   const analyzed=!!boundAnalyzed||snapshot.source_provenance.analysis_materials?.some(m=>m.id===materialId&&m.sha256===viewed?.sha256);
   const readiness=analysisReadiness(revision?.analysis_readiness?.[materialId],{editable:!readonly,dirty,busy,selected:!!materialId,supported:!!analysisDomain});
   const analysisReason=readiness.reason;
+  const analysisMaterial=analysisRequest?materials.find(m=>m.id===analysisRequest.materialId):undefined;
   const sourceWarnings=revision?.source_warnings||[];
   const replaceMaterial=(mid:string)=>{setReplacement(mid);setRole(materials.find(m=>m.id===mid)?.material_type||"question_sheet");setSourceMode("add");};
   let mappedLocation:{id:string;page:number;bbox?:number[]}|undefined;
@@ -273,10 +311,9 @@ export default function TestAuthoringPage() {
   }
   return <><h1>{snapshot.metadata.name}</h1><p>問題・解答・採点基準を編集します。保存しても既存の正式内容は変更されません。</p>
     {externalChange&&<section role="alert" className="panel"><p>外部の保存済みレビューが更新されています。統合下書きは上書きされていません。</p>
-      <button disabled={busy} onClick={()=>{setContinueExternal(true);setNotice("現在の統合下書きを継続します。外部レビューの更新は取り込みません。");}}>現在の下書きを継続</button>
+      <button disabled={busy} onClick={()=>{setContinueExternal(true);notify("info","現在の編集内容を継続します","外部レビューの更新は取り込みません。");}}>現在の下書きを継続</button>
       <button disabled={busy} onClick={importSources}>最新レビューを取り込む</button></section>}
-    {error&&<p role="alert" className="error">{error}</p>}{notice&&<p role="status">{notice}</p>}
-    {saveStatus==="success"&&<p role="status" className="authoring-save-success">✓ 保存しました</p>}
+    {error&&<p role="alert" className="error">{error}</p>}
     {sourceWarnings.length>0&&<section aria-label="保存済み内容の出典確認" className="authoring-source-notice" role="status"><p>⚠ 元資料との対応に確認が必要な設問があります。編集内容は保存されています。</p>{sourceWarnings.map((w,i)=><div key={i}><span>{w.message}</span>{w.question_key&&<button onClick={()=>navigate({question_key:w.question_key,section:"question",field:"source",message:w.message})}>確認する</button>}</div>)}</section>}
     {(sourceProblems.length>0||questionStale||answerStale)&&<p role="alert">元PDFとの対応が無効になっています。資料と保存済みレビューを確認し、必要なら明示的に再解析してください。</p>}
     {readiness.state!=="unsaved_changes"&&analysisReason&&<p id="authoring-analysis-reason" role="status">選択資料の解析: {analysisReason}</p>}{analyzing&&<p role="status">選択資料を解析しています。完了までお待ちください。</p>}
@@ -285,6 +322,11 @@ export default function TestAuthoringPage() {
       {!readonly&&<button disabled={busy} onClick={importSources}>保存済みレビューを取り込む</button>}
       <button className="button secondary" disabled={busy} onClick={finalReview}>最終確認へ</button><Link className="button secondary" href={`/tests/${id}`} onClick={event=>{if(saving||dirty&&!window.confirm("未保存の変更があります。保存せずにテスト詳細へ戻りますか？"))event.preventDefault();}}>戻る</Link>
       {dirty&&<><span role="status">未保存の変更があります</span><span className="muted">{Object.entries(dirtyDomains).filter(([,v])=>v).map(([k])=>({question:"問題",answer:"解答",rubric:"採点基準",diagram:"図"}[k])).filter(Boolean).join("・")}</span></>}
+      <div className="authoring-utility-controls">{notificationView}
+        <div className="authoring-issues-control"><button type="button" aria-label={`要修正事項、未解決${issues.length}件`} aria-expanded={issuesOpen} onClick={()=>setIssuesOpen(value=>!value)}>⚠ 要修正{issues.length>0&&<span className="authoring-count-badge">{issues.length}</span>}</button>
+          {issuesOpen&&<section className="authoring-issues-panel" aria-label="要修正事項"><header><strong>要修正事項 {issues.length}件</strong><button type="button" onClick={()=>setIssuesOpen(false)}>閉じる</button></header>{issues.length===0?<p>現在、確認が必要な項目はありません。</p>:<ul>{issues.map((issue,index)=><li key={`${issue.question_key||issue.section}-${issue.field||""}-${index}`}>{issue.question_key||issue.section==="answer"?<button type="button" onClick={()=>{navigate(issue);setIssuesOpen(false);}}>{issue.question_key?pathFor(issue.question_key):"設問未割当"} — {issue.message}</button>:<span>{issue.message}</span>}</li>)}</ul>}</section>}
+        </div>
+      </div>
     </div>} source={<>
       <div className="authoring-source-controls" role="group" aria-label="利用資料の操作">
         <select aria-label="利用資料" value={sourceMode==="pdf"?materialId:`action:${sourceMode}`} onChange={e=>{
@@ -293,7 +335,7 @@ export default function TestAuthoringPage() {
         }}><option value="">資料を選択・追加・編集</option><optgroup label="資料">{materials.map(m=><option key={m.id} value={m.id}>{roles[m.material_type]||"資料"} — {m.original_filename}{snapshot.materials.some(ref=>ref.replaces_material_id===m.id)?"（差し替え済み）":""}</option>)}</optgroup>
           <optgroup label="資料管理"><option value="action:add">資料の追加</option><option value="action:manage">資料の編集</option></optgroup>
         </select>
-        {sourceMode==="pdf"&&materialId&&<div className="authoring-current-material-actions"><span title={analysisReason||undefined}><button aria-describedby={analysisReason?"authoring-analysis-reason":undefined} disabled={readiness.state!=="ready"} onClick={()=>analysisDomain&&void analyzeSource(analysisDomain)}>{analyzing?"解析中…":analyzed?"再解析":"解析"}</button></span>
+        {sourceMode==="pdf"&&materialId&&<div className="authoring-current-material-actions"><span title={analysisReason||undefined}><button aria-describedby={analysisReason?"authoring-analysis-reason":undefined} disabled={readiness.state!=="ready"} onClick={event=>{if(analysisDomain){analysisTrigger.current=event.currentTarget;setAnalysisRequest({domain:analysisDomain,materialId});}}}>{analyzing?"解析中…":analyzed?"再解析":"解析"}</button></span>
           <button disabled={readonly||busy} onClick={()=>replaceMaterial(materialId)}>差換え</button>
         </div>}
       </div>
@@ -336,7 +378,7 @@ export default function TestAuthoringPage() {
             const next=editQuestionContent(node,regions,buffers[selected]??node.body_text);
             if(!next){setError("元資料との対応を保った分割案を作成できません。");return;}
             updateNode(next);const proposal=suggestSubquestions(next,questionDomain?.document.automatic_nodes.find(n=>n.stable_key===node.source_draft_stable_key));
-            setSplitProposal(proposal?reviewQuestionSplit(proposal,node):null);if(!proposal)setNotice("小問候補を検出できませんでした。必要なら設問を追加してください。");
+            setSplitProposal(proposal?reviewQuestionSplit(proposal,node):null);if(!proposal)notify("info","小問候補は見つかりませんでした","必要なら設問を追加してください。");
           }}>小問の分割案を作成</button>
           <button disabled={readonly||saving||busy||splitRunning} aria-busy={splitRunning} onClick={()=>void suggestQuestionSplit()}>{splitRunning?<><span className="spinner" aria-hidden="true"/>分割案を作成中…</>:"AIで小問の分割案を作成"}</button>
           <button disabled={readonly||saving||analyzing} onClick={()=>{
@@ -402,5 +444,14 @@ export default function TestAuthoringPage() {
         </section>}
       </>}
 
-    </ReviewWorkspaceLayout></>;
+    </ReviewWorkspaceLayout>
+    {analysisRequest&&analysisMaterial&&<div className="authoring-modal-backdrop"><section className="authoring-analysis-dialog" role="dialog" aria-modal="true" aria-labelledby="authoring-analysis-title" aria-describedby="authoring-analysis-description"><h2 id="authoring-analysis-title">{roles[analysisMaterial.material_type]||"資料"}を{analyzed?"再解析":"解析"}しますか？</h2>
+      <div id="authoring-analysis-description">
+        {analysisMaterial.material_type==="question_sheet"?<><p>問題用紙を{analyzed?"再解析":"解析"}すると、問題文・小問構成など問題用紙から作成した内容が、新しい解析結果をもとに更新される可能性があります。</p><p>模範解答・採点基準の編集内容は保持されます。</p></>:
+          analysisMaterial.material_type==="model_answer_source"?<><p>模範解答の解析結果だけを更新します。</p><p>問題文・小問構成は変更しません。採点基準の編集内容も保持されます。</p></>:
+          <><p>採点基準の解析結果だけを更新します。</p><p>問題文・小問構成・模範解答は変更しません。</p></>}
+        <p>現在の保存状態は履歴として保持されます。</p><p>続行しますか？</p>
+      </div><div className="authoring-analysis-dialog-actions"><button type="button" onClick={closeAnalysis}>キャンセル</button><button type="button" disabled={busy} onClick={()=>{const request=analysisRequest;closeAnalysis();if(request)void analyzeSource(request.domain,request.materialId);}}>{analyzed?"再解析":"解析"}</button></div>
+    </section></div>}
+    </>;
 }

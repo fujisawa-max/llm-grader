@@ -1,3 +1,4 @@
+import {confirmAnalysis} from "./authoringNotifications";
 import {test,expect,type Page,type Locator} from "@playwright/test";
 test.setTimeout(90000);
 test.skip(!process.env.RUNTIME_MANAGER_E2E,"isolated production build/real API required");
@@ -80,12 +81,12 @@ test("current preview and retained editor history; explicit add/replace material
   page.once("dialog",d=>d.accept());await page.getByLabel("資料を追加",{exact:true}).setInputFiles(changed);
   await expect(page.getByRole("status").filter({hasText:"資料を差し替えました"})).toBeVisible();await expect(page.getByLabel("模範解答本文",{exact:true})).toHaveValue(atext);
   await expect(page.getByText("未保存の変更があります",{exact:true})).toBeVisible();expect(await calls(page)).toEqual(counts);
-  await page.getByRole("button",{name:"保存",exact:true}).first().click();await expect(page.getByText("下書きを保存しました。",{exact:true})).toBeVisible();
+  await page.getByRole("button",{name:"保存",exact:true}).first().click();await expect(page.locator(".authoring-toast").filter({hasText:"保存しました"}).last()).toBeVisible();
   const saved=(await(await page.request.get(base+"/authoring")).json()).revision,replacementRef=saved.snapshot.materials.find((m:{id:string;replaces_material_id?:string})=>m.replaces_material_id===old);expect(replacementRef).toBeTruthy();
   await page.reload();await expect(page.getByLabel("問題プレビュー",{exact:true})).toContainText("貼付");await expect(page.getByLabel("解答プレビュー",{exact:true})).toContainText("日本語");await expect(page.getByLabel("模範解答本文",{exact:true})).not.toBeVisible();
   await question.getByRole("button",{name:"本文編集",exact:true}).click();await expect(page.getByLabel("問題文",{exact:true})).toHaveValue(qtext);await answer.getByRole("button",{name:"本文編集",exact:true}).click();await expect(page.getByLabel("模範解答本文",{exact:true})).toHaveValue(atext);
   await selector.selectOption(replacementRef!.id);const materialActions=page.getByRole("group",{name:"利用資料の操作"});await expect(materialActions.getByRole("button",{name:"解析",exact:true})).toBeEnabled();
-  page.once("dialog",d=>d.accept());await materialActions.getByRole("button",{name:"解析",exact:true}).click();await expect(materialActions.getByRole("button",{name:"再解析",exact:true})).toBeEnabled();
+  await confirmAnalysis(page,materialActions,"解析");await expect(materialActions.getByRole("button",{name:"再解析",exact:true})).toBeEnabled();
   const analyzed=(await(await page.request.get(base+"/authoring")).json()).revision;expect(analyzed.snapshot.nodes).toEqual(saved.snapshot.nodes);expect(analyzed.snapshot.domains.answer.material_id).toBe(replacementRef!.id);
   const analyzedCalls=await calls(page);expect(analyzedCalls[2]).toBeGreaterThan(counts[2]);await page.getByRole("link",{name:"戻る",exact:true}).click();await expect(page).toHaveURL(new RegExp(`/tests/${exam.id}$`));expect(await calls(page)).toEqual(analyzedCalls);expect(errors).toEqual([]);
 });

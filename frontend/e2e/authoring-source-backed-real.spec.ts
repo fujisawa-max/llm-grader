@@ -65,7 +65,7 @@ test("saved source reviews integrate Question, answer diagrams and advanced Rubr
   await expect.poll(()=>page.evaluate(()=>!!document.activeElement?.closest('[aria-label="採点基準候補"]'))).toBe(true);
   expect((await (await page.request.get(base+"/authoring")).json()).revision.edit_version).toBe(beforeReview.revision.edit_version);
   await selector.selectOption("q1");await expect(editor).toHaveValue(initial+"\n教師が編集した問題文");
-  await page.getByRole("button",{name:"保存",exact:true}).first().click();await expect(page.getByText("下書きを保存しました。",{exact:true})).toBeVisible();
+  await page.getByRole("button",{name:"保存",exact:true}).first().click();await expect(page.locator(".authoring-toast").filter({hasText:"保存しました"}).last()).toBeVisible();
   const saved=await (await page.request.get(base+"/authoring")).json();expect(saved.revision.state).toBe("draft");
   await page.reload();await openAuthoringEditors(page);await expect(editor).toHaveValue(initial+"\n教師が編集した問題文");await expect(manual.getByLabel("模範解答本文",{exact:true})).toHaveValue("");await expect(manual.getByLabel("観点",{exact:true})).toHaveCount(2);await expect(manual.getByLabel("別解1",{exact:true})).toHaveValue("教師が入力した別解");
   await expect(diagrams.getByText("使用中",{exact:true})).toBeVisible();
@@ -78,7 +78,7 @@ test("saved source reviews integrate Question, answer diagrams and advanced Rubr
   await expect(editor).toHaveValue(initial+"\n教師が編集した問題文");await expect(diagrams.getByText("使用中",{exact:true})).toBeVisible();
   await page.getByRole("button",{name:"現在の下書きを継続",exact:true}).click();
   await editor.fill(initial+"\n教師が編集した問題文\n外部変更後も統合下書きを維持");
-  await page.getByRole("button",{name:"保存",exact:true}).first().click();await expect(page.getByText("下書きを保存しました。",{exact:true})).toBeVisible();
+  await page.getByRole("button",{name:"保存",exact:true}).first().click();await expect(page.locator(".authoring-toast").filter({hasText:"保存しました"}).last()).toBeVisible();
   const kept=await (await page.request.get(base+"/authoring")).json();
   expect(kept.external_source_change).toBe(false);
   await page.getByRole("link",{name:"戻る",exact:true}).click();
@@ -92,7 +92,7 @@ test("saved source reviews integrate Question, answer diagrams and advanced Rubr
   const importEntries=sourceBeforeImport.entries.map((entry:Record<string,unknown>,index:number)=>({id:entry.id,question_id:entry.question_id,disposition:entry.disposition||"include",answer_kind:entry.answer_kind||"primary",answer_text:index===0?String(entry.answer_text)+" 明示取込":String(entry.answer_text)}));
   const externalImport=await page.request.put(`/api/v1/model-answer-import-drafts/${answer.id}`,{data:{expected_revision:sourceBeforeImport.revision,entries:importEntries}});expect(externalImport.status(),await externalImport.text()).toBe(200);
   page.once("dialog",dialog=>dialog.accept());await page.getByRole("button",{name:"保存済みレビューを取り込む",exact:true}).click();
-  await expect(page.getByText("保存済みレビューを取り込みました。現在の設問本文・分割・階層と取り込み前の編集版は保持されています。",{exact:true})).toBeVisible();
+  await expect(page.locator(".authoring-toast").filter({hasText:"保存済みレビューを取り込みました"}).filter({hasText:"設問本文・分割・階層は保持されています"})).toBeVisible();
   const explicitlyImported=await(await page.request.get(base+"/authoring")).json();expect(explicitlyImported.revision.snapshot.nodes).toEqual(treeBeforeImport);
   expect(explicitlyImported.revision.snapshot.question_text_buffers["q1"]).toContain("外部変更後も統合下書きを維持");
   expect(explicitlyImported.revision.snapshot.domains.answer.entries.some((entry:{answer_text:string})=>entry.answer_text.includes("明示取込"))).toBe(true);

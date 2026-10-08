@@ -60,7 +60,7 @@ test("Test and single right-hand recent shortcut open authoring; source stacks v
   expect(b.editor.y).toBeGreaterThanOrEqual(b.source.y+b.source.height);expect(b.selector.y+b.selector.height).toBeLessThanOrEqual(b.toolbar.y+1);
   expect(b.pdf.width).toBeGreaterThanOrEqual(b.source.width*.8);
   await page.setViewportSize({width:1920,height:1080});await page.getByRole("button",{name:"保存",exact:true}).first().click();
-  await expect(page.getByText("下書きを保存しました。",{exact:true})).toBeVisible();
+  await expect(page.locator(".authoring-toast").filter({hasText:"保存しました"}).last()).toBeVisible();
   const saved=(await (await page.request.get(base+"/authoring")).json()).revision;
   // A newer unstarted Test must not displace this active authoring draft.
   expect((await page.request.post(`/api/v1/offerings/${seed.course_offering_id}/tests`,{data:{name:"Newer unstarted test",total_points:10}})).status()).toBe(201);
