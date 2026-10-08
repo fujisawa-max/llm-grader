@@ -525,7 +525,7 @@ def main():
                         "e2e/diagram-review-real.spec.ts",
                         "e2e/model-answer-nested-navigation-real-isolated.spec.ts",
                         "e2e/test-authoring-foundation-real.spec.ts",
-                        "e2e/authoring-source-backed-real.spec.ts",
+                        "e2e/authoring-source-backed-real.spec.ts", "e2e/authoring-rubric-reliability-real.spec.ts",
                         "e2e/authoring-entry-layout-real.spec.ts",
                         "e2e/authoring-preview-materials-real.spec.ts",
                         "e2e/authoring-analysis-access-real.spec.ts",

@@ -1,4 +1,5 @@
 import type {ModelAnswerDraftEntry, RubricCandidateEdit, RubricConsolidatedGroup} from "@/lib/api/modelAnswerImports";
+import {parseMathText} from "./mathText";
 import {reviewCandidateId} from "@/lib/reviewCandidateId";
 type RubricEdit = RubricCandidateEdit;
 export function pointHint(text: string): { description: string; points: number } {
@@ -71,4 +72,21 @@ export function mergeRubricRows(entry: ModelAnswerDraftEntry, ids: string[], typ
     const next = rows.filter((row) => !ids.includes(row.id));
     next.splice(firstIndex, 0, merged);
     return {rubric_edits:next,rubric_merge_history:history};
+}
+
+export const rubricCriterionLabel=(index:number)=>`基準${index+1}`;
+
+/** Native selectionStart is UTF-16; the existing range engine uses code points. */
+export function rubricSplitOffset(text:string,selectionStart:number):number{
+  if(selectionStart<=0||selectionStart>=text.length||!text.slice(0,selectionStart).trim()||!text.slice(selectionStart).trim())
+    throw new Error("基準の本文内にカーソルを置いてください。先頭・末尾や空白だけの部分では分割できません。");
+  let from=0;
+  for(const part of parseMathText(text,false)){
+    if(part.kind==="text")continue;
+    const delimiter=part.kind==="display"?"$$":"$",token=delimiter+part.value+delimiter,start=text.indexOf(token,from);
+    if(start>=0){if(selectionStart>start&&selectionStart<start+token.length)throw new Error("数式の途中では分割できません。数式の前後にカーソルを置いてください。");from=start+token.length;}
+  }
+  const offset=Array.from(text.slice(0,selectionStart)).length;
+  if(Array.from(text).slice(0,offset).join("")!==text.slice(0,selectionStart))throw new Error("文字の途中では分割できません。");
+  return offset;
 }

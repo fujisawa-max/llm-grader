@@ -31,6 +31,7 @@ class RubricSplitTool(BaseModel):
     candidate_id: str = Field(min_length=1, max_length=128)
     text: str = Field(min_length=1, max_length=20000)
     offset: int | None = Field(default=None, ge=1)
+    question_key: str | None = Field(default=None, max_length=128)
 
 
 class ConsolidationCriterion(BaseModel):
@@ -552,22 +553,45 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
     def rubric_split(test_id: str, entry_id: str, body: RubricSplitTool, s=Depends(db)):
         from ..rubric_split import reconstruct_split
         try:
-            context, entry, _ = answer_context(test_id, entry_id, s, body.expected_revision)
+            # Splitting teacher text does not depend on PDF/diagram validity.
+            # Keep authorization/CAS and target identity, without requiring an
+            # unchanged Answer material for an independent Rubric operation.
+            owned(test_id, s)
+            row = latest(s, test_id)
+            if not row or row.edit_version != body.expected_revision or row.state != 'draft':
+                raise HTTPException(409, 'AUTHORING_SAVE_CONFLICT')
+            entry = next((e for e in row.snapshot.get('domains', {}).get('answer', {}).get('entries', [])
+                          if e['id'] == entry_id), None)
+            key = entry.get('authoring_question_key') if entry else body.question_key
+            if entry_id.startswith('formal-entry:'):
+                key = entry_id.removeprefix('formal-entry:')
+            elif entry is None:
+                from uuid import UUID
+                if not entry_id.startswith('teacher-entry-'):
+                    raise ValueError('authoring_answer_candidate_missing')
+                UUID(entry_id.removeprefix('teacher-entry-'))
+            node = next((n for n in row.snapshot['nodes'] if n['stable_key'] == key), None)
+            if not node and (entry is None or key is not None):
+                raise HTTPException(404, 'AUTHORING_TARGET_MISSING')
             if body.offset is not None:
                 contract = {'candidate_id': body.candidate_id, 'split': True, 'confidence': 1,
                     'reason': 'semantic_boundary', 'parts': [{'start': 0, 'end': body.offset},
                         {'start': body.offset, 'end': len(body.text)}]}
             else:
                 if not callable(getattr(classifier, 'suggest_rubric_split', None)):
-                    raise HTTPException(503, {'error': {'code': 'RUBRIC_SPLIT_UNAVAILABLE'}})
-                node = next((n for n in context.snapshot['nodes'] if n['stable_key'] == entry.get('authoring_question_key')), None)
+                    raise HTTPException(503, {'error': {'code': 'RUBRIC_SPLIT_UNAVAILABLE',
+                        'message': 'AIによる分割案を利用できません。カーソル位置で分割するか、時間をおいて再試行してください。'}})
                 result = classifier.suggest_rubric_split(candidate_id=body.candidate_id, text=body.text,
                     question_label=node['label']['raw'] if node else '', segment_ids=[])
                 contract = {k: result[k] for k in ('candidate_id', 'split', 'confidence', 'reason')}
                 contract['parts'] = [{k: p[k] for k in ('start', 'end')} for p in result['parts']]
             return reconstruct_split(contract, body.candidate_id, body.text)
-        except (ValueError, KeyError) as exc:
-            question_error(exc)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(422 if isinstance(exc, (ValueError, KeyError)) else 503,
+                {'error': {'code': 'RUBRIC_SPLIT_FAILED',
+                    'message': '分割案を作成できませんでした。本文と分割位置を確認し、再試行してください。'}}) from exc
 
     @r.post('/tests/{test_id}/authoring/entries/{entry_id}/rubric-consolidate')
     def rubric_consolidate(test_id: str, entry_id: str, body: ConsolidationTool, s=Depends(db)):

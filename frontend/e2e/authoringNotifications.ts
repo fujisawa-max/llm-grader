@@ -28,3 +28,12 @@ export async function expectUnsavedAnalysisHint(page:Page,controls:Locator){
   await page.keyboard.press("Tab");
   await expect(tooltip).toBeHidden();
 }
+
+/** Wait for this Save, rather than an earlier still-visible success Toast. */
+export async function saveAuthoring(page:Page){
+  const response=page.waitForResponse(r=>r.request().method()==="PUT"&&/\/authoring$/.test(r.url()));
+  await page.getByRole("button",{name:"保存",exact:true}).first().click();
+  const saved=await response;expect(saved.status(),await saved.text()).toBe(200);
+  await expect(page.getByText("未保存の変更があります",{exact:true})).toHaveCount(0);
+  await expectSaveToast(page);
+}

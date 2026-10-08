@@ -32,9 +32,9 @@ test("whole-test drafts preserve local caret, materials, section state and forma
   expect(await editor.evaluate(el=>({caret:(el as HTMLTextAreaElement).selectionStart,same:el===(window as unknown as {authorEditor:HTMLTextAreaElement}).authorEditor}))).toEqual({caret:at,same:true});
   await page.getByRole("button",{name:"設問設定の変更",exact:true}).click();await page.getByRole("spinbutton",{name:/^配点/}).fill("10");await page.getByLabel("問題の表示切替",{exact:true}).getByRole("button",{name:"本文編集",exact:true}).click();
   await page.getByLabel("模範解答本文",{exact:true}).fill("Answer draft");
-  await page.getByRole("button",{name:"観点を追加"}).click();
-  await page.getByLabel("観点",{exact:true}).fill("Correct result");
-  await page.getByLabel("点数",{exact:true}).fill("10");
+  await page.getByRole("button",{name:"基準を追加"}).click();
+  await page.getByLabel(/^基準\d+の本文$/).fill("Correct result");
+  await page.getByLabel(/^基準\d+の配点$/).fill("10");
   await page.getByRole("checkbox",{name:"問題",exact:true}).uncheck();
   await expect(editor).toHaveCount(0);
   await page.getByRole("checkbox",{name:"問題",exact:true}).check();
@@ -46,7 +46,7 @@ test("whole-test drafts preserve local caret, materials, section state and forma
   await page.reload();await openAuthoringEditors(page);
   await expect(editor).toHaveValue(saved.revision.snapshot.nodes[0].body_text);
   await expect(page.getByLabel("模範解答本文",{exact:true})).toHaveValue("Answer draft");
-  await expect(page.getByLabel("観点",{exact:true})).toHaveValue("Correct result");
+  await expect(page.getByLabel(/^基準\d+の本文$/)).toHaveValue("Correct result");
   // Upload is explicit source registration, never extraction/classification.
   const source=await page.request.get(`/api/v1/tests/${process.env.MODEL_ANSWER_CLASSIFICATION_TEST_ID}/materials/${process.env.MODEL_ANSWER_CLASSIFICATION_MATERIAL_ID}/file`);
   expect(source.status()).toBe(200);
