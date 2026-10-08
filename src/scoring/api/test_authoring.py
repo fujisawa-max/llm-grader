@@ -275,6 +275,8 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
             sha = snapshot.get('domains', {}).get('question', {}).get('document', {}).get('source_pdf_sha256')
             if not material or material.test_id != test_id or material.material_type != 'question_sheet' or material.sha256 != sha:
                 raise HTTPException(409, 'AUTHORING_ANALYSIS_SOURCE_CHANGED')
+            from ..authoring_sources import merge_question_analysis
+            snapshot = merge_question_analysis(row.snapshot, snapshot)
             mark_analysis(snapshot, row.snapshot, material)
         row = apply_analysis_snapshot(s, row, snapshot, v.expected_edit_version,
             (v.preserve_previous or not v.analysis_material_id), baseline_hash(baseline))
@@ -456,11 +458,18 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
                     {'id': c['id'], 'text': c['description'], 'source_text': c['description'],
                      'category': 'rubric', 'confidence': 1} for c in criteria if not c.get('excluded')]}}
             return SimpleNamespace(snapshot=row.snapshot), entry, row
-        from ..test_authoring import replacement_problems
-        if any(p['domain'] == 'answer' for p in replacement_problems(row.snapshot)):
-            raise HTTPException(409, {'error': {'code': 'authoring_material_replaced'}})
+        # Resolve replacement state after binding the requested candidate to
+        # its own source draft. The combined Answer/Rubric domain may contain
+        # several materials; replacing one must not disable another role's
+        # candidates or diagram reuse.
         context = AuthoringAnswers(s, answer_root, row)
-        return context, context.entry(entry_id, question_id), row
+        try:
+            entry = context.entry(entry_id, question_id)
+        except ValueError as exc:
+            if str(exc) == 'authoring_material_replaced':
+                raise HTTPException(409, {'error': {'code': 'authoring_material_replaced'}}) from exc
+            raise
+        return context, entry, row
 
     def answer_diagram_view(engine, records, test_id, entry_id, question_id, reuse=False):
         from urllib.parse import urlencode

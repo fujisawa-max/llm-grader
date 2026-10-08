@@ -83,7 +83,8 @@ test("unmatched analysis is actionable and retained for explicit manual assignme
  await saveAuthoring(page);
  const tree=(await(await page.request.get(base+"/authoring")).json()).revision.snapshot.nodes;
  await confirmAnalysis(page,page.getByRole("group",{name:"利用資料の操作"}),"解析");
- await expect(page.getByRole("alert").filter({hasText:"解析結果を設問へ対応付けできませんでした"})).toBeVisible();
+ await expect(page.getByRole("alert").filter({hasText:"設問未割当の候補から確認・割当してください"})).toBeVisible();
+ await expect(page.getByLabel("対象設問",{exact:true})).toHaveValue("unassigned");
  const row=(await(await page.request.get(base+"/authoring")).json()).revision;expect(row.snapshot.nodes).toEqual(tree);expect(row.snapshot.domains.answer.analysis_result.assigned_count).toBe(0);expect(row.snapshot.domains.answer.entries.length).toBeGreaterThan(0);
  const count=await calls(page);await page.getByLabel("解答の表示切替",{exact:true}).first().getByRole("button",{name:"本文編集",exact:true}).click();await page.getByLabel("対応する設問",{exact:true}).first().selectOption(target);await saveAuthoring(page);
  expect(await calls(page)).toEqual(count);const saved=(await(await page.request.get(base+"/authoring")).json()).revision;expect(saved.snapshot.nodes).toEqual(tree);expect(saved.snapshot.answers[target].primary).toBeTruthy();

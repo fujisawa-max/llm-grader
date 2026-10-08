@@ -236,3 +236,66 @@ def test_explicit_keep_current_copy_acknowledges_external_token_on_save_and_resu
     again = fixture.client.put(path, json={'snapshot': saved.json()['snapshot'],
         'expected_edit_version': saved.json()['edit_version']})
     assert again.status_code == 200, again.text
+
+
+def test_question_analysis_merge_preserves_answer_rubric_and_sources():
+    from scoring.authoring_sources import merge_question_analysis
+
+    diagram = {'id': 'accepted-diagram', 'state': 'accepted', 'reuse_ref': 'artifact-ref'}
+    answer_entry = {'id': 'answer-1', 'authoring_question_key': 'removed-q', 'answer_text': 'Teacher answer',
+        'diagram_records': [diagram], 'source_draft_id': 'answer-draft', 'rubric_edits': [
+            {'id': 'criterion-1', 'description': 'Teacher rubric', 'points': 5}],
+        'rubric_merge_history': [[{'id': 'before-split', 'description': 'Old text', 'points': 5}]]}
+    answer_binding = {'draft_id': 'rubric-latest', 'revision': 4, 'material_id': 'rubric-material',
+        'source_sha256': 'rubric-sha', 'artifact_ref': 'rubric-artifact', 'material_role': 'rubric_source',
+        'entries': [answer_entry], 'sources': {
+            'answer-draft': {'draft_id': 'answer-draft', 'material_id': 'answer-material',
+                'source_sha256': 'answer-sha', 'artifact_ref': 'answer-artifact'},
+            'rubric-latest': {'draft_id': 'rubric-latest', 'material_id': 'rubric-material',
+                'source_sha256': 'rubric-sha', 'artifact_ref': 'rubric-artifact'}}}
+    current = {'metadata': {'name': 'teacher name'},
+        'nodes': [{'stable_key': 'q1', 'body_text': 'old'}, {'stable_key': 'removed-q', 'body_text': 'old target'}],
+        'question_text_buffers': {'q1': 'saved teacher question'},
+        'answers': {'q1': {'primary': 'Teacher answer', 'alternatives': ['Alternative'],
+                           'diagram_records': [diagram]}, 'removed-q': {'primary': 'recover me'}},
+        'rubrics': {'q1': answer_entry['rubric_edits'], 'removed-q': [{'id': 'lost', 'description': 'retain candidate', 'points': 2}]},
+        'rubric_histories': {'q1': answer_entry['rubric_merge_history'], 'removed-q': [['old']]},
+        'domains': {'question': {'document': {'id': 'old-review'}}, 'answer': answer_binding},
+        'materials': [{'id': 'answer-material'}, {'id': 'rubric-material'}],
+        'source_provenance': {'model_answers': ['formal stays'], 'authoring_origins': {
+            'tokens': {'question': {'id': 'old-q'}, 'answer': {'id': 'answer-token'}},
+            'identities': {'q1': {'formal_question_id': 'old-q'}},
+            'diagnostics': [{'domain': 'answer', 'id': 'answer-draft'}]}}}
+    analyzed = {'metadata': {'name': 'projection name'},
+        'nodes': [{'stable_key': 'q1', 'body_text': 'newly analyzed'}],
+        'answers': {'q1': {'primary': 'projection answer'}}, 'rubrics': {'q1': [{'id': 'projection-rubric'}]},
+        'domains': {'question': {'document': {'id': 'new-review'}}},
+        'source_provenance': {'authoring_origins': {'tokens': {
+            'question': {'id': 'new-q'}, 'answer': {'id': 'wrong-globally-latest-rubric'}},
+            'identities': {'q1': {'formal_question_id': 'new-q'}},
+            'diagnostics': [{'domain': 'answer', 'id': 'wrong-latest'}]}}}
+
+    result = merge_question_analysis(current, analyzed)
+    assert result['nodes'] == analyzed['nodes']
+    assert result['metadata'] == current['metadata']
+    assert 'question_text_buffers' not in result
+    assert result['domains']['question'] == analyzed['domains']['question']
+    assert {key: value for key, value in result['domains']['answer'].items() if key != 'entries'} == {key: value for key, value in current['domains']['answer'].items() if key != 'entries'}
+    assert result['answers'] == {'q1': current['answers']['q1']}
+    assert result['rubrics'] == {'q1': current['rubrics']['q1']}
+    assert result['rubric_histories'] == {'q1': current['rubric_histories']['q1']}
+    origins = result['source_provenance']['authoring_origins']
+    assert origins['tokens'] == {'question': {'id': 'new-q'}, 'answer': {'id': 'answer-token'}}
+    assert origins['diagnostics'] == [{'domain': 'answer', 'id': 'answer-draft'}]
+    assert result['source_provenance']['model_answers'] == ['formal stays']
+
+    # A removed Question target becomes recoverable/unassigned without losing
+    # its answer, accepted artifact, Rubric edits, or operation history.
+    unresolved = result['domains']['answer']['entries'][0]
+    assert unresolved['authoring_question_key'] is None
+    assert unresolved['disposition'] == 'unassigned'
+    assert unresolved['mapping_state'] == 'needs_review'
+    assert unresolved['answer_text'] == 'Teacher answer'
+    assert unresolved['diagram_records'] == [diagram]
+    assert unresolved['rubric_edits'] == answer_entry['rubric_edits']
+    assert unresolved['rubric_merge_history'] == answer_entry['rubric_merge_history']

@@ -251,3 +251,5 @@ dialog.authoring-proposal-dialog[open]{display:flex;flex-direction:column}
 dialog.authoring-proposal-dialog::backdrop{background:#0006}
 .authoring-dialog-body{overflow:auto;min-height:0;overscroll-behavior:contain}
 .authoring-proposal-dialog h2,.authoring-proposal-dialog .authoring-analysis-dialog-actions{flex-shrink:0}
+.authoring-analysis-progress{display:flex;align-items:center;gap:8px;padding:8px 12px;border-left:3px solid var(--accent,#4772b3);background:#f3f6fa}
+.authoring-analysis-progress .muted{font-size:.9em}

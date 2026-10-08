@@ -122,6 +122,27 @@ def test_split_children_share_confirmed_parent_diagram_without_formal_ids(worksp
         'expected_edit_version': row['edit_version']})
     assert result.status_code == 200, result.text
     row = result.json()
+    # Replacing only the Rubric binding must not block a sibling diagram
+    # lookup that is still bound to the original Answer source.
+    from scoring.db.models import TestMaterial
+    with w.sf() as session:
+        old_rubric = session.get(TestMaterial, rubric.json()['id'])
+        replacement = TestMaterial(test_id=w.answer['test_id'], material_type='rubric_source',
+            original_filename='rubric-v2.pdf', mime_type='application/pdf',
+            storage_ref=old_rubric.storage_ref, sha256='b'*64)
+        session.add(replacement)
+        session.flush()
+        replacement_ref = {'id': replacement.id, 'role': replacement.material_type,
+            'sha256': replacement.sha256, 'replaces_material_id': old_rubric.id}
+        session.commit()
+    replaced_rubric_snapshot = deepcopy(row['snapshot'])
+    replaced_rubric_snapshot['materials'].append(replacement_ref)
+    row = save(w, path, row, replaced_rubric_snapshot)
+    with patch('scoring.diagram_regions.DiagramRegionExtractor.candidates') as discovery:
+        result = w.client.get(path+f'/entries/{second["id"]}/diagrams?question_id={children[1]["stable_key"]}&scope=reuse')
+    assert result.status_code == 200, result.text
+    discovery.assert_not_called()
+    assert result.json()['reusable_diagrams'][0]['crop_sha256'] == source['crop_sha256']
     fresh = manual(children[1]['stable_key'])
     with patch('scoring.diagram_regions.DiagramRegionExtractor.candidates') as discovery:
         result = w.client.get(path+f'/entries/{fresh["id"]}/diagrams?question_id={children[1]["stable_key"]}&scope=reuse')
@@ -405,7 +426,7 @@ def test_cross_material_merge_preserves_answer_rubric_sources_and_unresolved():
     assert snapshot['nodes'] == original_nodes
     assert snapshot['answers']['leaf']['primary'] == 'correct answer'
     assert snapshot['rubrics']['leaf'][0]['description'] == 'criterion'
-    assert result == {'status': 'partial', 'assigned_count': 1, 'unresolved_count': 1, 'candidate_count': 2}
+    assert result == {'status': 'partial', 'assigned_count': 1, 'unresolved_count': 1, 'candidate_count': 2, 'fallback_count': 0}
     bound = snapshot['domains']['answer']
     assert bound['sources']['answer']['material_id'] == 'pdf-a'
     assert next(e for e in bound['entries'] if e['id'] == 'a')['source_draft_id'] == 'answer'
@@ -414,6 +435,118 @@ def test_cross_material_merge_preserves_answer_rubric_sources_and_unresolved():
     assert zero['status'] == 'needs_assignment' and zero['assigned_count'] == 0
     assert snapshot['nodes'] == original_nodes
 
+
+
+
+def test_answer_reanalysis_retains_teacher_rubric_edits_on_same_source():
+    from types import SimpleNamespace
+    from scoring.authoring_sources import merge_answer_analysis
+    snapshot = {'nodes': [{'stable_key': 'leaf', 'parent_key': None, 'included': True,
+        'label': {'raw': '問題1'}, 'body_text': 'Question', 'node_type': 'major_question',
+        'ordered_content': [], 'sort_order': 0, 'score_semantics': 'direct', 'score_points': 5}],
+        'source_provenance': {}, 'answers': {}, 'rubrics': {'leaf': [{'id': 'criterion', 'description': 'teacher rubric', 'points': 5}]}}
+    def draft(identifier, entries):
+        return SimpleNamespace(id=identifier, material_id='answer-material', revision=1,
+            source_sha256='same-sha', artifact_ref=identifier, snapshot={'entries': entries})
+    original = {'id': 'old-entry', 'question_id': 'leaf', 'authoring_question_key': 'leaf',
+        'answer_text': 'old answer', 'answer_kind': 'primary', 'rubric_edits': [
+            {'id': 'criterion', 'description': 'teacher rubric', 'points': 5, 'segment_ids': ['s1']}],
+        'rubric_merge_history': [[{'id': 'previous', 'description': 'before edit', 'points': 5}]],
+        'source': {'kind': 'native', 'segments': []}, 'semantic_classification': {
+            'status': 'teacher_reviewed', 'segments': [{'id': 's1', 'text': 'teacher rubric', 'category': 'rubric'}]}}
+    merge_answer_analysis(snapshot, draft('old-draft', [original]), 'model_answer_source')
+    fresh = {'id': 'fresh-entry', 'question_id': 'leaf', 'answer_text': 'new answer', 'answer_kind': 'primary',
+        'source': {'kind': 'native', 'segments': []}}
+    merge_answer_analysis(snapshot, draft('fresh-draft', [fresh]), 'model_answer_source')
+    rubric_only = next(entry for entry in snapshot['domains']['answer']['entries'] if entry['id'] == 'old-entry')
+    assert rubric_only['rubric_only_preserved'] is True
+    assert rubric_only['rubric_edits'] == original['rubric_edits']
+    assert rubric_only['rubric_merge_history'] == original['rubric_merge_history']
+    assert rubric_only['source_draft_id'] == 'old-draft'
+    assert snapshot['answers']['leaf']['primary'] == 'new answer'
+    assert snapshot['rubrics']['leaf'] == [{'id': 'criterion', 'description': 'teacher rubric', 'points': 5}]
+
+
+def test_answer_classifier_fallback_retains_teacher_answer_and_reports_warning():
+    from types import SimpleNamespace
+    from scoring.authoring_sources import merge_answer_analysis
+    original = {'id': 'old-entry', 'question_id': 'leaf', 'authoring_question_key': 'leaf',
+        'answer_text': 'teacher-corrected answer', 'answer_kind': 'primary',
+        'teacher_correction': {'teacher_confirmed': True, 'answer_text': 'teacher-corrected answer'},
+        'source': {'kind': 'native', 'segments': []}, 'semantic_classification': {'status': 'classified'}}
+    snapshot = {'nodes': [{'stable_key': 'leaf', 'parent_key': None, 'included': True,
+        'label': {'raw': '問題1'}, 'body_text': 'Question', 'node_type': 'major_question',
+        'ordered_content': [], 'sort_order': 0, 'score_semantics': 'direct', 'score_points': 5}],
+        'source_provenance': {}, 'answers': {'leaf': {'primary': original['answer_text'],
+            'alternatives': [], 'diagram_records': []}}, 'rubrics': {}, 'domains': {'answer': {
+                'draft_id': 'old-draft', 'revision': 1, 'material_id': 'answer-material',
+                'source_sha256': 'same-sha', 'artifact_ref': 'old-artifact', 'entries': [original], 'sources': {}}}}
+    failed_candidate = {'id': 'fresh-entry', 'question_id': 'leaf', 'authoring_question_key': 'leaf',
+        'answer_text': 'native extraction after failed classification', 'answer_kind': 'primary',
+        'source': {'kind': 'native', 'segments': []}, 'semantic_classification': {
+            'status': 'fallback', 'reason': 'classification_failed', 'candidate_text': 'native extraction'}}
+    failed_draft = SimpleNamespace(id='fresh-draft', material_id='answer-material', revision=1,
+        source_sha256='same-sha', artifact_ref='fresh-artifact', snapshot={
+            'pipeline': {'status': 'fallback', 'semantic_classification_fallback': True},
+            'entries': [failed_candidate]})
+
+    result = merge_answer_analysis(snapshot, failed_draft, 'model_answer_source')
+
+    assert result['fallback_count'] == 1
+    assert result['candidate_count'] == 1
+    assert snapshot['answers']['leaf']['primary'] == 'teacher-corrected answer'
+    retained = next(e for e in snapshot['domains']['answer']['entries'] if e['id'] == 'old-entry')
+    assert retained['teacher_correction'] == original['teacher_correction']
+    assert retained['source_draft_id'] == 'old-draft'
+
+def test_rubric_analysis_counts_only_criteria_like_segments_and_retains_uncertain():
+    from types import SimpleNamespace
+    from scoring.authoring_sources import merge_answer_analysis
+    snapshot = {'nodes': [{'stable_key': 'leaf', 'parent_key': None, 'included': True,
+        'label': {'raw': '問題1'}, 'body_text': 'Question', 'node_type': 'major_question',
+        'ordered_content': [], 'sort_order': 0, 'score_semantics': 'direct', 'score_points': 5}],
+        'source_provenance': {}, 'answers': {}, 'rubrics': {'leaf': [{'id': 'old', 'description': 'saved rubric', 'points': 5}]}}
+    entries = [
+        {'id': 'mapped', 'question_id': 'leaf', 'answer_text': 'ignored', 'semantic_classification': {
+            'segments': [{'id': 'r1', 'text': '5点：条件を説明する', 'category': 'rubric', 'confidence': .9}],
+            'rubric_groups': []}},
+        {'id': 'uncertain-unmapped', 'question_id': 'other', 'answer_text': 'noise', 'semantic_classification': {
+            'status': 'needs_teacher_review', 'segments': [{'id': 'u1', 'text': '条件を説明する', 'category': 'uncertain', 'confidence': .4}]}},
+        {'id': 'noise', 'question_id': 'leaf', 'answer_text': 'noise', 'semantic_classification': {
+            'segments': [{'id': 'n1', 'text': '問題文の再掲', 'category': 'question', 'confidence': .99}]}}
+    ]
+    draft = SimpleNamespace(id='rubric-draft', material_id='rubric-pdf', revision=1,
+        source_sha256='rubric-sha', artifact_ref='rubric-ir', snapshot={'entries': entries})
+    outcome = merge_answer_analysis(snapshot, draft, 'rubric_source')
+    assert outcome == {'status': 'partial', 'assigned_count': 1, 'unresolved_count': 1, 'candidate_count': 2, 'fallback_count': 0}
+    retained = snapshot['domains']['answer']['entries']
+    assert len(retained) == 3
+    assert next(entry for entry in retained if entry['id'] == 'uncertain-unmapped')['authoring_question_key'] is None
+    assert snapshot['answers'] == {}
+    assert snapshot['rubrics']['leaf'] == [{'id': 'old', 'description': 'saved rubric', 'points': 5}]
+
+
+
+def test_rubric_analysis_with_only_noise_reports_zero_and_preserves_existing_criteria():
+    from types import SimpleNamespace
+    from scoring.authoring_sources import merge_answer_analysis
+    snapshot = {'nodes': [{'stable_key': 'leaf', 'parent_key': None, 'included': True,
+        'label': {'raw': '問題1'}, 'body_text': 'Question', 'node_type': 'major_question',
+        'ordered_content': [], 'sort_order': 0, 'score_semantics': 'direct', 'score_points': 5}],
+        'source_provenance': {}, 'answers': {'leaf': {'primary': 'answer', 'alternatives': [], 'diagram_records': []}},
+        'rubrics': {'leaf': [{'id': 'old', 'description': 'saved rubric', 'points': 5}]}}
+    draft = SimpleNamespace(id='rubric-empty', material_id='rubric-pdf', revision=2,
+        source_sha256='rubric-sha', artifact_ref='rubric-ir', snapshot={'entries': [
+            {'id': 'noise', 'question_id': 'leaf', 'answer_text': 'question restatement',
+             'semantic_classification': {'segments': [
+                 {'id': 'q', 'text': 'question restatement', 'category': 'question', 'confidence': .99}]}},
+            {'id': 'fallback', 'question_id': 'leaf', 'answer_text': 'raw extracted text',
+             'semantic_classification': {'status': 'fallback', 'segments': [
+                 {'id': 'fallback-u', 'text': 'raw extracted text', 'category': 'uncertain', 'confidence': 0}]}}]})
+    result = merge_answer_analysis(snapshot, draft, 'rubric_source')
+    assert result == {'status': 'no_candidates', 'assigned_count': 0, 'unresolved_count': 0, 'candidate_count': 0, 'fallback_count': 1}
+    assert snapshot['answers']['leaf']['primary'] == 'answer'
+    assert snapshot['rubrics']['leaf'] == [{'id': 'old', 'description': 'saved rubric', 'points': 5}]
 
 def test_source_import_after_teacher_structure_change_does_not_restore_legacy_tree(workspace):
     w = workspace

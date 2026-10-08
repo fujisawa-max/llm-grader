@@ -146,6 +146,58 @@ def source_projection(session, test, formal, question_root, answer_root):
     return result
 
 
+
+def merge_question_analysis(current, analyzed):
+    """Apply a Question-source projection without replacing Answer/Rubric state.
+
+    Question analysis may intentionally refresh the question tree. The other
+    authoring domains, their source bindings, and teacher operations remain the
+    current revision's authoritative state. Candidates whose target no longer
+    exists are kept for teacher recovery as unassigned candidates.
+    """
+    result = deepcopy(current)
+    result['nodes'] = deepcopy(analyzed['nodes'])
+    result.pop('question_text_buffers', None)
+    result['domains'] = deepcopy(current.get('domains', {}))
+    analyzed_question = analyzed.get('domains', {}).get('question')
+    if analyzed_question is not None:
+        result['domains']['question'] = deepcopy(analyzed_question)
+
+    keys = {node['stable_key'] for node in result['nodes']}
+    answer_domain = result['domains'].get('answer')
+    if answer_domain:
+        for entry in answer_domain.get('entries', []):
+            target = entry.get('authoring_question_key')
+            if target is not None and target not in keys:
+                entry['authoring_question_key'] = None
+                entry['disposition'] = 'unassigned'
+                entry['mapping_state'] = 'needs_review'
+    result['answers'] = {key: deepcopy(value) for key, value in current.get('answers', {}).items()
+                         if key in keys}
+    result['rubrics'] = {key: deepcopy(value) for key, value in current.get('rubrics', {}).items()
+                         if key in keys}
+    if 'rubric_histories' in current:
+        result['rubric_histories'] = {key: deepcopy(value) for key, value in current['rubric_histories'].items()
+                                      if key in keys}
+
+    # Keep source identity for Answer and update only the explicitly analyzed
+    # Question review token/identity map. The returned projection may have
+    # selected a globally recent Answer import, which is irrelevant here.
+    current_origins = deepcopy(current.get('source_provenance', {}).get('authoring_origins', {}))
+    analyzed_origins = analyzed.get('source_provenance', {}).get('authoring_origins', {})
+    if analyzed_origins.get('identities') is not None:
+        current_origins['identities'] = deepcopy(analyzed_origins['identities'])
+    if analyzed_origins.get('tokens', {}).get('question') is not None:
+        current_origins.setdefault('tokens', {})['question'] = deepcopy(analyzed_origins['tokens']['question'])
+        current_origins.pop('pending_question_review', None)
+    diagnostics = [item for item in current_origins.get('diagnostics', []) if item.get('domain') != 'question']
+    diagnostics.extend(item for item in analyzed_origins.get('diagnostics', []) if item.get('domain') == 'question')
+    if diagnostics or 'diagnostics' in current_origins:
+        current_origins['diagnostics'] = diagnostics
+    result.setdefault('source_provenance', {})['authoring_origins'] = current_origins
+    return result
+
+
 def validate_domains(value, previous):
     from .test_authoring import AuthoringError
     domains, old = value.get('domains'), previous['domains']
@@ -245,33 +297,88 @@ def merge_answer_analysis(snapshot, draft, material_role=None):
         sources[old['draft_id']] = {k: deepcopy(v) for k, v in old.items()
                                   if k not in {'entries', 'sources', 'analysis_result'}}
     retained = []
+    incoming_by_id = {entry['id']: entry for entry in entries}
     for entry in old.get('entries', []):
         source_id = entry.get('source_draft_id', old.get('draft_id'))
         source = sources.get(source_id, {})
         # Reanalysis supersedes only this material; other sources remain intact.
         if source.get('material_id') != draft.material_id:
             retained.append({**deepcopy(entry), 'source_draft_id': source_id})
-        elif (source.get('source_sha256') == draft.source_sha256
-                and any(r.get('state') == 'accepted' for r in entry.get('diagram_records', []))):
-            # Keep verified assignments on their original native artifact context.
-            # Fresh text/criteria come from the new role-specific analysis.
-            incoming = next((e for e in entries if e['id'] == entry['id']), None)
-            if incoming is not None:
-                incoming['diagram_records'] = deepcopy(entry['diagram_records'])
-                continue
-            preserved = {**deepcopy(entry), 'source_draft_id': source_id,
-                'answer_text': '', 'answer_kind': 'alternative', 'rubric_edits': [],
-                'semantic_classification': None, 'analysis_preserved_diagram': True}
-            for field in ('manual_alternative_answers', 'rubric_consolidated_groups', 'rubric_merge_history'):
-                preserved.pop(field, None)
+            continue
+        if source.get('source_sha256') != draft.source_sha256:
+            continue
+        incoming = incoming_by_id.get(entry['id'])
+        # Rubric edits live on source-bound candidate entries. Answer reanalysis
+        # may replace those entries, so explicitly carry the independently owned
+        # Rubric decisions forward when the native entry identity is stable.
+        rubric_fields = ('rubric_edits', 'rubric_consolidated_groups', 'rubric_merge_history')
+        if incoming is not None:
+            for field in rubric_fields:
+                if field in entry:
+                    incoming[field] = deepcopy(entry[field])
+        accepted_diagrams = any(r.get('state') == 'accepted' for r in entry.get('diagram_records', []))
+        classification = entry.get('semantic_classification') or {}
+        teacher_answer_work = bool(entry.get('teacher_correction')) or (
+            classification.get('status') == 'teacher_reviewed' and any(
+                segment.get('category') in {'model_answer', 'alternative_answer'}
+                for segment in classification.get('segments', [])))
+        teacher_rubric_work = bool(entry.get('rubric_edits')) or (
+            classification.get('status') == 'teacher_reviewed' and any(
+                segment.get('category') in {'rubric', 'uncertain'}
+                for segment in classification.get('segments', [])))
+        incoming_classification = (incoming or {}).get('semantic_classification') or {}
+        if incoming is not None and teacher_answer_work and incoming_classification.get('status') == 'fallback':
+            # A failed classifier response is not an answer update. Keep the
+            # teacher-owned answer on the source-matched candidate even when
+            # native extraction assigned it a new candidate ID.
+            incoming['answer_text'] = entry.get('answer_text', '')
+            incoming['answer_kind'] = entry.get('answer_kind', 'primary')
+            if entry.get('teacher_correction'):
+                incoming['teacher_correction'] = deepcopy(entry['teacher_correction'])
+            if classification.get('status') == 'teacher_reviewed':
+                incoming['semantic_classification'] = deepcopy(classification)
+        if incoming is not None and accepted_diagrams:
+            incoming['diagram_records'] = deepcopy(entry['diagram_records'])
+        elif incoming is None and (accepted_diagrams or teacher_rubric_work or teacher_answer_work):
+            # Native extraction creates fresh entry UUIDs. Retain teacher-owned
+            # Answer/Rubric work on its original source identity; do not silently
+            # lose it just because reanalysis returned new geometry candidates.
+            preserved = {**deepcopy(entry), 'source_draft_id': source_id}
+            if not teacher_answer_work:
+                preserved.update(answer_text='', answer_kind='alternative')
+            if not teacher_rubric_work and not teacher_answer_work:
+                # Accepted diagrams outlive analysis only as verified image
+                # assignments; unrelated old classifier output is superseded.
+                preserved.update(rubric_edits=[], semantic_classification=None)
+                for field in rubric_fields + ('manual_alternative_answers',):
+                    preserved.pop(field, None)
+            if not accepted_diagrams and not teacher_answer_work:
+                preserved['diagram_records'] = []
+                if teacher_rubric_work:
+                    preserved['rubric_only_preserved'] = True
             retained.append(preserved)
     used_sources = {e['source_draft_id'] for e in retained}
     sources = {k: v for k, v in sources.items() if k in used_sources}
-    assigned = sum(bool(e['authoring_question_key']) for e in entries)
-    result = {'status': 'assigned' if assigned == len(entries) and assigned else
-              'partial' if assigned else 'needs_assignment',
-              'assigned_count': assigned, 'unresolved_count': len(entries)-assigned,
-              'candidate_count': len(entries)}
+    if material_role == 'rubric_source':
+        candidates = [(entry, segment) for entry in entries
+            for segment in (entry.get('semantic_classification') or {}).get('segments', [])
+            if segment.get('category') == 'rubric' or
+            (segment.get('category') == 'uncertain' and
+             (entry.get('semantic_classification') or {}).get('status') in
+             {'classified', 'needs_teacher_review', 'teacher_reviewed'})]
+        assigned = sum(bool(entry.get('authoring_question_key')) for entry, _ in candidates)
+        candidate_count = len(candidates)
+    else:
+        assigned = sum(bool(e['authoring_question_key']) for e in entries)
+        candidate_count = len(entries)
+    fallback_count = sum(1 for entry in entries if
+        (entry.get('semantic_classification') or {}).get('status') == 'fallback' or
+        (entry.get('semantic_classification') or {}).get('retry_error'))
+    result = {'status': 'no_candidates' if not candidate_count else
+              'assigned' if assigned == candidate_count else 'partial' if assigned else 'needs_assignment',
+              'assigned_count': assigned, 'unresolved_count': candidate_count-assigned,
+              'fallback_count': fallback_count,
+              'candidate_count': candidate_count}
     snapshot.setdefault('domains', {})['answer'] = {
         'draft_id': draft.id, 'revision': draft.revision, 'material_id': draft.material_id,
         'source_sha256': draft.source_sha256, 'artifact_ref': draft.artifact_ref,
@@ -290,5 +397,9 @@ def merge_answer_analysis(snapshot, draft, material_role=None):
                 'diagram_records': deepcopy(primary.get('diagram_records', [])) if primary else []}
         if any(has_rubric_state(e) for e in current) and (material_role != 'model_answer_source' or key not in snapshot['rubrics']):
             rubric_current = entries if material_role == 'rubric_source' else current
-            snapshot['rubrics'][key] = [c for e in rubric_current if e.get('authoring_question_key') == key for c in rubric_projection(e)]
+            projected = [c for e in rubric_current if e.get('authoring_question_key') == key for c in rubric_projection(e)]
+            # A fresh role analysis with only unresolved classifier segments is
+            # not evidence that the teacher's existing criteria should be erased.
+            if projected:
+                snapshot['rubrics'][key] = projected
     return result

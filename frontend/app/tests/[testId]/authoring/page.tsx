@@ -60,6 +60,7 @@ export default function TestAuthoringPage() {
   const [materials,setMaterials]=useState<Material[]>([]),[materialId,setMaterialId]=useState("");
   const [editing,setEditing]=useState({question:false,answer:false,rubric:false});
   const [analyzing,setAnalyzing]=useState(false);
+  const [analysisProgress,setAnalysisProgress]=useState<string|null>(null);
   const [sourceMode,setSourceMode]=useState<"pdf"|"add"|"manage">("pdf");
   const [questionSettings,setQuestionSettings]=useState(false);
   const [replacement,setReplacement]=useState<string|null>(null);
@@ -173,7 +174,7 @@ export default function TestAuthoringPage() {
     if(!revision||!requestedMaterialId||dirty){setError("資料を選び、現在の変更を保存してから解析してください。");return;}
     const requestedMaterial=materials.find(m=>m.id===requestedMaterialId);
     const materialRole=requestedMaterial?.material_type;
-    setBusy(true);setAnalyzing(true);setError("");
+    setBusy(true);setAnalyzing(true);setAnalysisProgress(materialRole==="question_sheet"?"問題":materialRole==="rubric_source"?"採点基準":"模範解答");setError("");
     try{
       let row:AuthoringRevision;
       if(domain==="answer")row=await testAuthoring.analyzeAnswer(id,requestedMaterialId,revision.edit_version,true);
@@ -194,12 +195,14 @@ export default function TestAuthoringPage() {
         setVisible(v=>({...v,answer:true,rubric:true}));
         const detail=`対応済み${outcome.assigned_count}件 / 未対応${outcome.unresolved_count}件`;
         const title=materialRole==="rubric_source"?"採点基準を解析しました":"模範解答を解析しました";
-        if(!outcome.assigned_count){setSelected("unassigned");const message=`解析結果を設問へ対応付けできませんでした。設問未割当の候補から${materialRole==="rubric_source"?"採点基準":"模範解答"}を選択してください。`;setError(message);notify("warning",title,`${detail}。未対応候補を確認してください。`);}
+        if(!outcome.candidate_count){const target=row.snapshot.nodes.find(n=>n.included&&!row.snapshot.nodes.some(child=>child.included&&child.parent_key===n.stable_key))?.stable_key||row.snapshot.nodes[0]?.stable_key||"all";setSelected(target);const message=materialRole==="rubric_source"?"自動抽出できる採点基準候補がありませんでした。設問を選択し、採点基準を手動で追加してください。":"自動抽出できる模範解答候補がありませんでした。必要なら設問ごとに手動で追加してください。";setError(message);notify("warning",title,message);}
+        else if(outcome.fallback_count){if(!outcome.assigned_count)setSelected("unassigned");const message=`${outcome.fallback_count}件の候補を自動分類できませんでした。${outcome.assigned_count?"候補を確認してください。":"設問未割当の候補から確認・割当してください。"}`;setError(message);notify("warning",title,`${detail}。${message}`);}
+        else if(!outcome.assigned_count){setSelected("unassigned");const message=`解析結果を設問へ対応付けできませんでした。設問未割当の候補から${materialRole==="rubric_source"?"採点基準":"模範解答"}を選択してください。`;setError(message);notify("warning",title,`${detail}。未対応候補を確認してください。`);}
         else if(outcome.unresolved_count)notify("warning",title,detail);
         else notify("success",title,detail);
       }else if(materialRole==="rubric_source")notify("success","採点基準を解析しました");
       else notify("success","問題用紙の解析が完了しました","問題文・小問構成を更新する場合があります。模範解答・採点基準は保持されます。");
-    }catch(e){const message=`資料を解析できませんでした。保存済みの下書きは保持されています。資料を確認して再試行してください。${e instanceof Error?` (${e.message})`:""}`;setError(message);notify("error","解析に失敗しました",message);}finally{setBusy(false);setAnalyzing(false);}
+    }catch(e){const message=`資料を解析できませんでした。保存済みの下書きは保持されています。資料を確認して再試行してください。${e instanceof Error?` (${e.message})`:""}`;setError(message);notify("error","解析に失敗しました",message);}finally{setBusy(false);setAnalyzing(false);setAnalysisProgress(null);}
   }
   async function begin(){setBusy(true);setError("");try{
     const row=await testAuthoring.begin(id);setRevision(row);setSnapshot(row.snapshot);setDirty(false);setDirtyDomains({});
@@ -285,9 +288,11 @@ export default function TestAuthoringPage() {
   const criteria=snapshot.rubrics[selected]||[];
   const hasRubricState=(entry:AuthoringEntry)=>entry.rubric_edits!==undefined||entry.semantic_classification?.segments.some(s=>s.category==="rubric");
   const formalRubricFallback=!!criteria.length&&!snapshot.domains?.answer?.entries.some(e=>e.authoring_question_key===selected&&hasRubricState(e));
-  const superseded=snapshot.materials.filter(m=>m.replaces_material_id).map(m=>snapshot.materials.find(old=>old.id===m.replaces_material_id));
-  const questionStale=!!questionDomain&&superseded.some(m=>m?.role==="question_sheet"&&m.sha256===questionDomain.document.source_pdf_sha256);
-  const answerStale=!!snapshot.domains?.answer&&superseded.some(m=>m?.id===snapshot.domains?.answer?.material_id);
+  const supersededMaterialIds=new Set(snapshot.materials.map(m=>m.replaces_material_id).filter((id):id is string=>!!id));
+  const questionStale=!!questionDomain&&snapshot.materials.some(m=>m.role==="question_sheet"&&m.sha256===questionDomain.document.source_pdf_sha256&&supersededMaterialIds.has(m.id));
+  const answerSources=snapshot.domains?.answer?{[snapshot.domains.answer.draft_id]:snapshot.domains.answer,...snapshot.domains.answer.sources}:{};
+  const staleAnswerSourceDraftIds=Object.entries(answerSources).filter(([,source])=>supersededMaterialIds.has(source.material_id)).map(([draftId])=>draftId);
+  const answerStale=staleAnswerSourceDraftIds.length>0;
   const viewed=materials.find(m=>m.id===materialId);
   const analysisDomain=viewed?.material_type==="question_sheet"?"question":
     viewed&&["model_answer_source","rubric_source"].includes(viewed.material_type)?"answer":undefined;
@@ -316,7 +321,7 @@ export default function TestAuthoringPage() {
     {error&&<p role="alert" className="error">{error}</p>}
     {sourceWarnings.length>0&&<section aria-label="保存済み内容の出典確認" className="authoring-source-notice" role="status"><p>⚠ 元資料との対応に確認が必要な設問があります。編集内容は保存されています。</p>{sourceWarnings.map((w,i)=><div key={i}><span>{w.message}</span>{w.question_key&&<button onClick={()=>navigate({question_key:w.question_key,section:"question",field:"source",message:w.message})}>確認する</button>}</div>)}</section>}
     {(sourceProblems.length>0||questionStale||answerStale)&&<p role="alert">元PDFとの対応が無効になっています。資料と保存済みレビューを確認し、必要なら明示的に再解析してください。</p>}
-    {readiness.state!=="unsaved_changes"&&analysisReason&&<p id="authoring-analysis-reason" role="status">選択資料の解析: {analysisReason}</p>}{analyzing&&<p role="status">選択資料を解析しています。完了までお待ちください。</p>}
+    {readiness.state!=="unsaved_changes"&&analysisReason&&<p id="authoring-analysis-reason" role="status">選択資料の解析: {analysisReason}</p>}{analyzing&&<p className="authoring-analysis-progress" role="status" aria-live="polite"><span className="spinner" aria-hidden="true"/>{analysisProgress}を解析しています… <span className="muted">元資料を確認し、候補を更新しています。</span></p>}
     <ReviewWorkspaceLayout actions={<div className="review-toolbar" aria-busy={busy}>
       {readonly?<button className="button" disabled={busy} onClick={begin}>修正版を作成</button>:<button className="button" disabled={busy||!dirty} onClick={save}>{saving?"保存中…":"保存"}</button>}
       {!readonly&&<button disabled={busy} onClick={importSources}>保存済みレビューを取り込む</button>}
@@ -417,7 +422,7 @@ export default function TestAuthoringPage() {
         </AuthoringPreviewEditor></section>}
         {snapshot.domains?.answer&&(visible.answer||visible.rubric)&&revision&&<section id="authoring-answer" tabIndex={-1} aria-label="解答・採点基準"><span id="authoring-rubric" tabIndex={-1}/><h2>解答・採点基準</h2>
           <AuthoringCandidates key={snapshot.domains.answer.draft_id} testId={id} draftId={snapshot.domains.answer.draft_id} revision={revision.edit_version} questionKey={selected}
-            sourceStale={answerStale} entries={snapshot.domains.answer.entries} savedEntries={revision.snapshot.domains?.answer?.entries||[]} disabled={readonly||saving||analyzing}
+            staleSourceDraftIds={staleAnswerSourceDraftIds} entries={snapshot.domains.answer.entries} savedEntries={revision.snapshot.domains?.answer?.entries||[]} disabled={readonly||saving||analyzing}
             answerEditing={editing.answer} rubricEditing={editing.rubric} onAnswerEditing={value=>setEditing(v=>({...v,answer:value}))} onRubricEditing={value=>setEditing(v=>({...v,rubric:value}))}
             showAnswer={visible.answer} showRubric={visible.rubric&&!formalRubricFallback} questions={orderedNodes().map(n=>({key:n.stable_key,label:pathFor(n.stable_key),gradable:!nodes.some(c=>c.included&&c.parent_key===n.stable_key),sourceId:snapshot.source_provenance.authoring_origins?.identities[n.stable_key]?.formal_question_id||n.stable_key}))}
             onSelect={setDiagramSelection} onChange={(rawEntries,domain)=>{
