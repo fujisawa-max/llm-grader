@@ -5,12 +5,16 @@ from ..domain_adapter import DomainGradingJobAdapter
 from ..grading_context import GradingReadinessService, ContextError, asset_path
 from fastapi.responses import FileResponse
 from pathlib import Path
+from pydantic import BaseModel
 from ..db.models import *
 from ..pdf_native import sha256_file
 from .schemas import (UserCreate, CourseCreate, CourseUpdate, OfferingCreate, OfferingUpdate,
                       TestCreate, TestUpdate, QuestionCreate, QuestionUpdate, MaterialCreate,
                       ModelAnswerCreate, PolicyCreate, SampleAnswerCreate, SampleScoreCreate,
                       StudentCreate, SubmissionCreate, RubricCreate, RubricApprove)
+
+class MaterialReuse(BaseModel):
+    material_type: str
 
 def router(db, artifact_root=None, allowed_roots=None, grading_visual_config=None,
            storage_root=None):
@@ -177,6 +181,18 @@ def router(db, artifact_root=None, allowed_roots=None, grading_visual_config=Non
                 request.headers.get("content-type", "").split(";")[0], bytes(data))
             s.commit()
             return {**obj(material), "page_count": count, "reused": reused}
+        except ValueError as exc:
+            s.rollback()
+            raise HTTPException(422, str(exc)) from exc
+
+    @r.post("/tests/{tid}/materials/{mid}/reuse", status_code=201)
+    def material_reuse(tid: str, mid: str, body: MaterialReuse, s=Depends(db)):
+        owned_test_or_error(tid, s)
+        from ..source_registration import reuse_source
+        try:
+            material, reused = reuse_source(s, storage_root or artifact_root, tid, mid, body.material_type, allowed_roots)
+            s.commit()
+            return {**obj(material), 'reused': reused}
         except ValueError as exc:
             s.rollback()
             raise HTTPException(422, str(exc)) from exc

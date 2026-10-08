@@ -112,6 +112,29 @@ def test_split_children_share_confirmed_parent_diagram_without_formal_ids(worksp
     assert w.client.get(path).json()['revision'] == row
     assert len(w.client.get(f'/api/v1/tests/{w.answer["test_id"]}/questions').json()) == 2
 
+    # The latest import can be a Rubric over the same PDF. New manual Answer
+    # entries must still bind to the Answer source, not the latest Rubric draft.
+    material_base = f'/api/v1/tests/{w.answer["test_id"]}/materials'
+    rubric = w.client.post(material_base+f'/{w.answer["material_id"]}/reuse',
+        json={'material_type': 'rubric_source'})
+    assert rubric.status_code == 201, rubric.text
+    result = w.client.post(path+'/analyze-answer', json={'material_id': rubric.json()['id'],
+        'expected_edit_version': row['edit_version']})
+    assert result.status_code == 200, result.text
+    row = result.json()
+    fresh = manual(children[1]['stable_key'])
+    with patch('scoring.diagram_regions.DiagramRegionExtractor.candidates') as discovery:
+        result = w.client.get(path+f'/entries/{fresh["id"]}/diagrams?question_id={children[1]["stable_key"]}&scope=reuse')
+    assert result.status_code == 200, result.text
+    discovery.assert_not_called()
+    assert result.json()['reusable_diagrams'][0]['crop_sha256'] == source['crop_sha256']
+    fresh['source_draft_id'] = w.answer['id']
+    fresh['diagram_records'] = [{**clean(result.json()['reusable_diagrams'][0]), 'state': 'accepted'}]
+    value = deepcopy(row['snapshot'])
+    value['domains']['answer']['entries'].append(fresh)
+    row = save(w, path, row, value)
+    assert w.client.get(path).json()['revision'] == row
+
 
 def test_explicit_analysis_uses_working_questions_without_formal_publication(workspace):
     w = workspace

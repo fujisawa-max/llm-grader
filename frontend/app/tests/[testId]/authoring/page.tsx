@@ -63,6 +63,7 @@ export default function TestAuthoringPage() {
   const [questionSettings,setQuestionSettings]=useState(false);
   const [replacement,setReplacement]=useState<string|null>(null);
   const [role,setRole]=useState("question_sheet");
+  const [reuseFiles,setReuseFiles]=useState(false),[reuseMaterialId,setReuseMaterialId]=useState("");
   const currentEditVersion=revision?.edit_version;
   const [visible,setVisible]=useState({question:true,answer:true,rubric:true});
   const [issues,setIssues]=useState<AuthoringIssue[]>([]);
@@ -264,9 +265,20 @@ export default function TestAuthoringPage() {
     }
     if(old&&uploaded[0].sha256===old.sha256)throw new Error("同じ内容の資料です。差し替えは行いませんでした。");
     setMaterials(current=>[...current,...uploaded.filter(m=>!current.some(old=>old.id===m.id))]);
-    setSnapshot(current=>current?{...current,materials:[...current.materials.filter(ref=>!uploaded.some(m=>m.id===ref.id)),...uploaded.map(m=>({id:m.id,sha256:m.sha256||null,role:m.material_type,...(old?{replaces_material_id:old.id}:{})}))]}:current);
+    setSnapshot(current=>current?{...current,materials:[...current.materials.filter(ref=>!uploaded.some(m=>m.id===ref.id)),...uploaded.map(m=>({...current.materials.find(ref=>ref.id===m.id),id:m.id,sha256:m.sha256||null,role:m.material_type,...(old?{replaces_material_id:old.id}:{})}))]}:current);
     markDirty();setMaterialId(uploaded[0].id);setSourceMode("pdf");notify("info",old?"資料を差し替えました":"資料を追加しました",old?"元資料と出典情報は保持されています。保存後に明示的に再解析してください。":"既存の資料と解析結果は保持されています。");setReplacement(null);
   }catch(e){const message=e instanceof Error?e.message:"資料を追加できませんでした。";setError(message);notify("error","資料を追加できませんでした",message);}finally{setBusy(false);if(fileInput.current)fileInput.current.value="";}}
+  async function reuseMaterial(){
+    if(!reuseMaterialId||!snapshot)return;
+    setBusy(true);setError("");
+    try{
+      const material=await apiFetch<Material>(`/tests/${id}/materials/${reuseMaterialId}/reuse`,json({material_type:role}));
+      setMaterials(current=>current.some(m=>m.id===material.id)?current:[...current,material]);
+      setSnapshot(current=>current&&!current.materials.some(m=>m.id===material.id)?{...current,materials:[...current.materials,{id:material.id,sha256:material.sha256||null,role:material.material_type}]}:current);
+      markDirty();setMaterialId(material.id);setSourceMode("pdf");setReuseFiles(false);
+      notify("info","資料を追加しました","既存ファイルを共有しています。解析は明示操作で開始してください。");
+    }catch(e){const message=e instanceof Error?e.message:"資料を追加できませんでした。";setError(message);notify("error","資料を追加できませんでした",message);}finally{setBusy(false);}
+  }
   if(error&&!snapshot)return <ErrorState message={error}/>;
   if(!snapshot)return <LoadingState/>;
   const questionDomain=snapshot.domains?.question;
@@ -340,9 +352,15 @@ export default function TestAuthoringPage() {
           <button disabled={readonly||busy} onClick={()=>replaceMaterial(materialId)}>差換え</button>
         </div>}
       </div>
-      {sourceMode!=="pdf"&&(<section className="authoring-material-management" aria-label="資料管理"><h3>{sourceMode==="manage"?"資料の編集":replacement?"資料の差換え":"資料の追加"}</h3><p>資料を追加してから編集できます。差し替えは元資料を保持し、出典の再確認が必要です。解析は明示操作のみです。</p><button onClick={()=>{setSourceMode("pdf");setReplacement(null);}}>PDFに戻る</button>{sourceMode==="manage"&&<><button disabled={readonly||busy} onClick={()=>{setReplacement(null);setSourceMode("add");}}>資料の追加</button><ul>{materials.map(m=><li key={m.id}>{roles[m.material_type]||"資料"} — {m.original_filename}<details><summary>出典情報</summary>SHA: {m.sha256||"なし"}<p>{snapshot.materials.some(ref=>ref.replaces_material_id===m.id)?"差し替え済み・元資料を保持":"利用中"}{materialId===m.id?"・選択中の資料":""}</p></details><button onClick={()=>{setMaterialId(m.id);setSourceMode("pdf");}}>選択</button><button disabled={readonly||busy} onClick={()=>replaceMaterial(m.id)}>差換え</button></li>)}</ul></>}{sourceMode==="add"&&<>{replacement&&<p role="alert">差し替え対象: {materials.find(m=>m.id===replacement)?.original_filename}。既存の出典確認は再確認が必要です。自動解析は行いません。</p>}
+      {sourceMode!=="pdf"&&(<section className="authoring-material-management" aria-label="資料管理"><h3>{sourceMode==="manage"?"資料の編集":replacement?"資料の差換え":"資料の追加"}</h3><p>資料を追加してから編集できます。差し替えは元資料を保持し、出典の再確認が必要です。解析は明示操作のみです。</p>{sourceMode==="manage"&&<><button disabled={readonly||busy} onClick={()=>{setReplacement(null);setSourceMode("add");}}>資料の追加</button><ul>{materials.map(m=><li key={m.id}>{roles[m.material_type]||"資料"} — {m.original_filename}<details><summary>出典情報</summary>SHA: {m.sha256||"なし"}<p>{snapshot.materials.some(ref=>ref.replaces_material_id===m.id)?"差し替え済み・元資料を保持":"利用中"}{materialId===m.id?"・選択中の資料":""}</p></details><button onClick={()=>{setMaterialId(m.id);setSourceMode("pdf");}}>選択</button><button disabled={readonly||busy} onClick={()=>replaceMaterial(m.id)}>差換え</button></li>)}</ul></>}{sourceMode==="add"&&<>{replacement&&<p role="alert">差し替え対象: {materials.find(m=>m.id===replacement)?.original_filename}。既存の出典確認は再確認が必要です。自動解析は行いません。</p>}
         <label>資料の種類<select aria-label="資料の種類" disabled={!!replacement} value={role} onChange={e=>setRole(e.target.value)}>{Object.entries(roles).map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label>
         <input ref={fileInput} aria-label="資料を追加" type="file" accept="application/pdf,.pdf" multiple={!replacement} disabled={readonly||busy} onChange={e=>void upload(e.target.files)}/>
+        {!replacement&&<><button disabled={readonly||busy} onClick={()=>setReuseFiles(value=>!value)}>既存ファイルを再利用</button>
+          {reuseFiles&&<section aria-label="既存ファイルの再利用"><label>既存ファイル<select aria-label="既存ファイル" value={reuseMaterialId} onChange={e=>setReuseMaterialId(e.target.value)}><option value="">ファイルを選択</option>{materials.filter((m,i,all)=>m.sha256&&all.findIndex(other=>other.sha256===m.sha256)===i).map(m=><option key={m.id} value={m.id}>{m.original_filename} — {m.sha256?.slice(0,8)} — 使用中: {materials.filter(other=>other.sha256===m.sha256).map(other=>roles[other.material_type]||other.material_type).join("・")}</option>)}</select></label>
+            <button disabled={readonly||busy||!reuseMaterialId||materials.some(m=>m.material_type===role&&m.sha256===materials.find(source=>source.id===reuseMaterialId)?.sha256)} onClick={()=>void reuseMaterial()}>{roles[role]}として追加</button>
+            {reuseMaterialId&&materials.some(m=>m.material_type===role&&m.sha256===materials.find(source=>source.id===reuseMaterialId)?.sha256)&&<p>このファイルは選択した資料の種類で登録済みです。</p>}
+          </section>}
+        </>}
         <p>選択した資料の解析は左ペインの「解析」「再解析」から開始してください。未保存の変更がある場合は先に保存してください。</p>
         <p><Link href={`/tests/${id}?section=questions`}>既存の資料解析・出典付きレビューを開く</Link></p>
       </>}</section>)}

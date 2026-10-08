@@ -316,7 +316,7 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
         from ..db.models import TestMaterial
         mark_analysis(snapshot, row.snapshot, s.get(TestMaterial, draft.material_id))
         from ..authoring_sources import merge_answer_analysis
-        merge_answer_analysis(snapshot, draft)
+        merge_answer_analysis(snapshot, draft, selected_material.material_type)
         origin = snapshot['source_provenance'].setdefault('authoring_origins', {})
         tokens = deepcopy(origin.get('tokens') or source_tokens(s, test_id))
         tokens['answer'] = source_tokens(s, test_id)['answer']

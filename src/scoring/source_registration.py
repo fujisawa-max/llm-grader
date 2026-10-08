@@ -73,6 +73,29 @@ def register_source(session, root, test_id, role, filename, content_type, data):
     return material, count, False
 
 
+def reuse_source(session, root, test_id, material_id, role, allowed_roots=None):
+    """Create a role binding over verified existing bytes within the same Test."""
+    if role not in ROLES - {'student_answer_source'}:
+        raise ValueError('資料の種類が不正です')
+    from .db.models import Test
+    session.scalar(select(Test).where(Test.id == test_id).with_for_update())
+    source = session.get(TestMaterial, material_id)
+    if not source or source.test_id != test_id or source.material_type not in ROLES - {'student_answer_source'}:
+        raise ValueError('このテストの資料を選択してください')
+    path = Path(source.storage_ref)
+    path = (path if path.is_absolute() else Path(root) / path).resolve()
+    if (not any(path.is_relative_to(Path(base).resolve()) for base in [root, *(allowed_roots or [])]) or not path.is_file()
+            or not source.sha256 or hashlib.sha256(path.read_bytes()).hexdigest() != source.sha256):
+        raise ValueError('保存済み資料の整合性を確認してください')
+    prior = session.scalar(select(TestMaterial).where(TestMaterial.test_id == test_id,
+        TestMaterial.material_type == role, TestMaterial.sha256 == source.sha256))
+    if prior:
+        return prior, True
+    return DomainService(session).material(test_id, material_type=role,
+        storage_ref=source.storage_ref, original_filename=source.original_filename,
+        mime_type=source.mime_type, sha256=source.sha256), False
+
+
 def register_submission(session, root, test, material_ids, student_id=None,
                         student_identifier=None, display_name=None):
     """Combine explicitly ordered pages into the existing source manifest contract."""

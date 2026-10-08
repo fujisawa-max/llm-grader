@@ -188,7 +188,7 @@ def validate_domains(value, previous):
                         if not e['id'].startswith('teacher-entry-'):
                             raise ValueError()
                         UUID(e['id'].removeprefix('teacher-entry-'))
-                        if e.get('source_draft_id', old[name]['draft_id']) != old[name]['draft_id']:
+                        if e.get('source_draft_id', old[name]['draft_id']) not in {old[name]['draft_id'], *old[name].get('sources', {})}:
                             raise ValueError()
                         source = e.get('source', {})
                         if (source.get('kind') != 'teacher_manual' or source.get('segments') != []
@@ -225,7 +225,7 @@ def validate_domains(value, previous):
                         raise AuthoringError('AUTHORING_SOURCE_CHANGED', '分類と元segmentの対応を確認してください。') from exc
 
 
-def merge_answer_analysis(snapshot, draft):
+def merge_answer_analysis(snapshot, draft, material_role=None):
     """Merge source-bound candidates into the current tree, without inference."""
     from .authoring_answers import authoring_questions
     aliases, questions = authoring_questions(snapshot)
@@ -233,6 +233,8 @@ def merge_answer_analysis(snapshot, draft):
     inverse = {identifier: key for key, identifier in aliases.items() if identifier in gradable}
     entries = deepcopy(draft.snapshot.get('entries', []))
     for entry in entries:
+        if material_role == 'rubric_source':
+            entry['answer_text'] = ''
         entry['authoring_question_key'] = inverse.get(entry.get('question_id'))
         entry['source_draft_id'] = draft.id
         if not entry['authoring_question_key']:
@@ -249,6 +251,20 @@ def merge_answer_analysis(snapshot, draft):
         # Reanalysis supersedes only this material; other sources remain intact.
         if source.get('material_id') != draft.material_id:
             retained.append({**deepcopy(entry), 'source_draft_id': source_id})
+        elif (source.get('source_sha256') == draft.source_sha256
+                and any(r.get('state') == 'accepted' for r in entry.get('diagram_records', []))):
+            # Keep verified assignments on their original native artifact context.
+            # Fresh text/criteria come from the new role-specific analysis.
+            incoming = next((e for e in entries if e['id'] == entry['id']), None)
+            if incoming is not None:
+                incoming['diagram_records'] = deepcopy(entry['diagram_records'])
+                continue
+            preserved = {**deepcopy(entry), 'source_draft_id': source_id,
+                'answer_text': '', 'answer_kind': 'alternative', 'rubric_edits': [],
+                'semantic_classification': None, 'analysis_preserved_diagram': True}
+            for field in ('manual_alternative_answers', 'rubric_consolidated_groups', 'rubric_merge_history'):
+                preserved.pop(field, None)
+            retained.append(preserved)
     used_sources = {e['source_draft_id'] for e in retained}
     sources = {k: v for k, v in sources.items() if k in used_sources}
     assigned = sum(bool(e['authoring_question_key']) for e in entries)
@@ -260,6 +276,7 @@ def merge_answer_analysis(snapshot, draft):
         'draft_id': draft.id, 'revision': draft.revision, 'material_id': draft.material_id,
         'source_sha256': draft.source_sha256, 'artifact_ref': draft.artifact_ref,
         'question_regions': deepcopy(draft.snapshot.get('question_regions', [])),
+        'material_role': material_role,
         'entries': retained+entries, 'sources': sources, 'analysis_result': result}
     for key in {e['authoring_question_key'] for e in retained+entries if e.get('authoring_question_key')}:
         current = [e for e in retained+entries if e.get('authoring_question_key') == key
@@ -267,10 +284,11 @@ def merge_answer_analysis(snapshot, draft):
         answer_entries = [e for e in current if e.get('answer_text', '').strip() or
                           any(r.get('state') == 'accepted' for r in e.get('diagram_records', []))]
         primary = next((e for e in answer_entries if e.get('answer_kind', 'primary') == 'primary'), None)
-        if answer_entries:
+        if answer_entries and material_role != 'rubric_source':
             snapshot['answers'][key] = {'primary': primary.get('answer_text', '') if primary else '',
                 'alternatives': answer_alternatives(answer_entries),
                 'diagram_records': deepcopy(primary.get('diagram_records', [])) if primary else []}
-        if any(has_rubric_state(e) for e in current):
-            snapshot['rubrics'][key] = [c for e in current for c in rubric_projection(e)]
+        if any(has_rubric_state(e) for e in current) and (material_role != 'model_answer_source' or key not in snapshot['rubrics']):
+            rubric_current = entries if material_role == 'rubric_source' else current
+            snapshot['rubrics'][key] = [c for e in rubric_current if e.get('authoring_question_key') == key for c in rubric_projection(e)]
     return result
