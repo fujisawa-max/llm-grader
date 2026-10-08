@@ -2,6 +2,7 @@
 import {useCallback, useEffect, useRef, useState} from "react";
 import {useParams} from "next/navigation";
 import Link from "next/link";
+import {AuthoringDialog} from "@/components/reviews/AuthoringDialog";
 import {ReviewWorkspaceLayout} from "@/components/reviews/ReviewWorkspaceLayout";
 import {AuthoringPreviewEditor, AcceptedDiagramPreview} from "@/components/reviews/AuthoringPreviewEditor";
 import {MarkdownMathText} from "@/components/MarkdownMathText";
@@ -78,20 +79,6 @@ export default function TestAuthoringPage() {
   const fileInput=useRef<HTMLInputElement>(null);
   const readonly=!revision || revision.state==="confirmed";
   const closeAnalysis=useCallback(()=>{setAnalysisRequest(null);requestAnimationFrame(()=>analysisTrigger.current?.focus());},[]);
-  useEffect(()=>{
-    if(!analysisRequest)return;
-    const dialog=document.querySelector<HTMLElement>(".authoring-analysis-dialog");
-    const focusable=()=>Array.from(dialog?.querySelectorAll<HTMLElement>('button:not([disabled]),[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])')||[]);
-    focusable()[0]?.focus();
-    const onKeyDown=(event:KeyboardEvent)=>{
-      if(event.key==="Escape"){event.preventDefault();closeAnalysis();return;}
-      if(event.key!=="Tab")return;
-      const controls=focusable();if(!controls.length)return;
-      if(event.shiftKey&&document.activeElement===controls[0]){event.preventDefault();controls[controls.length-1].focus();}
-      else if(!event.shiftKey&&document.activeElement===controls[controls.length-1]){event.preventDefault();controls[0].focus();}
-    };
-    document.addEventListener("keydown",onKeyDown);return()=>document.removeEventListener("keydown",onKeyDown);
-  },[analysisRequest,closeAnalysis]);
   useEffect(()=>{
     let active=true;
     void Promise.all([testAuthoring.get(id),testData.materials(id)]).then(async ([data,files])=>{
@@ -462,13 +449,13 @@ export default function TestAuthoringPage() {
       </>}
 
     </ReviewWorkspaceLayout>
-    {analysisRequest&&analysisMaterial&&<div className="authoring-modal-backdrop"><section className="authoring-analysis-dialog" role="dialog" aria-modal="true" aria-labelledby="authoring-analysis-title" aria-describedby="authoring-analysis-description"><h2 id="authoring-analysis-title">{roles[analysisMaterial.material_type]||"資料"}を{analyzed?"再解析":"解析"}しますか？</h2>
+    {analysisRequest&&analysisMaterial&&<AuthoringDialog title={`${roles[analysisMaterial.material_type]||"資料"}を${analyzed?"再解析":"解析"}しますか？`} onCancel={closeAnalysis} actions={<><button type="button" onClick={closeAnalysis}>キャンセル</button><button type="button" disabled={busy} onClick={()=>{const request=analysisRequest;closeAnalysis();if(request)void analyzeSource(request.domain,request.materialId);}}>{analyzed?"再解析":"解析"}</button></>}>
       <div id="authoring-analysis-description">
         {analysisMaterial.material_type==="question_sheet"?<><p>問題用紙を{analyzed?"再解析":"解析"}すると、問題文・小問構成など問題用紙から作成した内容が、新しい解析結果をもとに更新される可能性があります。</p><p>模範解答・採点基準の編集内容は保持されます。</p></>:
           analysisMaterial.material_type==="model_answer_source"?<><p>模範解答の解析結果だけを更新します。</p><p>問題文・小問構成は変更しません。採点基準の編集内容も保持されます。</p></>:
           <><p>採点基準の解析結果だけを更新します。</p><p>問題文・小問構成・模範解答は変更しません。</p></>}
         <p>現在の保存状態は履歴として保持されます。</p><p>続行しますか？</p>
-      </div><div className="authoring-analysis-dialog-actions"><button type="button" onClick={closeAnalysis}>キャンセル</button><button type="button" disabled={busy} onClick={()=>{const request=analysisRequest;closeAnalysis();if(request)void analyzeSource(request.domain,request.materialId);}}>{analyzed?"再解析":"解析"}</button></div>
-    </section></div>}
+      </div>
+    </AuthoringDialog>}
     </>;
 }

@@ -48,7 +48,7 @@ test("saved source reviews integrate Question, answer diagrams and advanced Rubr
   await manual.getByRole("button",{name:"基準を追加",exact:true}).click();const criterion=manual.getByLabel(/^基準\d+の本文$/);await criterion.fill("first condition\nsecond condition");
   await criterion.evaluate(el=>{const textarea=el as HTMLTextAreaElement;textarea.focus();textarea.setSelectionRange(16,16);});
   await criterion.press("ArrowRight");await criterion.press("ArrowLeft");
-  await manual.getByRole("button",{name:"カーソル位置で分割",exact:true}).click();await page.getByRole("button",{name:"この分割を適用",exact:true}).click();
+  await manual.getByRole("button",{name:"カーソル位置で分割",exact:true}).click();await page.getByRole("button",{name:"分割案を適用",exact:true}).click();
   await expect(manual.getByLabel(/^基準\d+の本文$/)).toHaveCount(2);await manual.getByLabel(/^基準\d+の配点$/).nth(0).fill("5");await manual.getByLabel(/^基準\d+の配点$/).nth(1).fill("5");
   await manual.getByRole("button",{name:"複製",exact:true}).nth(1).click();await expect(manual.getByLabel(/^基準\d+の本文$/)).toHaveCount(3);
   await manual.getByRole("button",{name:"上と結合",exact:true}).nth(2).click();await expect(manual.getByLabel(/^基準\d+の本文$/)).toHaveCount(2);

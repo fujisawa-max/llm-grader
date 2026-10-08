@@ -1,5 +1,7 @@
 "use client";
 import {useEffect, useRef, useState} from "react";
+import {AuthoringDialog} from "./AuthoringDialog";
+import {testAuthoring} from "@/lib/api/testAuthoring";
 import {MarkdownMathText} from "@/components/MarkdownMathText";
 import {AuthoringPreviewEditor, AcceptedDiagramPreview} from "./AuthoringPreviewEditor";
 import {DiagramReview, type DiagramSelection} from "./DiagramReview";
@@ -20,23 +22,29 @@ export function AuthoringCandidates({testId, draftId, revision, questionKey, ent
   const [selected,setSelected]=useState<Record<string,string[]>>({});
   const [error,setError]=useState("");
   const [busy,setBusy]=useState(false);
-  const [proposal,setProposal]=useState<{entryId:string;item:RubricCandidateEdit;original:string;baseline:string;split:RubricSplitProposal}|null>(null);
+  const [proposal,setProposal]=useState<{entryId:string;revisionId:string;item:RubricCandidateEdit;original:string;baseline:string;split:RubricSplitProposal}|null>(null);
+  const [proposalError,setProposalError]=useState("");
+  const [proposalStale,setProposalStale]=useState(false);
+  const [applying,setApplying]=useState(false);
+  const applyInFlight=useRef(false);
+  const splitTrigger=useRef<HTMLElement|null>(null);
   const [groups,setGroups]=useState<{entryId:string;rows:RubricCandidateEdit[];baseline:string}|null>(null);
   const textareas=useRef<Record<string,HTMLTextAreaElement|null>>({});
   const activeCriterion=useRef<string|null>(null);
   const [splitting,setSplitting]=useState<string|null>(null);
   const splitInFlight=useRef(false);
   const epoch=useRef("");const requestEpoch=useRef(0);
-  const nextScope=`${questionKey}:${revision}`;
+  const nextScope=`${testId}:${draftId}:${questionKey}:${revision}`;
   if(epoch.current!==nextScope){epoch.current=nextScope;requestEpoch.current++;}
-  useEffect(()=>{setProposal(null);setGroups(null);setError("");setBusy(false);},[questionKey,revision]);
+  useEffect(()=>{setProposal(null);setGroups(null);setError("");setBusy(false);},[testId,draftId,questionKey,revision]);
   const current=useRef(entries);current.current=entries;
   const changeRef=useRef(onChange);changeRef.current=onChange;
   const update=(id:string,patch:Partial<AuthoringEntry>)=>changeRef.current(current.current.map(e=>e.id===id?{...e,...patch}:e),patch.diagram_records?"diagram":patch.rubric_edits||patch.rubric_merge_history?"rubric":"answer");
   const rows=(entry:AuthoringEntry,next:RubricCandidateEdit[])=>update(entry.id,{rubric_edits:next,
     rubric_merge_history:[...(entry.rubric_merge_history||[]),rubricRows(entry)].slice(-50)});
   async function split(entry:AuthoringEntry,item:RubricCandidateEdit,manual:boolean){
-    if(splitInFlight.current)return;
+    if(splitInFlight.current||proposal)return;
+    setProposalError("");setProposalStale(false);
     const token=requestEpoch.current;setError("");setProposal(null);
     const text=item.description;
     try {
@@ -44,8 +52,10 @@ export function AuthoringCandidates({testId, draftId, revision, questionKey, ent
       if(manual&&(!control||activeCriterion.current!==target))throw new Error("分割する基準の本文欄にカーソルを置いてください。");
       const offset=manual?rubricSplitOffset(text,control!.selectionStart):undefined;
       splitInFlight.current=true;setBusy(true);setSplitting(target);
+      const baselineRevision=(await testAuthoring.get(testId)).revision;
+      if(!baselineRevision||baselineRevision.edit_version!==revision)throw new Error("保存状態が変更されています。再読み込みしてください。");
       const result=await apiFetch<RubricSplitProposal>(`/tests/${testId}/authoring/entries/${entry.id}/rubric-split`,json({expected_revision:revision,candidate_id:item.id,text,question_key:questionKey,...(manual?{offset}:{})}));
-      if(requestEpoch.current===token){if(result.split)setProposal({entryId:entry.id,item,original:text,baseline:JSON.stringify(item),split:result});else setError("この候補は1つの採点基準として扱う提案です。");}
+      if(requestEpoch.current===token){if(result.split)setProposal({entryId:entry.id,revisionId:baselineRevision.id,item,original:text,baseline:JSON.stringify(item),split:result});else setError("この候補は1つの採点基準として扱う提案です。");}
     }catch(e){if(requestEpoch.current===token)setError(e instanceof Error?e.message:"分割案を取得できませんでした。");}
     finally{splitInFlight.current=false;if(requestEpoch.current===token){setBusy(false);setSplitting(null);}}
   }
@@ -60,6 +70,22 @@ export function AuthoringCandidates({testId, draftId, revision, questionKey, ent
     });
     if(requestEpoch.current===token)setGroups({entryId:entry.id,rows:projected,baseline:JSON.stringify(original)});
   }catch(e){if(requestEpoch.current===token)setError(e instanceof Error?e.message:"統合案を取得できませんでした。");}finally{if(requestEpoch.current===token)setBusy(false);}}
+  const cancelProposal=()=>{setProposal(null);requestAnimationFrame(()=>splitTrigger.current?.focus());};
+  async function applyProposal(){
+    if(!proposal||applyInFlight.current)return;
+    const token=requestEpoch.current;
+    applyInFlight.current=true;setApplying(true);setProposalError("");
+    try{const entry=current.current.find(e=>e.id===proposal.entryId);const found=entry&&rubricRows(entry).find(c=>c.id===proposal.item.id);if(!entry||JSON.stringify(found)!==proposal.baseline){setProposalStale(true);setProposalError("候補が変更されています。分割案を作り直してください。");return;}
+        try{for(const part of proposal.split.parts.slice(1))rubricSplitOffset(proposal.original,Array.from(proposal.original).slice(0,part.start).join("").length);}catch(e){setProposalError(e instanceof Error?e.message:"数式の分割位置を確認してください。");return;}
+        const latest=(await testAuthoring.get(testId)).revision;
+        if(!latest||latest.id!==proposal.revisionId||latest.edit_version!==revision){setProposalStale(true);setProposalError("保存状態が別の画面で変更されています。再読み込みして分割案を作り直してください。");return;}
+        if(requestEpoch.current!==token)return;
+        if(JSON.stringify(current.current.find(e=>e.id===proposal.entryId)&&rubricRows(current.current.find(e=>e.id===proposal.entryId)!).find(c=>c.id===proposal.item.id))!==proposal.baseline){setProposalStale(true);setProposalError("候補が変更されています。分割案を作り直してください。");return;}
+        const parts=proposal.split.parts.map(p=>({id:reviewCandidateId("split"),description:p.description,points:p.points,source_text:p.source_text,segment_ids:proposal.item.segment_ids||[],grouping_confirmed:true,grouping_method:"split",points_conflict:p.points_conflict,points_confirmed:false,provenance:{...(proposal.item.segment_ids?.length?{}:{source:"teacher_manual"}),split_from_candidate_id:proposal.item.id,original_text:proposal.original,original_points:proposal.item.points,source_sha256:proposal.split.source_sha256,start:p.start,end:p.end,previous_operation:proposal.item.provenance||{},teacher_confirmed:true}}));
+        rows(entry,rubricRows(entry).flatMap(c=>c.id===proposal.item.id?parts:[c]));setProposal(null);requestAnimationFrame(()=>{const control=textareas.current[`${entry.id}:${parts[0].id}`];control?.focus();control?.scrollIntoView({block:"nearest"});});
+      }catch(e){setProposalError(e instanceof Error?e.message:"分割案を適用できませんでした。");}
+    finally{applyInFlight.current=false;setApplying(false);}
+  }
   const visible=entries.filter(e=>e.authoring_question_key===questionKey||(questionKey==="unassigned"&&!e.authoring_question_key));
   const addAnswer=<button disabled={disabled||questionKey==="unassigned"} onClick={()=>onChange([...entries,{id:reviewCandidateId("teacher-entry"),question_id:null,authoring_question_key:questionKey,
       mapping_state:"manual_mapped",disposition:"include",answer_kind:visible.some(e=>(e.answer_kind||"primary")==="primary"&&e.disposition!=="ignored")?"alternative":"primary",answer_text:"",
@@ -101,20 +127,20 @@ export function AuthoringCandidates({testId, draftId, revision, questionKey, ent
           <button onClick={()=>{const next=[...all];next.splice(index+1,0,{...item,id:reviewCandidateId("teacher-rubric"),provenance:{...item.provenance,manual_duplicate_from:item.id,teacher_confirmed:true}});rows(entry,next);}}>複製</button>
           <button disabled={index===0} onClick={()=>{const next=[...all];[next[index-1],next[index]]=[next[index],next[index-1]];rows(entry,next);}}>上へ</button>
           <button disabled={index===0} onClick={()=>{const result=mergeRubricRows(entry,[all[index-1].id,item.id],"manual_above");if(result)update(entry.id,result);}}>上と結合</button>
-          <button onPointerDown={e=>e.preventDefault()} onClick={()=>void split(entry,item,true)}>カーソル位置で分割</button><button aria-busy={splitting===`${entry.id}:${item.id}`} onClick={()=>void split(entry,item,false)}>{splitting===`${entry.id}:${item.id}`?<><span className="spinner" aria-hidden="true"/>分割案を作成中…</>:"分割案を作成"}</button>
+          <button onPointerDown={e=>e.preventDefault()} onClick={event=>{splitTrigger.current=event.currentTarget;void split(entry,item,true);}}>カーソル位置で分割</button><button aria-busy={splitting===`${entry.id}:${item.id}`} onClick={event=>{splitTrigger.current=event.currentTarget;void split(entry,item,false);}}>{splitting===`${entry.id}:${item.id}`?<><span className="spinner" aria-hidden="true"/>分割案を作成中…</>:"分割案を作成"}</button>
           <label><input type="checkbox" checked={!!item.excluded} onChange={e=>update(entry.id,{rubric_edits:all.map(c=>c.id===item.id?{...c,excluded:e.target.checked}:c)})}/>対象外</label>
         </fieldset>)}
       </AuthoringPreviewEditor>
-    {proposal?.entryId===entry.id&&<section hidden={!rubricEditing} aria-label="採点基準の分割案"><h3>採点基準の分割案</h3>{proposal.split.parts.some(p=>p.points_conflict)&&<p>配点は自動配分しません。元の配点: {proposal.item.points}点。適用後に各基準の配点を確認してください。</p>}{proposal.split.parts.map((p,i)=><p key={i}>{p.description} — {p.points}点</p>)}
-      <button disabled={disabled||busy} onClick={()=>{const entry=entries.find(e=>e.id===proposal.entryId);const found=entry&&rubricRows(entry).find(c=>c.id===proposal.item.id);if(!entry||JSON.stringify(found)!==proposal.baseline){setError("候補が変更されています。分割案を作り直してください。");return;}
-        try{for(const part of proposal.split.parts.slice(1))rubricSplitOffset(proposal.original,Array.from(proposal.original).slice(0,part.start).join("").length);}catch(e){setError(e instanceof Error?e.message:"数式の分割位置を確認してください。");return;}
-        const parts=proposal.split.parts.map(p=>({id:reviewCandidateId("split"),description:p.description,points:p.points,source_text:p.source_text,segment_ids:proposal.item.segment_ids||[],grouping_confirmed:true,grouping_method:"split",points_conflict:p.points_conflict,points_confirmed:false,provenance:{...(proposal.item.segment_ids?.length?{}:{source:"teacher_manual"}),split_from_candidate_id:proposal.item.id,original_text:proposal.original,original_points:proposal.item.points,source_sha256:proposal.split.source_sha256,start:p.start,end:p.end,previous_operation:proposal.item.provenance||{},teacher_confirmed:true}}));
-        rows(entry,rubricRows(entry).flatMap(c=>c.id===proposal.item.id?parts:[c]));setProposal(null);
-      }}>この分割を適用</button><button onClick={()=>setProposal(null)}>キャンセル</button></section>}
     {groups?.entryId===entry.id&&<section hidden={!rubricEditing} aria-label="採点基準の統合案"><h3>採点基準の統合案</h3>{groups.rows.map(c=><p key={c.id}>{c.description} — {c.points}点</p>)}<button disabled={disabled||busy} onClick={()=>{const entry=entries.find(e=>e.id===groups.entryId);if(!entry||JSON.stringify(rubricRows(entry))!==groups.baseline){setError("採点基準が変更されています。統合案を作り直してください。");return;}rows(entry,groups.rows);setGroups(null);}}>この統合を適用</button><button onClick={()=>setGroups(null)}>キャンセル</button></section>}
       </section>}
     </article>)}
     {showAnswer&&visible.length===0&&<section aria-label="模範解答候補">{addAnswer}</section>}
     {showRubric&&visible.length===0&&<section aria-label="採点基準候補"><button disabled={disabled||busy||questionKey==="unassigned"} onClick={()=>onChange([...entries,{id:reviewCandidateId("teacher-entry"),question_id:null,authoring_question_key:questionKey,mapping_state:"manual_mapped",disposition:"include",answer_kind:"alternative",answer_text:"",source:{kind:"teacher_manual",material_id:null,source_sha256:null,segments:[]},rubric_edits:[]}],"rubric")}>採点基準を追加</button></section>}
+    {proposal&&<AuthoringDialog title={`${rubricCriterionLabel(Math.max(0,rubricRows(entries.find(e=>e.id===proposal.entryId)||{...visible[0],rubric_edits:[]}).findIndex(c=>c.id===proposal.item.id)))}の分割案`} busy={applying} onCancel={cancelProposal} actions={<><button disabled={applying} onClick={cancelProposal}>取消</button><button disabled={disabled||applying||proposalStale} onClick={()=>void applyProposal()}>{applying?"適用中…":"分割案を適用"}</button></>}>
+      <h3>元の基準</h3><MarkdownMathText source={proposal.original}/><p>元の配点: {proposal.item.points}点</p>
+      <h3>分割後</h3>{proposal.split.parts.map((part,index)=><section className="panel" key={index}><h4>分割候補{index+1}</h4><MarkdownMathText source={part.description}/><p>{part.points}点</p></section>)}
+      {proposal.split.parts.some(part=>part.points_conflict)&&<p className="notice">配点は自動配分しません。適用後に各基準の配点を確認してください。</p>}
+      {proposalError&&<p role="alert">{proposalError}</p>}
+    </AuthoringDialog>}
   </div>;
 }

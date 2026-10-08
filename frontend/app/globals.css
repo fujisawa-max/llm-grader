@@ -245,3 +245,9 @@
 .disabled-action-tooltip{position:fixed;z-index:200;width:max-content;max-width:min(300px,calc(100vw - 16px));padding:8px 10px;border-radius:5px;background:#243442;color:#fff;font-size:.85rem;font-weight:400;line-height:1.5;box-shadow:0 3px 12px #0003;pointer-events:none}
 .authoring-split-block{padding:12px 0;min-width:0}
 .authoring-split-divider{width:100%;border:0;border-top:1px solid #9cabb7;margin:12px 0}
+/* Keep proposal actions visible while long original/candidate text scrolls. */
+dialog.authoring-proposal-dialog{border:0;max-height:calc(100dvh - 32px);width:min(620px,calc(100vw - 32px));box-sizing:border-box;overflow:hidden}
+dialog.authoring-proposal-dialog[open]{display:flex;flex-direction:column}
+dialog.authoring-proposal-dialog::backdrop{background:#0006}
+.authoring-dialog-body{overflow:auto;min-height:0;overscroll-behavior:contain}
+.authoring-proposal-dialog h2,.authoring-proposal-dialog .authoring-analysis-dialog-actions{flex-shrink:0}
