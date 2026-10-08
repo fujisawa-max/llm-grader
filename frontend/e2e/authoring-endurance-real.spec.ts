@@ -1,4 +1,4 @@
-import {confirmAnalysis} from "./authoringNotifications";
+import {confirmAnalysis,expectUnsavedAnalysisHint} from "./authoringNotifications";
 import {test,expect,type Page} from "@playwright/test";
 import {readFile} from "node:fs/promises";
 test.setTimeout(240000);
@@ -31,14 +31,14 @@ test("ten Save/reload/Back/resume cycles retain the active revision, exact text 
 
 test("five dirty-save-reanalysis cycles disable readiness until Save and never start analysis on Save",async({page})=>{
  await login(page);const failures=observe(page);const seed=await(await page.request.get(`/api/v1/tests/${process.env.MODEL_ANSWER_CLASSIFICATION_TEST_ID}`)).json();const exam=await(await page.request.post(`/api/v1/offerings/${seed.course_offering_id}/tests`,{data:{name:"Analysis readiness endurance",total_points:10}})).json(),base=`/api/v1/tests/${exam.id}`;
- await page.goto(`/tests/${exam.id}/authoring`);await page.getByRole("button",{name:"設問を追加",exact:true}).click();const controls=page.getByRole("group",{name:"利用資料の操作"}),guidance=page.getByLabel("解析前の保存",{exact:true});
+ await page.goto(`/tests/${exam.id}/authoring`);await page.getByRole("button",{name:"設問を追加",exact:true}).click();const controls=page.getByRole("group",{name:"利用資料の操作"}),guidance=controls.getByRole("tooltip");
  await page.getByLabel("利用資料",{exact:true}).selectOption("action:add");await page.getByLabel("資料の種類",{exact:true}).selectOption("question_sheet");await page.getByLabel("資料を追加",{exact:true}).setInputFiles({name:"readiness.pdf",mimeType:"application/pdf",buffer:await readFile(process.env.AUTHORING_SPLIT_QUESTION_PDF_PATH!)});await save(page);
  const material=(await(await page.request.get(base+"/materials")).json()).find((m:{material_type:string})=>m.material_type==="question_sheet");await page.getByLabel("利用資料",{exact:true}).selectOption(material.id);
  await confirmAnalysis(page,controls,"解析");await expect(controls.getByRole("button",{name:"再解析",exact:true})).toBeEnabled();const before=(await(await page.request.get(`${process.env.LLM_GRADER_RUNTIME_MANAGER_URL}/runtimes/ocr/logs?tail=1000`)).json()).lines.filter((s:string)=>s.includes("POST /v1/chat/completions")).length;
  const view=page.getByLabel("問題の表示切替",{exact:true});await view.getByRole("button",{name:"本文編集",exact:true}).click();const editor=page.getByLabel("問題文",{exact:true});
  for(let i=1;i<=5;i++){
-   await editor.fill(`${await editor.inputValue()}\nReadiness dirty cycle ${i}`);await expect(guidance).toBeVisible();await expect(controls.getByRole("button",{name:"再解析",exact:true})).toBeDisabled();
-   await guidance.getByRole("button",{name:"保存",exact:true}).click();await expect(guidance).toHaveCount(0);await expect(controls.getByRole("button",{name:"再解析",exact:true})).toBeEnabled();
+   await editor.fill(`${await editor.inputValue()}\nReadiness dirty cycle ${i}`);await expectUnsavedAnalysisHint(page,controls);await expect(controls.getByRole("button",{name:"再解析",exact:true})).toBeDisabled();
+   await page.getByRole("button",{name:"保存",exact:true}).first().click();await expect(guidance).toHaveCount(0);await expect(controls.getByRole("button",{name:"再解析",exact:true})).toBeEnabled();
    const calls=(await(await page.request.get(`${process.env.LLM_GRADER_RUNTIME_MANAGER_URL}/runtimes/ocr/logs?tail=1000`)).json()).lines.filter((s:string)=>s.includes("POST /v1/chat/completions")).length;expect(calls).toBe(before);
    const saved=(await(await page.request.get(base+"/authoring")).json()).revision;expect(await(await page.request.get(`${process.env.LLM_GRADER_RUNTIME_MANAGER_URL}/runtimes/ocr/logs?tail=1000`)).json().then((d:{lines:string[]})=>d.lines.filter(s=>s.includes("POST /v1/chat/completions")).length)).toBe(before);
    await confirmAnalysis(page,controls,"再解析");await expect.poll(async()=>{const row=(await(await page.request.get(base+"/authoring")).json()).revision;return row.id!==saved.id;}).toBe(true);await expect(controls.getByRole("button",{name:"再解析",exact:true})).toBeEnabled();

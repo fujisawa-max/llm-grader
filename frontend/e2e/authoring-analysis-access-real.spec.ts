@@ -1,4 +1,4 @@
-import {confirmAnalysis} from "./authoringNotifications";
+import {confirmAnalysis,expectUnsavedAnalysisHint} from "./authoringNotifications";
 import {test,expect,type Page} from "@playwright/test";
 import {openAuthoringEditors} from "./authoringEditMode";
 import {readFile} from "node:fs/promises";
@@ -26,7 +26,7 @@ test("compact material controls, role-aware explicit analysis and every Test edi
  }
  files.push(...await(await page.request.get(base+"/materials")).json());
  await select.selectOption(files.find(m=>m.material_type==="supplementary_source")!.id);await expect(controls.getByRole("button",{name:"解析",exact:true})).toBeDisabled();await expect(page.getByText("選択資料の解析: この資料は解析対象ではありません。",{exact:true})).toBeVisible();
- await select.selectOption(files.find(m=>m.material_type==="model_answer_source")!.id);await expect(controls.getByRole("button",{name:"解析",exact:true})).toBeDisabled();await expect(page.getByLabel("解析前の保存",{exact:true})).toBeVisible();
+ await select.selectOption(files.find(m=>m.material_type==="model_answer_source")!.id);await expect(controls.getByRole("button",{name:"解析",exact:true})).toBeDisabled();await expectUnsavedAnalysisHint(page,controls);
  await page.getByRole("button",{name:/通知履歴、未読/}).click();await page.getByRole("region",{name:"通知履歴"}).getByRole("button",{name:"すべて既読"}).click();await page.getByRole("button",{name:"通知履歴を閉じる"}).click();
  await page.getByRole("button",{name:"保存",exact:true}).first().click();await expect(page.locator(".authoring-toast").filter({hasText:"保存しました"}).last()).toBeVisible();await expect(controls.getByRole("button",{name:"解析",exact:true})).toBeEnabled();expect(await calls(page)).toEqual(before);
  await expect(page.getByRole("button",{name:/通知履歴、未読1件/})).toBeVisible();await page.getByRole("button",{name:/通知履歴、未読/}).click();await expect(page.getByRole("region",{name:"通知履歴"})).toContainText("保存しました");await expect(page.getByRole("button",{name:/通知履歴、未読0件/})).toBeVisible();await page.getByRole("button",{name:"通知履歴を閉じる"}).click();
