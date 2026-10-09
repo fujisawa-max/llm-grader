@@ -7,7 +7,7 @@ from .pdf_native import canonical_hash, sha256_file
 from .diagram_regions import write_diagram_json
 from .diagram_trust import diagram_trust
 
-FIELDS = ('id', 'domain', 'target_key', 'material_id', 'source_sha256', 'source_ir_sha256',
+FIELDS = ('source_type', 'id', 'domain', 'target_key', 'material_id', 'source_sha256', 'source_ir_sha256',
     'page_index', 'automatic_bbox', 'final_bbox', 'crop_bbox', 'source_element_ids',
     'grouping_method', 'confidence', 'ricoh_used', 'teacher_adjusted', 'crop_width',
     'crop_height', 'crop_sha256', 'artifact_ref', 'context_sha256', 'legacy_region_id',

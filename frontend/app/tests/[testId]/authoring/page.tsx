@@ -504,7 +504,7 @@ export default function TestAuthoringPage() {
             staleSourceDraftIds={staleAnswerSourceDraftIds} entries={snapshot.domains.answer.entries as AuthoringEntry[]} savedEntries={(revision.snapshot.domains?.answer?.entries||[]) as AuthoringEntry[]} disabled={readonly||saving||analyzing}
             answerEditing={editing.answer} rubricEditing={false} onAnswerEditing={value=>setEditing(v=>({...v,answer:value}))} onRubricEditing={()=>{}}
             showAnswer showRubric={false} questions={orderedNodes().map(n=>({key:n.stable_key,label:pathFor(n.stable_key),gradable:!nodes.some(c=>c.included&&c.parent_key===n.stable_key),sourceId:snapshot.source_provenance.authoring_origins?.identities[n.stable_key]?.formal_question_id||n.stable_key}))}
-            onSelect={setDiagramSelection} onChange={entries=>{
+            onSelect={selection=>{if(selection.record.source_type==="manual_pdf_crop"&&selection.record.material_id){setMaterialId(String(selection.record.material_id));setSourceMode("pdf");}setDiagramSelection(selection);}} onChange={entries=>{
               const answerDomain=snapshot.domains?.answer;
               if(!answerDomain)return;
               const answers={...snapshot.answers};

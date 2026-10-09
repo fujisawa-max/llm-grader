@@ -10,6 +10,12 @@ from ..test_authoring import (AuthoringError, projection, latest, create_draft,
     save_draft, preflight, archive_impact, baseline_hash)
 
 
+class ManualDiagramCrop(BaseModel):
+    expected_revision: int = Field(ge=1)
+    page_index: int = Field(ge=0)
+    bbox: list[float] = Field(min_length=4, max_length=4)
+
+
 class SaveAuthoring(BaseModel):
     expected_edit_version: int = Field(ge=1)
     snapshot: dict
@@ -529,6 +535,8 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
                     f'{record["id"]}/crop?{urlencode(params)}')
         if reuse:
             return {'diagrams': [], 'reusable_diagrams': records}
+        if records and all(record.get('scope') == 'manual' for record in records):
+            return {'diagrams': records, 'fallback': None}
         return {'diagrams': records, 'fallback': engine.fallback(), 'diagnostics': engine.diagnostics()}
 
     from typing import Literal
@@ -537,7 +545,7 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
     @r.post('/tests/{test_id}/authoring/entries/{entry_id}/diagrams')
     def answer_diagrams(test_id: str, entry_id: str, request: Request,
         body: DiagramRequest | None = None, question_id: str | None = None,
-        scope: Literal['exact', 'parent', 'pdf', 'reuse'] | None = None, s=Depends(db)):
+        scope: Literal['exact', 'parent', 'pdf', 'reuse', 'manual'] | None = None, s=Depends(db)):
         try:
             context, entry, row = answer_context(test_id, entry_id, s, body.expected_revision if body else None, question_id)
             if not hasattr(context, 'diagrams'):
@@ -554,9 +562,40 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
         except ValueError as exc:
             question_error(exc)
 
+    @r.get('/tests/{test_id}/authoring/entries/{entry_id}/manual-crop')
+    def manual_crop_source(test_id: str, entry_id: str, question_id: str, s=Depends(db)):
+        try:
+            context, entry, _ = answer_context(test_id, entry_id, s, question_id=question_id)
+            if (not hasattr(context, 'bound') or context.bound.get('material_role', 'model_answer_source') != 'model_answer_source'
+                    or s.get(TestMaterial, context.bound['material_id']).material_type != 'model_answer_source'):
+                raise ValueError('authoring_answer_source_missing')
+            engine = context.diagrams(entry)
+            from ..vision_policy import page_space
+            material = s.get(TestMaterial, context.bound['material_id'])
+            return {'material_id': material.id, 'filename': material.original_filename,
+                'source_sha256': context.bound['source_sha256'],
+                'pages': [{'page_index': p['page_index'], 'width': page_space(p).cropbox[2],
+                    'height': page_space(p).cropbox[3], 'rotation': p['rotation']} for p in engine.ir['pages']]}
+        except ValueError as exc:
+            question_error(exc)
+
+    @r.post('/tests/{test_id}/authoring/entries/{entry_id}/manual-crop')
+    def manual_crop(test_id: str, entry_id: str, body: ManualDiagramCrop, question_id: str, s=Depends(db)):
+        try:
+            context, entry, row = answer_context(test_id, entry_id, s, body.expected_revision, question_id)
+            if (not hasattr(context, 'bound') or context.bound.get('material_role', 'model_answer_source') != 'model_answer_source'
+                    or s.get(TestMaterial, context.bound['material_id']).material_type != 'model_answer_source'):
+                raise ValueError('authoring_answer_source_missing')
+            engine = context.diagrams(entry)
+            record = engine.manual_review().create(body.page_index, body.bbox)
+            record['revision'] = row.edit_version
+            return answer_diagram_view(engine, [record], test_id, entry_id, question_id)['diagrams'][0]
+        except ValueError as exc:
+            question_error(exc)
+
     @r.post('/tests/{test_id}/authoring/entries/{entry_id}/diagrams/{candidate_id}/crop-preview')
     def answer_crop_preview(test_id: str, entry_id: str, candidate_id: str, body: DiagramCropRequest,
-        question_id: str | None = None, scope: Literal['exact', 'parent', 'pdf', 'reuse'] = 'exact',
+        question_id: str | None = None, scope: Literal['exact', 'parent', 'pdf', 'reuse', 'manual'] = 'exact',
         reuse_ref: str | None = None, s=Depends(db)):
         try:
             context, entry, row = answer_context(test_id, entry_id, s, body.expected_revision, question_id)
@@ -570,7 +609,7 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
 
     @r.get('/tests/{test_id}/authoring/entries/{entry_id}/diagrams/{candidate_id}/crop')
     def answer_crop(test_id: str, entry_id: str, candidate_id: str, crop_sha: str | None = None,
-        question_id: str | None = None, scope: Literal['exact', 'parent', 'pdf', 'reuse'] = 'exact',
+        question_id: str | None = None, scope: Literal['exact', 'parent', 'pdf', 'reuse', 'manual'] = 'exact',
         reuse_ref: str | None = None, s=Depends(db)):
         try:
             context, entry, _ = answer_context(test_id, entry_id, s, question_id=question_id)

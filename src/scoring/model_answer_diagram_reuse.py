@@ -40,6 +40,10 @@ class ConfirmedDiagramReuse:
         owner = record.get('source_question_id')
         source = ModelAnswerDiagramReview(self.current.source, self.current.ir, self.store,
             entry=entry, question_regions=self.current.regions, questions=list(self.current.questions.values()))
+        if scope == 'manual':
+            review = source.manual_review()
+            validated = review.validate([record], record.get('revision', 1))[0]
+            return source, review, validated
         if scope == 'pdf':
             ir = visual_ir(source.source, source.ir)
             engine = DiagramRegionExtractor(source.source, ir, self.store)

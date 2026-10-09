@@ -219,7 +219,7 @@ class DiagramRegionExtractor:
         bounds = page_space(page).cropbox
         if not _contains(bounds, box):
             raise ValueError("diagram_crop_outside_page")
-        policy = POLICY
+        policy = getattr(self, "crop_policy", POLICY)
         if getattr(self, 'limit_crop_padding', False):
             # Keep the source-derived bbox unchanged. Reduce only optional
             # renderer padding at a proven Question/parent boundary.

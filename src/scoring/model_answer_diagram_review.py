@@ -42,6 +42,10 @@ class ModelAnswerDiagramReview:
         # Registration uses this store only; no page-wide discovery is performed.
         self.engine = SimpleNamespace(store=store)
 
+    def manual_review(self, owner=None):
+        from .manual_pdf_diagrams import ManualPdfDiagramReview
+        return ManualPdfDiagramReview(self.source, self.ir, self.store, owner or self.assigned)
+
     def reuse(self):
         if not self.reuse_context:
             raise ValueError('diagram_reuse_not_found')
@@ -135,6 +139,9 @@ class ModelAnswerDiagramReview:
         for selected in scopes:
             subset = [r for r in saved if r.get('scope', 'exact') == selected]
             try:
+                if selected == 'manual':
+                    result.extend(self.manual_review().validate(subset, revision))
+                    continue
                 if selected == 'reuse':
                     result.extend(self.reuse().records(subset, revision))
                     continue
@@ -187,6 +194,8 @@ class ModelAnswerDiagramReview:
                 raise ValueError('diagram_source_boundary')
 
     def record(self, identifier, *, final_bbox=None, revision=1, scope='exact', reuse_ref=None):
+        if scope == 'manual':
+            return self.manual_review().record(identifier, final_bbox=final_bbox, revision=revision)
         if scope == 'reuse':
             return self.reuse().record(identifier, reuse_ref, final_bbox=final_bbox, revision=revision)
         review, owner = self.scoped_review(scope)
@@ -202,6 +211,10 @@ class ModelAnswerDiagramReview:
             if not isinstance(r, dict) or not isinstance(r.get('id'), str) or r['id'] in seen:
                 raise ValueError('diagram_invalid_decision')
             scope = r.get('scope', 'exact')
+            if scope == 'manual':
+                result.extend(self.manual_review().validate([r], revision))
+                seen.add(r['id'])
+                continue
             if scope == 'reuse':
                 result.append(self.reuse().validate(r, revision))
                 seen.add(r['id'])
@@ -227,12 +240,16 @@ class ModelAnswerDiagramReview:
         return result
 
     def preview(self, record):
+        if record.get('scope') == 'manual':
+            return self.manual_review().preview(record)
         if record.get('scope') == 'reuse':
             return self.reuse().preview(record)
         review, _ = self.scoped_review(record.get('scope', 'exact'))
         return review.preview(record)
 
     def preview_path(self, identifier, crop_sha=None, scope='exact', reuse_ref=None):
+        if scope == 'manual':
+            return self.manual_review().preview_path(identifier, crop_sha)
         if scope == 'reuse':
             return self.reuse().preview_path(identifier, reuse_ref, crop_sha)
         review, _ = self.scoped_review(scope)

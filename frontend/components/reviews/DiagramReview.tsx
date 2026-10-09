@@ -4,7 +4,7 @@ import { apiFetch, json, ApiRequestError } from "@/lib/api/client";
 
 import type { DiagramRecord, DiagramSelection } from "@/types/diagrams";
 export type { DiagramRecord, DiagramSelection } from "@/types/diagrams";
-type DiagramScope = "exact" | "parent" | "pdf" | "reuse";
+type DiagramScope = "exact" | "parent" | "pdf" | "reuse" | "manual";
 type Discovery = {diagrams: DiagramRecord[]; reusable_diagrams?: DiagramRecord[]; diagnostics?: Record<string, unknown>; fallback?: {scope: "parent" | "pdf"; source_question_path?: string} | null};
 const clean = (record: DiagramRecord) => {const value = {...record}; delete value.preview_url; return value;};
 function trust(record: DiagramRecord) {
@@ -23,8 +23,8 @@ function errorMessage(e: unknown) {
   return "図の出典または範囲を確認できません。範囲を見直すか、再度図候補を確認してください。";
 }
 
-export function DiagramReview({path, revision, records = [], disabled, sourceStale, targetQuestionId, assignmentQuestionId, autoParentFallback = false, unsavedDiagramChanges = false, disabledReason, label, onChange, onSelect}: {
-  path: string; revision: number; records?: DiagramRecord[]; disabled: boolean; sourceStale?: boolean; targetQuestionId?: string; assignmentQuestionId?: string; autoParentFallback?: boolean; unsavedDiagramChanges?: boolean; disabledReason?: string; label: string;
+export function DiagramReview({path, revision, records = [], disabled, sourceStale, targetQuestionId, assignmentQuestionId, autoParentFallback = false, unsavedDiagramChanges = false, allowManualCrop = false, disabledReason, label, onChange, onSelect}: {
+  path: string; revision: number; records?: DiagramRecord[]; disabled: boolean; sourceStale?: boolean; targetQuestionId?: string; assignmentQuestionId?: string; autoParentFallback?: boolean; unsavedDiagramChanges?: boolean; allowManualCrop?: boolean; disabledReason?: string; label: string;
   onChange: (records: DiagramRecord[]) => void; onSelect: (selection: DiagramSelection) => void;
 }) {
   const requestPath = (suffix = "", selectedScope?: DiagramScope, reuseRef?: string) => {
@@ -38,6 +38,21 @@ export function DiagramReview({path, revision, records = [], disabled, sourceSta
   const currentScope = useRef(scope); currentScope.current = scope;
   const requestEpoch = useRef(0);
   const recordsRef = useRef(records); recordsRef.current = records;
+  type ManualSource = {material_id:string;filename:string;source_sha256:string;pages:{page_index:number;width:number;height:number;rotation:number}[]};
+  const [manualSource,setManualSource]=useState<ManualSource>();
+  const [manualPage,setManualPage]=useState(0);
+  const [manualBox,setManualBox]=useState<number[]>();
+  const [manualPreview,setManualPreview]=useState<DiagramRecord>();
+  const [manualBusy,setManualBusy]=useState(false);
+  const manualEndpoint=()=>`${path.replace(/\/diagrams$/, "")}/manual-crop?question_id=${encodeURIComponent(targetQuestionId||"")}`;
+  function selectManual(source:ManualSource,index:number){
+    const page=source.pages[index];setManualPage(index);setManualBox(undefined);setManualPreview(undefined);
+    onSelect({record:{id:"manual-selection",domain:"model_answer",target_key:targetQuestionId||"",state:"candidate",material_id:source.material_id,page_index:page.page_index,page_width:page.width,page_height:page.height,page_rotation:page.rotation,automatic_bbox:[0,0,0,0],source_type:"manual_pdf_crop"},manual:true,onBounds:box=>{setManualBox(box);setManualPreview(undefined);}});
+  }
+  function cancelManual(){setManualSource(undefined);setManualBox(undefined);setManualPreview(undefined);onSelect({record:{id:"manual-selection",domain:"model_answer",target_key:targetQuestionId||"",state:"candidate",page_index:0,automatic_bbox:[0,0,0,0]},manual:false});}
+  async function startManual(){const epoch=requestEpoch.current;setManualBusy(true);setError("");try{const source=await apiFetch<ManualSource>(manualEndpoint());if(currentScope.current!==scope||requestEpoch.current!==epoch)return;setManualSource(source);selectManual(source,0);}catch(e){if(currentScope.current===scope&&requestEpoch.current===epoch)setError(errorMessage(e));}finally{if(currentScope.current===scope&&requestEpoch.current===epoch)setManualBusy(false);}}
+  async function previewManual(){if(!manualBox||!manualSource)return;const epoch=requestEpoch.current;setManualBusy(true);setError("");try{const result=await apiFetch<DiagramRecord>(manualEndpoint(),json({expected_revision:revision,page_index:manualSource.pages[manualPage].page_index,bbox:manualBox}));if(currentScope.current!==scope||requestEpoch.current!==epoch)return;setManualPreview(result);}catch(e){if(currentScope.current===scope&&requestEpoch.current===epoch)setError(errorMessage(e));}finally{if(currentScope.current===scope&&requestEpoch.current===epoch)setManualBusy(false);}}
+  useEffect(()=>{if(!manualSource)return;const escape=(e:KeyboardEvent)=>{if(e.key==="Escape"&&!manualBusy)cancelManual();};window.addEventListener("keydown",escape);return()=>window.removeEventListener("keydown",escape);});
   const [reusable, setReusable] = useState<DiagramRecord[]>([]);
   const [reuseError, setReuseError] = useState("");
   const [diagnostics, setDiagnostics] = useState<Discovery["diagnostics"]>();
@@ -52,6 +67,7 @@ export function DiagramReview({path, revision, records = [], disabled, sourceSta
   useEffect(() => {
     let active = true;
     const epoch = ++requestEpoch.current;
+    setManualSource(undefined); setManualBox(undefined); setManualPreview(undefined); setManualBusy(false);
     setReusable([]); setReuseError("");
     setDiagnostics(undefined); setFallback(undefined); setDiscoveryScope("exact");
     setBusy(false); setDiscovering(false); setCandidates(sourceStale ? records.map(r => ({...r, state: "candidate", status: "unresolved", reason_code: "diagram_source_stale", trust_state: "hard_invalid", teacher_confirmed: false})) : []); setLoaded(false); setEditing(undefined); setPreview(undefined); setError("");
@@ -112,11 +128,11 @@ export function DiagramReview({path, revision, records = [], disabled, sourceSta
     if (disabled || sourceStale || (state === "accepted" && trust(candidate) === "hard_invalid")
       || (targetQuestionId && !targetAliases.includes(candidate.assigned_question_id || ""))) return;
     ++requestEpoch.current;
-    const confirmed = state === "accepted" && trust(candidate) === "teacher_confirmable";
+    const confirmed = state === "accepted" && (trust(candidate) === "teacher_confirmable" || candidate.source_type === "manual_pdf_crop");
     const record: DiagramRecord = {...candidate, state, teacher_confirmed: confirmed,
       trust_state_at_accept: state === "accepted" ? trust(candidate) : null,
       confirmation_reason_code: confirmed ? candidate.reason_code : null,
-      acceptance_method: state === "accepted" && candidate.scope === "reuse" ? "reused_confirmed_diagram" : confirmed ? "accepted_by_teacher_after_unresolved_detection" : state === "accepted" ? "accepted_by_teacher" : null};
+      acceptance_method: state === "accepted" && candidate.scope === "manual" ? "teacher_manual_pdf_crop" : state === "accepted" && candidate.scope === "reuse" ? "reused_confirmed_diagram" : confirmed ? "accepted_by_teacher_after_unresolved_detection" : state === "accepted" ? "accepted_by_teacher" : null};
     setCandidates(current => current.some(c => c.id === record.id)
       ? current.map(c => c.id === record.id ? record : c) : [...current, record]);
     const updated = [...recordsRef.current.filter(r => r.id !== record.id), clean(record)];
@@ -139,10 +155,10 @@ export function DiagramReview({path, revision, records = [], disabled, sourceSta
       setPreview(result); onSelect({record: result, manual: true, onBounds: value => {setBox(value); setPreview(undefined);}});
     } catch (e) {if (currentScope.current === scope && requestEpoch.current === epoch) {setError(errorMessage(e)); setErrorDetails(errorCode(e));}} finally {if (currentScope.current === scope && requestEpoch.current === epoch) setBusy(false);}
   }
-  return <section className="panel section diagram-review" aria-label={label} aria-busy={busy} tabIndex={-1}>
+  return <section className="panel section diagram-review" aria-label={label} aria-busy={busy || manualBusy} tabIndex={-1}>
     <h3>{label}</h3>
     <p className="muted">図の出典・範囲を確認して選択します。保存・登録は上部の操作から行います。</p>
-    <button type="button" disabled={disabled || busy || sourceStale || !!disabledReason} onClick={() => discover()}>{discovering ? <><span className="spinner" aria-hidden="true"/>図候補を探しています…</> : busy ? "図の範囲を確認中…" : "図候補を確認"}</button>
+    <button type="button" disabled={disabled || busy || manualBusy || sourceStale || !!disabledReason} onClick={() => discover()}>{discovering ? <><span className="spinner" aria-hidden="true"/>図候補を探しています…</> : busy ? "図の範囲を確認中…" : "図候補を確認"}</button>
     {discovering && <p className="muted" role="status">図候補を探索しています…</p>}
     {!loaded && !records.length && <p className="muted">まだ図候補を確認していません。</p>}
     {disabledReason && <p className="muted">{disabledReason}</p>}
@@ -152,15 +168,15 @@ export function DiagramReview({path, revision, records = [], disabled, sourceSta
       <p>{fallback?.scope === "pdf" ? "この設問および親設問には図候補が見つかりませんでした。" : "この設問の出典範囲には図候補が見つかりませんでした。"}</p>
       {fallback?.scope === "parent" && <>
         <p>親設問「{fallback.source_question_path}」に図候補があります。</p>
-        <button type="button" disabled={disabled || busy || sourceStale} onClick={() => discover("parent")}>親設問の図候補を表示</button>
+        <button type="button" disabled={disabled || busy || manualBusy || sourceStale} onClick={() => discover("parent")}>親設問の図候補を表示</button>
       </>}
-      {fallback?.scope === "pdf" && <button type="button" disabled={disabled || busy || sourceStale} onClick={() => discover("pdf")}>このPDFのすべての図候補を表示</button>}
+      {fallback?.scope === "pdf" && <button type="button" disabled={disabled || busy || manualBusy || sourceStale} onClick={() => discover("pdf")}>このPDFのすべての図候補を表示</button>}
     </>}
-    {!!candidates.length && discoveryScope !== "exact" && <p className="muted">図の出典: {discoveryScope === "parent" ? `親設問 ${candidates[0].source_question_path || ""}` : "PDF全体"}（編集対象は変わりません）</p>}
+    {!!candidates.length && discoveryScope !== "exact" && <p className="muted">図の出典: {discoveryScope === "parent" ? `親設問 ${candidates[0].source_question_path || ""}` : discoveryScope === "manual" ? "PDF手動切り取り" : "PDF全体"}（編集対象は変わりません）</p>}
     {candidates.map((candidate, index) => <article key={candidate.id} data-diagram-id={candidate.id}>
       <h4><button type="button" onClick={() => onSelect({record: candidate, manual: false})}>図{index+1} · ページ {candidate.page_index+1}</button></h4>
-      {candidate.scope && candidate.scope !== "exact" && <p>出典: {candidate.scope === "reuse" ? `使用済みの図 · ${candidate.reused_from_question_path}` : candidate.scope === "parent" ? `親設問 ${candidate.source_question_path}` : `PDF全体${candidate.source_question_path ? ` · ${candidate.source_question_path}` : ""}`} · p.{candidate.page_index + 1}</p>}
-      <p>{candidate.state === "accepted" ? "使用中" : candidate.state === "excluded" ? "対象外" : "候補"} · {candidate.teacher_adjusted ? "教師が範囲を修正" : "自動検出"}</p>
+      {candidate.scope && candidate.scope !== "exact" && <p>出典: {candidate.scope === "reuse" ? `使用済みの図 · ${candidate.reused_from_question_path}` : candidate.scope === "parent" ? `親設問 ${candidate.source_question_path}` : candidate.scope === "manual" ? "PDF手動切り取り" : `PDF全体${candidate.source_question_path ? ` · ${candidate.source_question_path}` : ""}`} · p.{candidate.page_index + 1}</p>}
+      <p>{candidate.state === "accepted" ? "使用中" : candidate.state === "excluded" ? "対象外" : "候補"} · {candidate.source_type === "manual_pdf_crop" ? "教師がPDF範囲を指定" : candidate.teacher_adjusted ? "教師が範囲を修正" : "自動検出"}</p>
       {candidate.state === "accepted" && candidate.teacher_confirmed && <p role="status">教師が確認して使用</p>}
       {candidate.state === "accepted" && candidate.scope === "reuse" && <p role="status">使用済みの図を再利用しています。</p>}
       {candidate.preview_url && <img className="review-crop" src={candidate.preview_url} alt={`図${index+1}の切り出し範囲`} /> /* eslint-disable-line @next/next/no-img-element */}
@@ -169,10 +185,10 @@ export function DiagramReview({path, revision, records = [], disabled, sourceSta
       {disabled && <p className="muted">現在は編集できません。編集可能な修正版で再開してください。</p>}
       {busy && <p className="muted">範囲の確認中です。完了後に図を選択できます。</p>}
       <div className="review-toolbar">
-        <button type="button" disabled={disabled || busy || sourceStale || trust(candidate) === "hard_invalid" || candidate.state === "accepted"} onClick={() => decide(candidate, "accepted")}>{candidate.state === "accepted" ? "使用中" : trust(candidate) === "teacher_confirmable" ? "この図を確認して使用" : "この図を使用"}</button>
-        <button type="button" disabled={disabled || busy || sourceStale || !candidate.crop_sha256} onClick={() => edit(candidate)}>範囲を修正</button>
-        <button type="button" disabled={disabled || busy || sourceStale || candidate.reason_code === "diagram_source_stale"} onClick={() => decide(candidate, "excluded")}>対象外にする</button>
-        {candidate.reason_code === "diagram_source_stale" && <button type="button" disabled={disabled || busy} onClick={() => {onChange(records.filter(r => r.id !== candidate.id)); setCandidates(c => c.filter(r => r.id !== candidate.id));}}>古い図の記録を削除</button>}
+        <button type="button" disabled={disabled || busy || manualBusy || sourceStale || trust(candidate) === "hard_invalid" || candidate.state === "accepted"} onClick={() => decide(candidate, "accepted")}>{candidate.state === "accepted" ? "使用中" : trust(candidate) === "teacher_confirmable" ? "この図を確認して使用" : "この図を使用"}</button>
+        <button type="button" disabled={disabled || busy || manualBusy || sourceStale || !candidate.crop_sha256} onClick={() => edit(candidate)}>範囲を修正</button>
+        <button type="button" disabled={disabled || busy || manualBusy || sourceStale || candidate.reason_code === "diagram_source_stale"} onClick={() => decide(candidate, "excluded")}>対象外にする</button>
+        {candidate.reason_code === "diagram_source_stale" && <button type="button" disabled={disabled || busy || manualBusy} onClick={() => {onChange(records.filter(r => r.id !== candidate.id)); setCandidates(c => c.filter(r => r.id !== candidate.id));}}>古い図の記録を削除</button>}
       </div>
       <details><summary>図の出典情報</summary><pre>{JSON.stringify(clean(candidate), null, 2)}</pre></details>
     </article>)}
@@ -185,13 +201,24 @@ export function DiagramReview({path, revision, records = [], disabled, sourceSta
         <p>{record.reused_from_question_path} で使用中</p>
         {record.preview_url && <img className="review-crop" src={record.preview_url} alt="再利用できる図" /> /* eslint-disable-line @next/next/no-img-element */}
         <button type="button" onClick={() => onSelect({record, manual: false})}>元PDFで確認</button>
-        <button type="button" disabled={disabled || busy || sourceStale || trust(record) === "hard_invalid" || candidates.some(c => c.id === record.id && c.state === "accepted")}
+        <button type="button" disabled={disabled || busy || manualBusy || sourceStale || trust(record) === "hard_invalid" || candidates.some(c => c.id === record.id && c.state === "accepted")}
           onClick={() => decide(record, "accepted")}>この図を再利用</button>
         <details><summary>再利用元の図の出典情報</summary><pre>{JSON.stringify(clean(record), null, 2)}</pre></details>
       </article>)}
     </section>}
+    {allowManualCrop && <section aria-label="PDFから手動切り取り">
+      <p className="muted">自動で見つからない場合は、PDFから範囲を指定できます。</p>
+      <button type="button" disabled={disabled||busy||manualBusy||sourceStale||!!disabledReason||!!manualSource} onClick={startManual}>PDFから切り取る</button>
+      {manualSource&&<><p role="status">切り取り元: 模範解答 — {manualSource.filename}。左のPDFで範囲をドラッグしてください。</p>
+        <label>切り取るページ<select disabled={manualBusy} value={manualPage} onChange={e=>selectManual(manualSource,Number(e.target.value))}>{manualSource.pages.map((page,index)=><option key={page.page_index} value={index}>{page.page_index+1}ページ</option>)}</select></label>
+        <button type="button" disabled={!manualBox||manualBusy} onClick={previewManual}>{manualBusy?"プレビューを作成中…":"選択範囲をプレビュー"}</button>
+        {manualPreview&&<><p>この範囲を図として使用</p>{manualPreview.preview_url&&<img className="review-crop" src={manualPreview.preview_url} alt="手動切り取りのプレビュー"/> /* eslint-disable-line @next/next/no-img-element */}
+          <button type="button" disabled={manualBusy||disabled} onClick={()=>{decide(manualPreview,"accepted");setManualSource(undefined);setManualBox(undefined);setManualPreview(undefined);}}>使用する</button></>}
+        <button type="button" disabled={manualBusy} onClick={()=>selectManual(manualSource,manualPage)}>やり直す</button><button type="button" disabled={manualBusy} onClick={cancelManual}>取消</button>
+      </>}
+    </section>}
     {diagnostics && <details><summary>図の探索情報</summary><pre>{JSON.stringify(diagnostics, null, 2)}</pre></details>}
-    {editing && <fieldset disabled={disabled || busy} aria-label="図の範囲を修正">
+    {editing && <fieldset disabled={disabled || busy || manualBusy} aria-label="図の範囲を修正">
       <legend>図の範囲を修正</legend>
       <p>左のPDF上で範囲をドラッグしてください。座標でも調整できます。</p>
       <div className="diagram-bounds">{["左", "上", "右", "下"].map((label, i) => <label key={label}>{label}<input type="number" step="0.1" aria-label={`図の範囲 ${label}`} value={box[i] ?? ""} onChange={e => {setBox(b => b.map((v, j) => j === i ? Number(e.target.value) : v)); setPreview(undefined);}} /></label>)}</div>
