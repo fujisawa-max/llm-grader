@@ -75,8 +75,9 @@ test("rubric ranges preview, split, insert, undo and registration preserve sourc
   const registered = page.waitForResponse((response) => response.url().endsWith("/register-rubric"));
   await page.getByRole("button", {name: "採点基準として登録"}).click();
   const result = await registered;
-  expect(result.status()).toBe(200);
-  const payload = await result.json();
+  const registrationBody = await result.text();
+  expect(result.status(), registrationBody).toBe(200);
+  const payload = JSON.parse(registrationBody);
   expect(payload.rubric.status).toBe("generated");
   expect(payload.rubric.rubric_json.questions[0].criteria).toHaveLength(2);
   const sources = payload.rubric.rubric_json.provenance.questions[questionId!];

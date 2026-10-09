@@ -210,10 +210,12 @@ export default function TestAuthoringPage() {
       setSelected(current=>row.snapshot.nodes.some(n=>n.stable_key===current)?current:row.snapshot.nodes[0]?.stable_key||"all");
       const roleDomain=materialRole==="rubric_source"?row.snapshot.domains?.rubric:row.snapshot.domains?.answer;
       const outcome=materialRole==="question_sheet"?undefined:(roleDomain?.analysis_results?.[materialRole||"model_answer_source"]||roleDomain?.analysis_result);
+      const recoveryCount=materialRole&&["model_answer_source","rubric_source"].includes(materialRole)
+        ?(row.snapshot.domains?.recovery?.rubric_candidates||[]).filter(candidate=>!candidate.dismissed&&!candidate.promoted&&candidate.origin_role===materialRole&&candidate.source_binding_id===requestedMaterialId).length:0;
       const refreshed=await testAuthoring.review(id);setIssues(refreshed.issues);
       if(domain==="answer"&&outcome){
         setVisible(v=>({...v,answer:true,rubric:true}));
-        const detail=`対応済み${outcome.assigned_count}件 / 未対応${outcome.unresolved_count}件`;
+        const detail=[`対応済み${outcome.assigned_count}件 / 未対応${outcome.unresolved_count}件`,...(recoveryCount?[`未割当の採点基準候補が${recoveryCount}件あります。`]:[])].join("。 ");
         const title=materialRole==="rubric_source"?"採点基準を解析しました":"模範解答を解析しました";
         if(!outcome.candidate_count){const target=row.snapshot.nodes.find(n=>n.included&&!row.snapshot.nodes.some(child=>child.included&&child.parent_key===n.stable_key))?.stable_key||row.snapshot.nodes[0]?.stable_key||"all";setSelected(target);const message=materialRole==="rubric_source"?"自動抽出できる採点基準候補がありませんでした。設問を選択し、採点基準を手動で追加してください。":"自動抽出できる模範解答候補がありませんでした。必要なら設問ごとに手動で追加してください。";setError(message);notify("warning",title,message);}
         else if(outcome.fallback_count){if(!outcome.assigned_count)setSelected("unassigned");const message=`${outcome.fallback_count}件の候補を自動分類できませんでした。${outcome.assigned_count?"候補を確認してください。":"設問未割当の候補から確認・割当してください。"}`;setError(message);notify("warning",title,`${detail}。${message}`);}
@@ -445,7 +447,15 @@ export default function TestAuthoringPage() {
         {orderedNodes().map(n=><option key={n.stable_key} value={n.stable_key}>{pathFor(n.stable_key)}</option>)}{snapshot.domains?.answer?.entries.some(e=>!e.authoring_question_key)&&<option value="unassigned">設問未割当の候補</option>}<option value="all">テスト全体確認</option>
       </select></label><span>表示</span>{([['question','問題'],['answer','解答'],['rubric','採点基準']] as const).map(([key,label])=><label key={key}><input type="checkbox" checked={visible[key]} onChange={e=>{const next={...visible,[key]:e.target.checked};setVisible(next);localStorage.setItem("test-authoring-visible",JSON.stringify(next));}}/>{label}</label>)}
       <span className="authoring-add-question"><button disabled={readonly||saving||analyzing} onClick={()=>{const n=newNode(nodes.length);change({...snapshot,nodes:[...nodes,n]});setBuffers(current=>({...current,[n.stable_key]:""}));setSelected(n.stable_key);}}>設問を追加</button></span>
-    </div>{analyzing&&<p className="authoring-analysis-progress" role="status" aria-live="polite"><span className="spinner" aria-hidden="true"/><strong>{analysisProgress}を解析しています…</strong><span className="muted">元資料を確認し、候補を更新しています。</span></p>}</>}>
+    </div>{analyzing&&<p className="authoring-analysis-progress" role="status" aria-live="polite"><span className="spinner" aria-hidden="true"/><strong>{analysisProgress}を解析しています…</strong><span className="muted">元資料を確認し、候補を更新しています。</span></p>}
+      {rubricRecovery.length>0&&<details className="authoring-recovery-panel"><summary>未割当の採点基準候補を確認（{rubricRecovery.length}件）</summary><p>候補は採点基準へ自動登録されていません。内容と対応先を確認してください。</p>
+        {rubricRecovery.map(candidate=><article className="panel" key={candidate.id}><MarkdownMathText source={candidate.text}/><p>{candidate.origin_role==="model_answer_source"?"模範解答資料内で見つかった採点基準候補":"採点基準資料からの候補"}</p>
+          <label>対象設問<select aria-label="未割当候補の対象設問" value={recoveryTargets[candidate.id]||candidate.question_key||""} onChange={event=>setRecoveryTargets(current=>({...current,[candidate.id]:event.target.value}))}><option value="">設問を選択</option>{orderedNodes().filter(item=>!nodes.some(child=>child.included&&child.parent_key===item.stable_key)).map(item=><option key={item.stable_key} value={item.stable_key}>{pathFor(item.stable_key)}</option>)}</select></label>
+          <button type="button" disabled={readonly||saving||analyzing||!(recoveryTargets[candidate.id]||candidate.question_key)} onClick={()=>promoteRecovery(candidate.id)}>採点基準として追加</button>
+          <button type="button" disabled={readonly||saving||analyzing} onClick={()=>updateRecovery(candidate.id,{dismissed:true})}>無視</button>
+        </article>)}
+      </details>}
+    </>}>
       {selected==="all"?<section aria-label="テスト全体確認"><h2>テスト全体確認</h2>
         <label>テスト名<input disabled={readonly||saving||analyzing} value={snapshot.metadata.name} onChange={e=>change({...snapshot,metadata:{...snapshot.metadata,name:e.target.value}})}/></label>
         <label>合計点<input type="number" disabled={readonly||saving||analyzing} value={snapshot.metadata.total_points} onChange={e=>change({...snapshot,metadata:{...snapshot.metadata,total_points:Number(e.target.value)}})}/></label>
@@ -510,13 +520,6 @@ export default function TestAuthoringPage() {
           </AuthoringPreviewEditor>}
         </section>}
         {visible.rubric&&<section id="authoring-rubric" tabIndex={-1} aria-label="採点基準"><h2>採点基準</h2>
-          {rubricRecovery.length>0&&<section aria-label="未割当の採点基準候補"><h3>未割当の採点基準候補 {rubricRecovery.length}件</h3><p>候補は採点基準へ自動登録されていません。内容と対応先を確認してください。</p>
-            {rubricRecovery.map(candidate=><article className="panel" key={candidate.id}><MarkdownMathText source={candidate.text}/><p>{candidate.origin_role==="model_answer_source"?"模範解答資料内で見つかった採点基準候補":"採点基準資料からの候補"}</p>
-              <label>対象設問<select aria-label="未割当候補の対象設問" value={recoveryTargets[candidate.id]||candidate.question_key||""} onChange={event=>setRecoveryTargets(current=>({...current,[candidate.id]:event.target.value}))}><option value="">設問を選択</option>{orderedNodes().filter(item=>!nodes.some(child=>child.included&&child.parent_key===item.stable_key)).map(item=><option key={item.stable_key} value={item.stable_key}>{pathFor(item.stable_key)}</option>)}</select></label>
-              <button type="button" disabled={readonly||saving||analyzing||!(recoveryTargets[candidate.id]||candidate.question_key)} onClick={()=>promoteRecovery(candidate.id)}>採点基準として追加</button>
-              <button type="button" disabled={readonly||saving||analyzing} onClick={()=>updateRecovery(candidate.id,{dismissed:true})}>無視</button>
-            </article>)}
-          </section>}
           <AuthoringCandidates key={`rubric:${rubricDomain?.draft_id||"manual"}`} testId={id} draftId={rubricDomain?.draft_id||"manual-rubric"} revision={revision?.edit_version||1} questionKey={selected}
             entries={rubricEntries} savedEntries={rubricEntries} disabled={readonly||saving||analyzing} answerEditing={false} rubricEditing={editing.rubric}
             onAnswerEditing={()=>{}} onRubricEditing={value=>setEditing(v=>({...v,rubric:value}))} showAnswer={false} showRubric

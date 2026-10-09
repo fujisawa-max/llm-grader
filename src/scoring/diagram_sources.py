@@ -142,16 +142,45 @@ def model_answer_diagram_candidates(source, ir, store, *, entry, question_region
         raise ValueError('diagram_source_mapping_missing')
     ir = visual_ir(source, ir)
     ownership, exclusions, bounds, blocked = {}, {}, {}, {}
+    parent_by_question = {r.get('question_id'): r.get('parent_id') for r in question_regions
+                          if r.get('question_id')}
+    target_depth = min((r.get('depth', 0) for r in regions), default=0)
+
+    def is_descendant(question_id, ancestor_id):
+        seen = set()
+        current = parent_by_question.get(question_id)
+        while current and current not in seen:
+            if current == ancestor_id:
+                return True
+            seen.add(current)
+            current = parent_by_question.get(current)
+        return False
+
+    ancestors = set()
+    for region in regions:
+        current = region.get('parent_id')
+        seen = set()
+        while current and current not in seen:
+            ancestors.add(current)
+            seen.add(current)
+            current = parent_by_question.get(current)
     for page in ir['pages']:
         index = page['page_index']
         own = [r for r in regions if r['page_index'] == index]
         sibling = [r for r in question_regions if r['page_index'] == index
-                   and r.get('question_id') != qid and r.get('depth', 0) >= min(
-                       (r.get('depth', 0) for r in own), default=0)]
-        bounds[index] = [[r['left'], r['top'], r['right'], r['bottom']] for r in own]
+                   and r.get('question_id') != qid and r.get('depth', 0) >= target_depth
+                   and not is_descendant(r.get('question_id'), qid)]
+        discovery_bounds = [[r['left'], r['top'], r['right'], r['bottom']] for r in own]
+        # Discover only inside the requested Question's own region. Crop
+        # validation may use an ancestor region as a safe fallback when the
+        # renderer's padding extends past a split-child boundary.
+        ancestor_bounds = [[r['left'], r['top'], r['right'], r['bottom']]
+                           for r in question_regions if r['question_id'] in ancestors
+                           and r['page_index'] == index]
+        bounds[index] = discovery_bounds + ancestor_bounds
         blocked[index] = [[r['left'], r['top'], r['right'], r['bottom']] for r in sibling]
         ids = [e['element_id'] for e in visual_elements(page) if e.get('bbox')
-            and sum(_contains(b, e['bbox']) for b in bounds[index]) == 1
+            and sum(_contains(b, e['bbox']) for b in discovery_bounds) == 1
             and not any(_near(b, e['bbox']) for b in blocked[index])]
         labels = {i for s in entry.get('source', {}).get('segments', [])
                   if s.get('page_index') == index for i in s.get('element_ids', [])}
@@ -163,7 +192,10 @@ def model_answer_diagram_candidates(source, ir, store, *, entry, question_region
         exclusions[index] = [e['element_id'] for e in visual_elements(page) if e['element_id'] not in ids]
     engine = DiagramRegionExtractor(source, ir, store)
     engine.allowed_bounds, engine.blocked_bounds = bounds, blocked
-    engine.ownership_key = {'bounds': bounds, 'blocked': blocked, 'entry_id': entry.get('id', qid)}
+    engine.ownership_key = {'bounds': bounds, 'discovery_bounds': {
+        p['page_index']: [[r['left'], r['top'], r['right'], r['bottom']]
+                          for r in question_regions if r['question_id'] == qid and r['page_index'] == p['page_index']]
+        for p in ir['pages']}, 'blocked': blocked, 'entry_id': entry.get('id', qid)}
     engine.legacy_figures = []
     engine.discovery_args = dict(domain='model_answer', target_key=qid, ownership=ownership, exclusions=exclusions)
     return engine, engine.candidates(**engine.discovery_args, grouping=grouping) if discover else []

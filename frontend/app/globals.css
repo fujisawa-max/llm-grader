@@ -258,3 +258,7 @@ dialog.authoring-proposal-dialog::backdrop{background:#0006}
 .authoring-answer-preview-frame{margin:8px 0 12px;background:#fff}
 .authoring-analysis-progress{position:sticky;top:var(--review-header-height,0px);z-index:3;border:1px solid #9db8d0;border-left:4px solid #2872a8;border-radius:5px;background:#eaf4fb;color:#163c57;padding:12px 16px;box-shadow:0 2px 8px #183c551a}
 .authoring-analysis-progress strong{font-size:1rem}
+.authoring-recovery-panel{margin:.75rem 0;padding:.65rem .8rem;border:1px solid #cbd8e3;border-radius:6px;background:#f8fafc}
+.authoring-recovery-panel>summary{cursor:pointer;font-weight:600;color:#294b65}
+.authoring-recovery-panel[open]{max-height:min(55vh,520px);overflow:auto}
+.authoring-recovery-panel>article{margin:.6rem 0;padding:.65rem;border:1px solid #d9e1e8;border-radius:5px;background:#fff}

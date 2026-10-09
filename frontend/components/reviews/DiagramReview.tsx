@@ -100,8 +100,9 @@ export function DiagramReview({path, revision, records = [], disabled, sourceSta
     finally {if (currentScope.current === scope && requestEpoch.current === epoch) setBusy(false);}
   }
   function decide(candidate: DiagramRecord, state: DiagramRecord["state"]) {
+    const targetAliases = [assignmentQuestionId, targetQuestionId].filter((value): value is string => !!value);
     if (disabled || sourceStale || (state === "accepted" && trust(candidate) === "hard_invalid")
-      || (targetQuestionId && candidate.assigned_question_id !== (assignmentQuestionId || targetQuestionId))) return;
+      || (targetQuestionId && !targetAliases.includes(candidate.assigned_question_id || ""))) return;
     ++requestEpoch.current;
     const confirmed = state === "accepted" && trust(candidate) === "teacher_confirmable";
     const record: DiagramRecord = {...candidate, state, teacher_confirmed: confirmed,

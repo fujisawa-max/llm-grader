@@ -133,6 +133,10 @@ def seed(root):
         split_test = domain.test(offering.id, name="Rubric split fixture", total_points=10)
         split_question = domain.question(split_test.id, question_number="1", display_label="問題1", sort_order=1,
                                           max_points=10, is_gradable=True, question_text="Explain overfitting.")
+        for number in (2, 3):
+            domain.question(split_test.id, question_number=str(number), display_label=f"問題{number}",
+                            sort_order=number, max_points=0, is_gradable=False,
+                            question_text=f"Recovery candidate target {number}.")
         split_pdf = pymupdf.open()
         split_page = split_pdf.new_page(width=600, height=800)
         split_page.insert_textbox(pymupdf.Rect(30, 30, 570, 750),
@@ -219,6 +223,9 @@ def seed(root):
         diagram_split_test = domain.test(teacher_offering.id, name="Diagram split fixture", total_points=20)
         diagram_answer_test = domain.test(teacher_offering.id, name="Diagram answer fixture", total_points=20)
         for n in (3, 4):
+            domain.question(diagram_split_test.id, question_number=str(n), display_label=f"問題{n}",
+                sort_order=n, max_points=10, is_gradable=True, question_text=f"既存の正式問題文{n}")
+        for n in (3, 4):
             domain.question(diagram_answer_test.id, question_number=str(n), display_label=f"問題{n}",
                 sort_order=n, max_points=10, is_gradable=True, question_text="図の範囲を確認してください。")
         diagram_path = root / "sources" / "diagram.pdf"
@@ -227,6 +234,9 @@ def seed(root):
         diagram_answer_path.write_bytes(diagram_pdf(True))
         diagram_material = domain.material(diagram_answer_test.id, material_type="model_answer_source",
             storage_ref=str(diagram_answer_path), original_filename="diagram-answer.pdf", mime_type="application/pdf",
+            sha256=hashlib.sha256(diagram_answer_path.read_bytes()).hexdigest())
+        diagram_split_material = domain.material(diagram_split_test.id, material_type="model_answer_source",
+            storage_ref=str(diagram_answer_path), original_filename="diagram-split-answer.pdf", mime_type="application/pdf",
             sha256=hashlib.sha256(diagram_answer_path.read_bytes()).hexdigest())
         unified_test = domain.test(teacher_offering.id, name="Source-backed authoring fixture", total_points=20)
         for index, number in enumerate((3, 4)):
@@ -264,7 +274,9 @@ def seed(root):
         geometry_env['AUTHORING_SAVE_WARNING_PDF_PATH'] = str(warning_path)
 
         geometry_env.update(DIAGRAM_TEST_ID=diagram_test.id, DIAGRAM_SPLIT_TEST_ID=diagram_split_test.id, DIAGRAM_PDF_PATH=str(diagram_path),
-            DIAGRAM_ANSWER_TEST_ID=diagram_answer_test.id, DIAGRAM_ANSWER_MATERIAL_ID=diagram_material.id)
+            DIAGRAM_ANSWER_TEST_ID=diagram_answer_test.id, DIAGRAM_ANSWER_MATERIAL_ID=diagram_material.id,
+            AUTHORING_SPLIT_DIAGRAM_TEST_ID=diagram_split_test.id,
+            AUTHORING_SPLIT_DIAGRAM_MATERIAL_ID=diagram_split_material.id)
         manual_diagram_test = domain.test(teacher_offering.id, name="Manual diagram-only answers", total_points=30)
         major = domain.question(manual_diagram_test.id, question_number="3", display_label="問題3",
             sort_order=3, max_points=None, is_gradable=False)

@@ -267,6 +267,58 @@ def test_model_answer_adapter_uses_exact_persisted_question_boundary(source):
     assert result[0]["bbox"] == [70, 80, 230, 240]
 
 
+def test_model_answer_child_crop_can_use_parent_range_and_keeps_major_scope(source):
+    parent = {"question_id": "q3", "parent_id": None, "page_index": 0,
+              "left": 20, "right": 250, "top": 40, "bottom": 280, "depth": 0}
+    first = {"question_id": "q3-1", "parent_id": "q3", "page_index": 0,
+             "left": 20, "right": 250, "top": 40, "bottom": 145, "depth": 1}
+    second = {"question_id": "q3-2", "parent_id": "q3", "page_index": 0,
+              "left": 20, "right": 250, "top": 145, "bottom": 280, "depth": 1}
+    other_major = {"question_id": "q4", "parent_id": None, "page_index": 0,
+                   "left": 260, "right": 390, "top": 280, "bottom": 480, "depth": 0}
+    regions = [parent, first, second, other_major]
+
+    # The figure crosses both child ranges, so exact child discovery has no
+    # complete candidate. Parent scope can see it, while unrelated Problem 4
+    # remains outside the owner region.
+    _, exact = model_answer_diagram_candidates(*source,
+        entry={"question_id": "q3-1", "source": {}}, question_regions=regions)
+    assert exact == []
+    parent_engine, parent_candidates = model_answer_diagram_candidates(*source,
+        entry={"question_id": "q3", "source": {}}, question_regions=regions)
+    assert [candidate["bbox"] for candidate in parent_candidates] == [[70, 80, 230, 240]]
+    assert parent_engine.crop(parent_candidates[0])["crop_sha256"]
+
+    # A figure outside the Problem 3 parent stays rejected even when it is
+    # fully inside another major Question's source region.
+    bounded_parent = {**parent, "bottom": 70}
+    bounded_child = {**first, "bottom": 70}
+    unrelated_owner = {"question_id": "q4", "parent_id": None, "page_index": 0,
+                       "left": 60, "right": 250, "top": 70, "bottom": 260, "depth": 0}
+    _, out_of_scope = model_answer_diagram_candidates(*source,
+        entry={"question_id": "q3", "source": {}},
+        question_regions=[bounded_parent, bounded_child, unrelated_owner])
+    assert out_of_scope == []
+
+
+def test_model_answer_child_crop_padding_may_extend_only_to_parent(source):
+    parent = {"question_id": "q3", "parent_id": None, "page_index": 0,
+              "left": 20, "right": 250, "top": 40, "bottom": 280, "depth": 0}
+    child = {"question_id": "q3-1", "parent_id": "q3", "page_index": 0,
+             "left": 20, "right": 250, "top": 79, "bottom": 241, "depth": 1}
+    sibling = {"question_id": "q3-2", "parent_id": "q3", "page_index": 0,
+               "left": 20, "right": 250, "top": 280, "bottom": 480, "depth": 1}
+    other_major = {"question_id": "q4", "parent_id": None, "page_index": 0,
+                   "left": 260, "right": 390, "top": 280, "bottom": 480, "depth": 0}
+    engine, result = model_answer_diagram_candidates(*source,
+        entry={"question_id": "q3-1", "source": {}},
+        question_regions=[parent, child, sibling, other_major])
+    assert len(result) == 1
+    # The automatic source range is inside Q3(1), while renderer padding may
+    # extend beyond that child's edge but remains inside Problem 3.
+    assert engine.crop(result[0])["crop_sha256"]
+
+
 def test_model_answer_adapter_missing_mapping_not_guessed(source):
     with pytest.raises(ValueError, match="diagram_source_mapping_missing"):
         model_answer_diagram_candidates(*source, entry={"question_id": None}, question_regions=[])
