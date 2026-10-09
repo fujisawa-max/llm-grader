@@ -39,7 +39,7 @@ test("delayed source revalidation cannot erase a newer teacher acceptance", asyn
   await section.getByRole("button", {name: "このPDFのすべての図候補を表示"}).click();
   await expect(section.getByAltText("図1の切り出し範囲")).toBeVisible();
   await expect(page.locator(".diagram-overlay")).toBeVisible();
-  await expect(section.getByText("図の出典範囲を自動では確認できませんでした。PDFと図の範囲を確認してください。教師が確認した図は使用できます。", {exact: true})).toBeVisible();
+  await expect(section.getByText("この図が設問に対応する図か自動では確認できませんでした。PDFと図の範囲を確認し、正しければ使用してください。別の範囲をPDFから切り出すこともできます。", {exact: true})).toBeVisible();
   await expect(section.getByText(/diagram_ricoh_output_truncated/)).not.toBeVisible();
   const use = section.getByRole("button", {name: "この図を確認して使用", exact: true});
   await expect(use).toBeEnabled();

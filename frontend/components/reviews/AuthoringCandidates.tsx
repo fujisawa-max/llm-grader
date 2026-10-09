@@ -27,6 +27,12 @@ export function AuthoringCandidates({testId, draftId, revision, questionKey, ent
     candidate.diagram_records?.some(record=>record.state==="accepted" &&
       JSON.stringify(record)!==JSON.stringify(savedEntries.find(saved=>saved.id===candidate.id)?.diagram_records?.find(saved=>saved.id===record.id)))
   );
+  // Only persisted same-major records drive reuse refresh, never dirty guidance.
+  const savedReuseVersion=JSON.stringify(savedEntries.filter(candidate=>
+    !!majorKey && !!candidate.authoring_question_key &&
+    canonicalQuestionRoot(candidate.authoring_question_key,questions)===majorKey
+  ).map(candidate=>({id:candidate.id,source:candidate.source_draft_id,disposition:candidate.disposition,
+    diagrams:candidate.diagram_records?.filter(record=>record.state==="accepted")})));
   const [selected,setSelected]=useState<Record<string,string[]>>({});
   const [error,setError]=useState("");
   const [busy,setBusy]=useState(false);
@@ -116,7 +122,7 @@ export function AuthoringCandidates({testId, draftId, revision, questionKey, ent
       <button disabled={disabled||busy} onClick={()=>update(entry.id,{manual_alternative_answers:[...(entry.manual_alternative_answers||entry.semantic_classification?.manual_alternative_answers||entry.semantic_classification?.alternative_answers?.map(a=>({id:`source-alternative:${a.segment_ids.join(":")}`,text:a.text}))||[]),{id:reviewCandidateId("teacher-alternative"),text:""}]})}>別解を追加</button>
       <details><summary>保存済みの本文</summary><pre>{savedEntries.find(e=>e.id===entry.id)?.answer_text||"本文なし"}</pre></details>
       <DiagramReview path={`/tests/${testId}/authoring/entries/${entry.id}/diagrams`} revision={revision} targetQuestionId={entry.authoring_question_key||undefined} allowManualCrop assignmentQuestionId={questions.find(q=>q.key===entry.authoring_question_key)?.sourceId} autoParentFallback
-        unsavedDiagramChanges={unsavedMajorDiagramChanges}
+        unsavedDiagramChanges={unsavedMajorDiagramChanges} savedReuseVersion={savedReuseVersion}
         records={entry.diagram_records} sourceStale={entrySourceStale} disabled={disabled||busy||entrySourceStale||!entry.authoring_question_key} disabledReason={!entry.authoring_question_key?"図の対応先の設問を選択してください。":undefined} label="模範解答の図"
         onChange={records=>update(entry.id,{diagram_records:records})} onSelect={onSelect}/></AuthoringPreviewEditor>
       {entry.semantic_classification&&entryAnswerVisible&&answerEditing&&<details><summary>候補の分類を確認</summary>{entry.semantic_classification.segments.map(segment=><label key={segment.id}>{segment.text}<select disabled={disabled||busy} value={segment.category} onChange={e=>update(entry.id,{semantic_classification:{...entry.semantic_classification!,segments:entry.semantic_classification!.segments.map(s=>s.id===segment.id?{...s,category:e.target.value as ModelAnswerContentCategory}:s)}})}>{([['question','問題文'],['model_answer','模範解答'],['alternative_answer','別解'],['rubric','採点基準'],['note','補足'],['uncertain','要確認']] as const).map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></label>)}<button disabled={disabled||busy} onClick={()=>update(entry.id,{semantic_classification:{...entry.semantic_classification!,status:"teacher_reviewed"}})}>この分類を確認</button></details>}
