@@ -89,10 +89,11 @@ def test_resume_projects_latest_answer_and_rubric_imports_into_separate_domains(
     key = snapshot['nodes'][0]['stable_key']
     assert snapshot['answers'][key]['primary'] == w.answer['entries'][0]['answer_text']
     assert snapshot['rubrics'][key][0]['description'] == 'Explicit rubric criterion'
-    roles = {source['material_id']: source['material_role']
-             for source in snapshot['domains']['answer']['sources'].values()}
-    assert roles[w.answer['material_id']] == 'model_answer_source'
-    assert roles[rubric_binding['id']] == 'rubric_source'
+    assert snapshot['domains']['answer']['material_id'] == w.answer['material_id']
+    assert snapshot['domains']['answer']['material_role'] == 'model_answer_source'
+    assert snapshot['domains']['rubric']['material_id'] == rubric_binding['id']
+    assert snapshot['domains']['rubric']['material_role'] == 'rubric_source'
+    assert all('rubric_edits' not in candidate for candidate in snapshot['domains']['answer']['entries'])
 
 
 def test_shared_roles_merge_independently_and_replacement_is_binding_local(workspace):
@@ -103,11 +104,16 @@ def test_shared_roles_merge_independently_and_replacement_is_binding_local(works
     key = original[0]['stable_key']
     snapshot['answers'][key] = {'primary': 'Teacher answer', 'alternatives': [], 'diagram_records': []}
     snapshot['rubrics'][key] = [{'id': 'teacher-rubric', 'description': 'Teacher criterion', 'points': 7}]
+    snapshot['domains']['rubric']['entries'].append({'id': 'teacher-rubric-entry', 'authoring_question_key': key,
+        'material_role': 'teacher_manual', 'source_draft_id': None, 'material_id': None, 'source_sha256': None,
+        'source': {'kind': 'teacher_manual', 'material_id': None, 'source_sha256': None, 'segments': []},
+        'criteria': deepcopy(snapshot['rubrics'][key]), 'operation_history': []})
     entry = deepcopy(w.answer['entries'][0])
     entry['question_id'] = key
     entry['answer_text'] = 'New source answer'
-    entry['rubric_edits'] = [{'id': 'new-rubric', 'description': 'New criterion', 'points': 8,
-        'segment_ids': [], 'provenance': {'source': 'teacher_manual'}}]
+    entry['semantic_classification'] = {'segments': [{'id': 'rubric-segment', 'category': 'rubric',
+        'text': 'New criterion', 'confidence': 1}], 'rubric_groups': [{'id': 'new-group', 'kind': 'rubric',
+        'segment_ids': ['rubric-segment'], 'description': 'New criterion', 'points': 8}]}
     draft = SimpleNamespace(id='new-answer-draft', revision=1, material_id=w.answer['material_id'],
         source_sha256=w.answer['source_sha256'], artifact_ref=row['snapshot']['domains']['answer']['artifact_ref'],
         snapshot={'entries': [entry], 'question_regions': []})
@@ -116,11 +122,13 @@ def test_shared_roles_merge_independently_and_replacement_is_binding_local(works
     answer_outcome = deepcopy(snapshot['domains']['answer']['analysis_results']['model_answer_source'])
     answer_before = deepcopy(snapshot['answers'])
     draft.id, draft.material_id = 'rubric-draft', 'rubric-binding'
-    merge_answer_analysis(snapshot, draft, 'rubric_source')
+    from scoring.authoring_sources import merge_rubric_analysis
+    merge_rubric_analysis(snapshot, draft)
     assert snapshot['answers'] == answer_before
-    assert snapshot['rubrics'][key][0]['description'] == 'New criterion'
+    assert snapshot['rubrics'][key][0]['description'] == 'Teacher criterion'
+    assert any(c['description'] == 'New criterion' for c in snapshot['rubrics'][key])
     assert snapshot['domains']['answer']['analysis_results']['model_answer_source'] == answer_outcome
-    assert 'rubric_source' in snapshot['domains']['answer']['analysis_results']
+    assert 'rubric_source' in snapshot['domains']['rubric']['analysis_results']
     assert snapshot['nodes'] == original
     rubric_before = deepcopy(snapshot['rubrics'])
     draft.id, draft.material_id = 'answer-again', w.answer['material_id']
@@ -164,7 +172,7 @@ def test_same_material_reanalysis_retains_verified_diagram_context(workspace):
     retained = snapshot['domains']['answer']['entries'][0]
     assert retained['source_draft_id'] == old_id
     assert retained['diagram_records'] == [record]
-    assert retained['semantic_classification'] is None
+    assert retained['semantic_classification'] == entry['semantic_classification']
     assert snapshot['domains']['answer']['sources'][old_id]['material_id'] == draft.material_id
     assert snapshot['nodes'] == before
     # Explicit import of the same native candidate must not duplicate its ID.
@@ -178,3 +186,73 @@ def test_same_material_reanalysis_retains_verified_diagram_context(workspace):
     draft.id, draft.source_sha256 = 'replacement-draft', 'different-sha'
     merge_answer_analysis(snapshot, draft, 'model_answer_source')
     assert snapshot['domains']['answer']['entries'] == []
+
+
+def test_answer_and_rubric_analysis_have_disjoint_authoritative_domains():
+    from scoring.authoring_sources import merge_rubric_analysis
+    snapshot = {'nodes': [{'stable_key': 'leaf', 'parent_key': None, 'included': True,
+        'label': {'raw': '問題1'}, 'body_text': 'Question', 'node_type': 'major_question',
+        'ordered_content': [], 'sort_order': 0, 'score_semantics': 'direct', 'score_points': 5}],
+        'source_provenance': {}, 'answers': {}, 'rubrics': {}}
+    answer = SimpleNamespace(id='answer-import', material_id='answer-binding', revision=1,
+        source_sha256='shared-pdf-sha', artifact_ref='answer-ir', snapshot={'entries': [{
+            'id': 'answer-entry', 'question_id': 'leaf', 'answer_text': 'Teacher answer',
+            'semantic_classification': {'status': 'classified', 'segments': [
+                {'id': 'answer-segment', 'category': 'model_answer', 'text': 'Teacher answer'},
+                {'id': 'rubric-like', 'category': 'rubric', 'text': 'Explain the evidence'}],
+                'rubric_groups': [{'id': 'group', 'kind': 'rubric', 'segment_ids': ['rubric-like'],
+                    'description': 'Explain the evidence', 'points': 5}]}}], 'question_regions': []})
+    merge_answer_analysis(snapshot, answer)
+    question_before = deepcopy(snapshot['nodes'])
+    rubric_before = deepcopy(snapshot['domains']['rubric'])
+    answer_before = deepcopy(snapshot['domains']['answer'])
+    assert snapshot['rubrics'] == {}
+    assert len(snapshot['domains']['recovery']['rubric_candidates']) == 1
+
+    rubric = SimpleNamespace(id='rubric-import', material_id='rubric-binding', revision=1,
+        source_sha256='shared-pdf-sha', artifact_ref='rubric-ir', snapshot={'entries': [{
+            'id': 'rubric-entry', 'question_id': 'leaf', 'answer_text': '', 'source': {'kind': 'native', 'segments': []},
+            'semantic_classification': {'status': 'classified', 'segments': [
+                {'id': 'criterion-segment', 'category': 'rubric', 'text': 'Award for evidence'}],
+                'rubric_groups': [{'id': 'criterion-group', 'kind': 'rubric', 'segment_ids': ['criterion-segment'],
+                    'description': 'Award for evidence', 'points': 5}]}}], 'question_regions': []})
+    merge_rubric_analysis(snapshot, rubric)
+    assert snapshot['nodes'] == question_before
+    assert snapshot['domains']['answer'] == answer_before
+    assert snapshot['domains']['rubric']['entries'][0]['criteria'][0]['description'] == 'Award for evidence'
+
+    answer_again = deepcopy(answer)
+    answer_again.id = 'answer-import-2'
+    merge_answer_analysis(snapshot, answer_again)
+    assert snapshot['domains']['rubric']['entries'][0]['criteria'][0]['description'] == 'Award for evidence'
+    answer_after_reanalysis = deepcopy(snapshot['domains']['answer'])
+    rubric_before = deepcopy(snapshot['domains']['rubric'])
+    rubric_again = deepcopy(rubric)
+    rubric_again.id = 'rubric-import-2'
+    merge_rubric_analysis(snapshot, rubric_again)
+    assert snapshot['domains']['answer'] == answer_after_reanalysis
+    assert snapshot['domains']['rubric']['entries'][0]['criteria'][0]['description'] == 'Award for evidence'
+    assert snapshot['nodes'] == question_before
+    assert rubric_before['entries'][0]['criteria'][0]['description'] == 'Award for evidence'
+
+
+def test_legacy_nested_rubric_state_normalizes_once_without_answer_ownership():
+    from scoring.authoring_sources import normalize_authoring_snapshot
+    legacy = {'nodes': [{'stable_key': 'leaf', 'parent_key': None}], 'answers': {},
+        'rubrics': {'leaf': [{'id': 'criterion-1', 'description': 'Teacher criterion', 'points': 4,
+            'segment_ids': ['segment-1']}]}, 'rubric_histories': {'leaf': [[{'id': 'before', 'description': 'Old text', 'points': 4}]]},
+        'source_provenance': {}, 'domains': {'answer': {'draft_id': 'answer-import', 'revision': 1,
+            'material_id': 'answer-binding', 'source_sha256': 'same-sha', 'artifact_ref': 'answer-ir',
+            'material_role': 'model_answer_source', 'sources': {}, 'entries': [{
+                'id': 'answer-entry', 'authoring_question_key': 'leaf', 'answer_text': 'Answer text',
+                'source': {'kind': 'native', 'segments': []}, 'rubric_edits': [
+                    {'id': 'criterion-1', 'description': 'Teacher criterion', 'points': 4,
+                     'segment_ids': ['segment-1']}], 'rubric_merge_history': [[
+                    {'id': 'before', 'description': 'Old text', 'points': 4}]]}]}}}
+    normalized = normalize_authoring_snapshot(legacy)
+    assert normalized['domains']['answer']['entries'][0]['answer_text'] == 'Answer text'
+    assert 'rubric_edits' not in normalized['domains']['answer']['entries'][0]
+    assert normalized['domains']['rubric']['entries'][0]['criteria'][0]['id'] == 'criterion-1'
+    assert normalized['domains']['rubric']['entries'][0]['operation_history'] == legacy['rubric_histories']['leaf']
+    assert len(normalized['rubrics']['leaf']) == 1
+    assert normalize_authoring_snapshot(normalized) == normalized

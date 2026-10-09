@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from uuid import UUID
 
 from .db.models import ModelAnswerImportDraft, TestMaterial
-from .authoring_sources import _answer_valid, answer_alternatives, rubric_projection, has_rubric_state
+from .authoring_sources import _answer_valid, answer_alternatives, normalize_authoring_snapshot
 from .model_answer_diagram_review import ModelAnswerDiagramReview
 from .adapters.artifacts import RunArtifactAdapter
 
@@ -27,7 +27,14 @@ def authoring_questions(snapshot):
 class AuthoringAnswers:
     def __init__(self, session, root, row, snapshot=None):
         self.row = row
-        self.snapshot = snapshot if snapshot is not None else row.snapshot
+        source_snapshot = snapshot if snapshot is not None else row.snapshot
+        normalized = normalize_authoring_snapshot(source_snapshot)
+        if snapshot is not None:
+            snapshot.clear()
+            snapshot.update(normalized)
+            self.snapshot = snapshot
+        else:
+            self.snapshot = normalized
         root_bound = self.snapshot.get('domains', {}).get('answer')
         if not root_bound:
             raise ValueError('authoring_answer_source_missing')
@@ -120,9 +127,9 @@ class AuthoringAnswers:
             reuse_context={'draft_id': self.bound['draft_id'], 'entries': same_source})
 
     def validate(self):
-        from .api.model_answer_imports import validate_rubric_edits
         gradable = {q.id for q in self.questions if q.is_gradable}
-        saved = {e['id']: e for e in self.row.snapshot.get('domains', {}).get('answer', {}).get('entries', [])}
+        saved_snapshot = normalize_authoring_snapshot(self.row.snapshot)
+        saved = {e['id']: e for e in saved_snapshot.get('domains', {}).get('answer', {}).get('entries', [])}
         previous_keys = {e.get('authoring_question_key') for e in saved.values()}
         originals = {entry['id']: entry for entry in self.primary_bound['entries']}
         for entry in self.entries:
@@ -132,8 +139,8 @@ class AuthoringAnswers:
             if (self.snapshot is not self.row.snapshot and entry.get('source', {}).get('kind') == 'teacher_manual'
                     and entry['source_draft_id'] != self.primary_bound['draft_id']):
                 original.setdefault('source_draft_id', entry['source_draft_id'])
-            if entry.get('rubric_edits'):
-                validate_rubric_edits(entry['rubric_edits'], entry.get('semantic_classification') or {})
+            for field in ('rubric_edits', 'rubric_merge_history', 'rubric_consolidated_groups'):
+                entry.pop(field, None)
             if original.get('authoring_question_key') and entry.get('question_id') not in gradable:
                 # Structural edits may turn a leaf into a parent. Preserve its
                 # previously verified source artifact as unresolved; never
@@ -153,16 +160,12 @@ class AuthoringAnswers:
             if entry.get('diagram_records'):
                 original['diagram_records'] = self.diagrams(entry).validate(entry['diagram_records'], self.row.edit_version+1)
         active_entries = [entry for entry in self.primary_bound['entries']
-                          if entry.get('source_draft_id', self.primary_bound['draft_id']) in self.sources]
-        def role_for(entry):
-            if entry.get('source', {}).get('kind') == 'teacher_manual':
-                return entry.get('material_role', 'model_answer_source')
-            return self.role_by_source_id.get(entry.get('source_draft_id', self.primary_bound['draft_id']),
-                'model_answer_source')
+                          if entry.get('source_draft_id', self.primary_bound['draft_id']) in self.sources
+                          and self.role_by_source_id.get(entry.get('source_draft_id', self.primary_bound['draft_id']),
+                                                         'model_answer_source') == 'model_answer_source']
         for key in (previous_keys | {e.get('authoring_question_key') for e in active_entries}) - {None}:
-            included = [e for e in active_entries if e.get('authoring_question_key') == key
+            answer_included = [e for e in active_entries if e.get('authoring_question_key') == key
                 and e.get('disposition', 'include') == 'include']
-            answer_included = [e for e in included if role_for(e) != 'rubric_source']
             primary_entries = [e for e in answer_included if e.get('answer_kind', 'primary') == 'primary']
             primary = next((e for e in primary_entries if e.get('answer_text', '').strip() or
                            any(r.get('state') == 'accepted' for r in e.get('diagram_records', []))),
@@ -171,7 +174,3 @@ class AuthoringAnswers:
                 self.snapshot['answers'][key] = {'primary': primary.get('answer_text', '') if primary else '',
                     'alternatives': answer_alternatives(answer_included),
                     'diagram_records': deepcopy(primary.get('diagram_records', [])) if primary else []}
-            rubric_included = [e for e in included if role_for(e) == 'rubric_source']
-            prior_rubric = any(e.get('authoring_question_key') == key and has_rubric_state(e) for e in saved.values())
-            if rubric_included and (any(has_rubric_state(e) for e in rubric_included) or prior_rubric):
-                self.snapshot['rubrics'][key] = [c for e in rubric_included for c in rubric_projection(e)]

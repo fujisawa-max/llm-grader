@@ -298,7 +298,9 @@ def test_answer_only_draft_keeps_approved_formal_rubric_fallback(workspace):
     key = next(e['authoring_question_key'] for e in row['snapshot']['domains']['answer']['entries'] if e['question_id'] == question_id)
     assert row['snapshot']['rubrics'][key][0]['description'] == 'approved fallback'
     snapshot = deepcopy(row['snapshot'])
-    snapshot['rubrics'][key][0]['description'] = 'edited fallback, still draft'
+    rubric_entry = next(entry for entry in snapshot['domains']['rubric']['entries']
+                        if entry['authoring_question_key'] == key)
+    rubric_entry['criteria'][0]['description'] = 'edited fallback, still draft'
     row = save(w, path, row, snapshot)
     assert row['snapshot']['rubrics'][key][0]['description'] == 'edited fallback, still draft'
 
@@ -410,7 +412,7 @@ def test_analysis_after_split_maps_unscored_children_and_preserves_tree(workspac
 
 def test_cross_material_merge_preserves_answer_rubric_sources_and_unresolved():
     from types import SimpleNamespace
-    from scoring.authoring_sources import merge_answer_analysis
+    from scoring.authoring_sources import merge_answer_analysis, merge_rubric_analysis
     snapshot = {'nodes': [{'stable_key': 'leaf', 'parent_key': None, 'included': True,
         'label': {'raw': '問題1'}, 'body_text': 'Teacher text', 'node_type': 'major_question',
         'ordered_content': [], 'sort_order': 0, 'score_semantics': 'unset', 'score_points': None}],
@@ -420,19 +422,22 @@ def test_cross_material_merge_preserves_answer_rubric_sources_and_unresolved():
             source_sha256=material, artifact_ref=identifier, snapshot={'entries': entries})
     original_nodes = deepcopy(snapshot['nodes'])
     merge_answer_analysis(snapshot, draft('answer', 'pdf-a', [{'id': 'a', 'question_id': 'leaf', 'answer_text': 'correct answer'}]), 'model_answer_source')
-    result = merge_answer_analysis(snapshot, draft('rubric', 'pdf-b', [
+    answer_before = deepcopy(snapshot['domains']['answer'])
+    result = merge_rubric_analysis(snapshot, draft('rubric', 'pdf-b', [
         {'id': 'r', 'question_id': 'leaf', 'answer_text': '', 'rubric_edits': [{'id': 'c', 'description': 'criterion', 'points': 5}],
          'semantic_classification': {'segments': [{'id': 's1', 'category': 'rubric'}]}},
         {'id': 'unresolved', 'question_id': 'foreign', 'answer_text': 'not guessed',
-         'semantic_classification': {'segments': [{'id': 's2', 'category': 'rubric'}]}}]), material_role='rubric_source')
+         'semantic_classification': {'segments': [{'id': 's2', 'category': 'rubric'}]}}]))
     assert snapshot['nodes'] == original_nodes
     assert snapshot['answers']['leaf']['primary'] == 'correct answer'
     assert snapshot['rubrics']['leaf'][0]['description'] == 'criterion'
     assert result == {'status': 'partial', 'assigned_count': 1, 'unresolved_count': 1, 'candidate_count': 2, 'fallback_count': 0}
     bound = snapshot['domains']['answer']
-    assert bound['sources']['answer']['material_id'] == 'pdf-a'
-    assert next(e for e in bound['entries'] if e['id'] == 'a')['source_draft_id'] == 'answer'
-    assert next(e for e in bound['entries'] if e['id'] == 'unresolved')['authoring_question_key'] is None
+    assert bound == answer_before
+    assert snapshot['domains']['rubric']['material_id'] == 'pdf-b'
+    assert next(e for e in snapshot['domains']['rubric']['entries'] if e['source_candidate_id'] == 'r')['criteria'][0]['description'] == 'criterion'
+    assert any(candidate['source_candidate_id'] == 'unresolved' and candidate['question_key'] is None
+               for candidate in snapshot['domains']['recovery']['rubric_candidates'])
     zero = merge_answer_analysis(snapshot, draft('unknown', 'pdf-c', [{'id': 'u', 'question_id': 'other', 'answer_text': 'unknown'}]), 'model_answer_source')
     assert zero['status'] == 'needs_assignment' and zero['assigned_count'] == 0
     assert snapshot['nodes'] == original_nodes
@@ -446,7 +451,10 @@ def test_answer_reanalysis_retains_teacher_rubric_edits_on_same_source():
     snapshot = {'nodes': [{'stable_key': 'leaf', 'parent_key': None, 'included': True,
         'label': {'raw': '問題1'}, 'body_text': 'Question', 'node_type': 'major_question',
         'ordered_content': [], 'sort_order': 0, 'score_semantics': 'direct', 'score_points': 5}],
-        'source_provenance': {}, 'answers': {}, 'rubrics': {'leaf': [{'id': 'criterion', 'description': 'teacher rubric', 'points': 5}]}}
+        'source_provenance': {}, 'answers': {}, 'rubrics': {'leaf': [{'id': 'criterion', 'description': 'teacher rubric', 'points': 5}]},
+        'domains': {'answer': {'draft_id': 'old-draft', 'revision': 1, 'material_id': 'answer-material',
+            'source_sha256': 'same-sha', 'artifact_ref': 'old-draft', 'material_role': 'model_answer_source',
+            'entries': [], 'sources': {}}}}
     def draft(identifier, entries):
         return SimpleNamespace(id=identifier, material_id='answer-material', revision=1,
             source_sha256='same-sha', artifact_ref=identifier, snapshot={'entries': entries})
@@ -456,17 +464,18 @@ def test_answer_reanalysis_retains_teacher_rubric_edits_on_same_source():
         'rubric_merge_history': [[{'id': 'previous', 'description': 'before edit', 'points': 5}]],
         'source': {'kind': 'native', 'segments': []}, 'semantic_classification': {
             'status': 'teacher_reviewed', 'segments': [{'id': 's1', 'text': 'teacher rubric', 'category': 'rubric'}]}}
+    snapshot['domains']['answer']['entries']=[deepcopy(original)]
     merge_answer_analysis(snapshot, draft('old-draft', [original]), 'model_answer_source')
     fresh = {'id': 'fresh-entry', 'question_id': 'leaf', 'answer_text': 'new answer', 'answer_kind': 'primary',
         'source': {'kind': 'native', 'segments': []}}
     merge_answer_analysis(snapshot, draft('fresh-draft', [fresh]), 'model_answer_source')
-    rubric_only = next(entry for entry in snapshot['domains']['answer']['entries'] if entry['id'] == 'old-entry')
-    assert rubric_only['rubric_only_preserved'] is True
-    assert rubric_only['rubric_edits'] == original['rubric_edits']
-    assert rubric_only['rubric_merge_history'] == original['rubric_merge_history']
-    assert rubric_only['source_draft_id'] == 'old-draft'
+    rubric_entry = next(entry for entry in snapshot['domains']['rubric']['entries']
+                        if entry['authoring_question_key'] == 'leaf')
+    assert rubric_entry['criteria'] == original['rubric_edits']
+    assert rubric_entry['operation_history'] == original['rubric_merge_history']
+    assert all('rubric_edits' not in entry for entry in snapshot['domains']['answer']['entries'])
     assert snapshot['answers']['leaf']['primary'] == 'new answer'
-    assert snapshot['rubrics']['leaf'] == [{'id': 'criterion', 'description': 'teacher rubric', 'points': 5}]
+    assert snapshot['rubrics']['leaf'] == original['rubric_edits']
 
 
 def test_answer_classifier_fallback_retains_teacher_answer_and_reports_warning():
@@ -503,7 +512,7 @@ def test_answer_classifier_fallback_retains_teacher_answer_and_reports_warning()
 
 def test_rubric_analysis_counts_only_criteria_like_segments_and_retains_uncertain():
     from types import SimpleNamespace
-    from scoring.authoring_sources import merge_answer_analysis
+    from scoring.authoring_sources import merge_rubric_analysis
     snapshot = {'nodes': [{'stable_key': 'leaf', 'parent_key': None, 'included': True,
         'label': {'raw': '問題1'}, 'body_text': 'Question', 'node_type': 'major_question',
         'ordered_content': [], 'sort_order': 0, 'score_semantics': 'direct', 'score_points': 5}],
@@ -519,11 +528,16 @@ def test_rubric_analysis_counts_only_criteria_like_segments_and_retains_uncertai
     ]
     draft = SimpleNamespace(id='rubric-draft', material_id='rubric-pdf', revision=1,
         source_sha256='rubric-sha', artifact_ref='rubric-ir', snapshot={'entries': entries})
-    outcome = merge_answer_analysis(snapshot, draft, 'rubric_source')
-    assert outcome == {'status': 'partial', 'assigned_count': 1, 'unresolved_count': 1, 'candidate_count': 2, 'fallback_count': 0}
-    retained = snapshot['domains']['answer']['entries']
-    assert len(retained) == 3
-    assert next(entry for entry in retained if entry['id'] == 'uncertain-unmapped')['authoring_question_key'] is None
+    answer_before = deepcopy(snapshot['answers'])
+    outcome = merge_rubric_analysis(snapshot, draft)
+    assert outcome == {'status': 'partial', 'assigned_count': 1, 'unresolved_count': 1, 'candidate_count': 2, 'fallback_count': 1}
+    assert not snapshot['domains'].get('answer',{}).get('entries')
+    assert snapshot['answers'] == answer_before
+    assert snapshot['rubrics']['leaf'] == [{'id': 'old', 'description': 'saved rubric', 'points': 5}]
+    assert any(candidate['source_candidate_id'] == 'mapped' and candidate['question_key'] == 'leaf'
+               for candidate in snapshot['domains']['recovery']['rubric_candidates'])
+    assert any(candidate['source_candidate_id'] == 'uncertain-unmapped' and candidate['question_key'] is None
+               for candidate in snapshot['domains']['recovery']['rubric_candidates'])
     assert snapshot['answers'] == {}
     assert snapshot['rubrics']['leaf'] == [{'id': 'old', 'description': 'saved rubric', 'points': 5}]
 
@@ -531,7 +545,7 @@ def test_rubric_analysis_counts_only_criteria_like_segments_and_retains_uncertai
 
 def test_rubric_analysis_with_only_noise_reports_zero_and_preserves_existing_criteria():
     from types import SimpleNamespace
-    from scoring.authoring_sources import merge_answer_analysis
+    from scoring.authoring_sources import merge_rubric_analysis
     snapshot = {'nodes': [{'stable_key': 'leaf', 'parent_key': None, 'included': True,
         'label': {'raw': '問題1'}, 'body_text': 'Question', 'node_type': 'major_question',
         'ordered_content': [], 'sort_order': 0, 'score_semantics': 'direct', 'score_points': 5}],
@@ -545,7 +559,7 @@ def test_rubric_analysis_with_only_noise_reports_zero_and_preserves_existing_cri
             {'id': 'fallback', 'question_id': 'leaf', 'answer_text': 'raw extracted text',
              'semantic_classification': {'status': 'fallback', 'segments': [
                  {'id': 'fallback-u', 'text': 'raw extracted text', 'category': 'uncertain', 'confidence': 0}]}}]})
-    result = merge_answer_analysis(snapshot, draft, 'rubric_source')
+    result = merge_rubric_analysis(snapshot, draft)
     assert result == {'status': 'no_candidates', 'assigned_count': 0, 'unresolved_count': 0, 'candidate_count': 0, 'fallback_count': 1}
     assert snapshot['answers']['leaf']['primary'] == 'answer'
     assert snapshot['rubrics']['leaf'] == [{'id': 'old', 'description': 'saved rubric', 'points': 5}]
@@ -606,9 +620,11 @@ def test_retained_material_keeps_authorized_diagram_context_after_other_analysis
     assert result.status_code == 200, result.text
     row = result.json()
     bound = row['snapshot']['domains']['answer']
+    assert bound['material_id'] == original_material
+    rubric_bound = row['snapshot']['domains']['rubric']
+    assert rubric_bound['material_id'] == mid
     retained = next(e for e in bound['entries'] if e['id'] == entry['id'])
-    assert bound['material_id'] == mid
-    assert bound['sources'][retained['source_draft_id']]['material_id'] == original_material
+    assert retained['source_draft_id'] == bound['draft_id']
     result = w.client.get(endpoint)
     assert result.status_code == 200, result.text
     selected = next(r for r in result.json()['diagrams'] if r['id'] == record['id'])

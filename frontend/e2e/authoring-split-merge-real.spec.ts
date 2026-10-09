@@ -24,29 +24,37 @@ test("AI split feedback/review and sequential answer/rubric analysis preserve th
  await saveAuthoring(page);
  let requests=0;await page.route("**/authoring/nodes/*/split-suggest",async route=>{requests++;await new Promise(r=>setTimeout(r,450));await route.continue();});
  await page.getByRole("button",{name:"AIで小問の分割案を作成",exact:true}).click();const running=page.getByRole("button",{name:"分割案を作成中…",exact:true});await expect(running).toBeDisabled();await expect(running.locator(".spinner")).toBeVisible();await running.evaluate(el=>(el as HTMLButtonElement).click());
- const proposal=page.getByLabel("小問の分割案",{exact:true});await expect(proposal).toBeVisible();expect(requests).toBe(1);await expect(page.getByRole("button",{name:"AIで小問の分割案を作成",exact:true})).toBeEnabled();
+ const proposal=page.getByRole("dialog",{name:/の分割案/});await expect(proposal).toBeVisible();expect(requests).toBe(1);await expect(page.getByRole("button",{name:"AIで小問の分割案を作成",exact:true})).toBeEnabled();
  const pendingRevision=(await(await page.request.get(base+"/authoring")).json()).revision;
- await select.selectOption(materials.find((m:{material_type:string})=>m.material_type==="model_answer_source").id);
- await expect(controls.getByRole("button",{name:"解析",exact:true})).toBeDisabled();await expect(proposal.getByRole("status")).toContainText("資料解析は分割案を適用またはキャンセルしてから実行できます");await expect(proposal).toBeVisible();expect((await(await page.request.get(base+"/authoring")).json()).revision).toEqual(pendingRevision);
- await select.selectOption(materials.find((m:{material_type:string})=>m.material_type==="question_sheet").id);
+ await expect(proposal).toBeVisible();expect((await(await page.request.get(base+"/authoring")).json()).revision).toEqual(pendingRevision);
  await expect(proposal.locator('select[aria-label^="分割部分"]')).toHaveCount(3);await expect(proposal.getByLabel("分割部分 1の扱い",{exact:true})).toHaveValue("parent");
  const blocks=proposal.locator(".authoring-split-block");await expect(blocks).toHaveCount(3);
- for(const block of await blocks.all()){
-  const name=(await block.getByLabel("小問名",{exact:true}).boundingBox())!,divider=(await block.getByRole("separator").boundingBox())!,settings=(await block.locator('select[aria-label^="分割部分"]').boundingBox())!;
-  expect(divider.y).toBeGreaterThanOrEqual(name.y+name.height);expect(settings.y).toBeGreaterThanOrEqual(divider.y+divider.height);expect(divider.width).toBeGreaterThan(name.width*.8);
- }
+ await expect(proposal.locator(".authoring-split-divider")).toHaveCount(2);
+ for(const block of await blocks.all())await expect(block.locator(".authoring-split-divider")).toHaveCount(0);
+ const dividerPositions=await proposal.locator(".authoring-split-divider").evaluateAll(nodes=>nodes.map(node=>({previous:node.previousElementSibling?.className,next:node.nextElementSibling?.className})));
+ expect(dividerPositions).toEqual([{previous:"authoring-split-block",next:"authoring-split-block"},{previous:"authoring-split-block",next:"authoring-split-block"}]);
 
  const noCalls=await calls(page);await proposal.getByLabel("分割部分 3の扱い",{exact:true}).selectOption("exclude");await proposal.getByLabel("分割部分 3の扱い",{exact:true}).selectOption("child");
- await page.getByRole("button",{name:"分割を適用",exact:true}).click();await expect(editor).toContainText("First task");await editor.fill((await editor.inputValue())+"\nTeacher changed first child");
+ await proposal.getByRole("button",{name:"分割を適用",exact:true}).click();await expect(editor).toContainText("First task");await editor.fill((await editor.inputValue())+"\nTeacher changed first child");
  await view.getByRole("button",{name:"設問設定の変更",exact:true}).click();await page.getByLabel("配点の扱い").selectOption("direct");await view.locator('input[type="number"]').fill("5");await view.getByRole("button",{name:"本文編集",exact:true}).click();
  await saveAuthoring(page);expect(await calls(page)).toEqual(noCalls);
  const before=(await(await page.request.get(base+"/authoring")).json()).revision,tree=before.snapshot.nodes,target=await page.getByLabel("対象設問",{exact:true}).inputValue(),root=tree.find((n:{parent_key:string|null})=>n.parent_key===null);expect(root).toBeTruthy();expect(tree.filter((n:{parent_key:string|null})=>n.parent_key===root.stable_key)).toHaveLength(2);expect(root.body_text).toContain("Common introduction");expect(root.body_text).not.toContain("First task");
  for(const role of ["model_answer_source","rubric_source"]){
+  const before=(await(await page.request.get(base+"/authoring")).json()).revision.snapshot;
   await select.selectOption(materials.find((m:{material_type:string})=>m.material_type===role).id);await confirmAnalysis(page,controls,"解析");await expect(controls.getByRole("button",{name:"再解析",exact:true})).toBeEnabled();
-  const row=(await(await page.request.get(base+"/authoring")).json()).revision;expect(row.snapshot.nodes).toEqual(tree);expect(row.snapshot.domains.answer.analysis_result.assigned_count).toBe(2);expect(await page.getByLabel("対象設問",{exact:true}).inputValue()).toBe(target);
+  const row=(await(await page.request.get(base+"/authoring")).json()).revision;expect(row.snapshot.nodes).toEqual(tree);expect(await page.getByLabel("対象設問",{exact:true}).inputValue()).toBe(target);
+  if(role==="model_answer_source"){
+   expect(row.snapshot.domains.answer.analysis_result.assigned_count).toBe(2);expect(row.snapshot.domains.rubric).toEqual(before.domains.rubric);
+   const answerToggle=page.getByRole("checkbox",{name:"解答",exact:true});if(!(await answerToggle.isChecked()))await answerToggle.check();
+   await page.getByRole("region",{name:"模範解答候補",exact:true}).first().getByRole("button",{name:"本文編集",exact:true}).click();
+   const diagram=page.getByRole("region",{name:"模範解答の図",exact:true}).first(),discover=diagram.getByRole("button",{name:"図候補を確認",exact:true});
+   await expect(discover).toBeEnabled();await expect(diagram.getByText("設問の構造・対応先の変更を保存してから、図候補を確認してください。",{exact:true})).toHaveCount(0);
+   const discovery=page.waitForResponse(response=>response.request().method()==="POST"&&/\/authoring\/entries\/[^/]+\/diagrams/.test(response.url()));await discover.click();expect((await discovery).status()).toBe(200);
+  }else{expect(row.snapshot.domains.rubric.analysis_result.assigned_count).toBe(2);expect(row.snapshot.domains.answer).toEqual(before.domains.answer);}
   await expect(page.locator(".authoring-toast").filter({hasText:role==="rubric_source"?"採点基準を解析しました":"模範解答を解析しました"}).filter({hasText:"対応済み2件 / 未対応"})).toBeVisible();
  }
- const final=(await(await page.request.get(base+"/authoring")).json()).revision;expect(final.snapshot.answers[target].primary).toContain("Correct answer one");expect(final.snapshot.rubrics[target].length).toBeGreaterThan(0);expect(Object.keys(final.snapshot.domains.answer.sources)).toHaveLength(1);
+ const final=(await(await page.request.get(base+"/authoring")).json()).revision;expect(final.snapshot.answers[target].primary).toContain("Correct answer one");expect(final.snapshot.rubrics[target].length).toBeGreaterThan(0);expect(final.snapshot.domains.answer.material_role).toBe("model_answer_source");expect(final.snapshot.domains.rubric.material_role).toBe("rubric_source");
+ await expect(page.getByRole("heading",{name:"問題",exact:true})).toBeVisible();await expect(page.getByRole("heading",{name:"模範解答",exact:true})).toBeVisible();await expect(page.getByRole("heading",{name:"採点基準",exact:true})).toBeVisible();
  await expect(page.getByLabel("問題文",{exact:true})).toContainText("Teacher changed first child");
  await page.getByRole("button",{name:"編集する",exact:true}).first().click();
  const criterion=page.getByLabel(/^基準\d+の本文$/).first();await criterion.fill((await criterion.inputValue())+" teacher rubric edit");
@@ -60,14 +68,20 @@ test("teacher marks parent/child/excluded blocks; duplicate wrapper rejected, re
  await login(page);const seed=await(await page.request.get(`/api/v1/tests/${process.env.MODEL_ANSWER_CLASSIFICATION_TEST_ID}`)).json();
  const exam=await(await page.request.post(`/api/v1/offerings/${seed.course_offering_id}/tests`,{data:{name:"Review split roles",total_points:10}})).json();
  await page.goto(`/tests/${exam.id}/authoring`);await page.getByRole("button",{name:"設問を追加",exact:true}).click();const selector=page.getByLabel("対象設問",{exact:true}),parent=await selector.inputValue(),view=page.getByLabel("問題の表示切替",{exact:true});await view.getByRole("button",{name:"本文編集",exact:true}).click();const editor=page.getByLabel("問題文",{exact:true});
- await editor.fill("intro\n(1) first\n(2) retained\n(3) discarded");await page.getByRole("button",{name:"小問の分割案を作成",exact:true}).click();
- await page.getByLabel("分割部分 3の扱い",{exact:true}).selectOption("parent");await page.getByLabel("分割部分 4の扱い",{exact:true}).selectOption("exclude");const count=await calls(page);
- await page.getByRole("button",{name:"分割を適用",exact:true}).click();const child=await selector.inputValue();await selector.selectOption(parent);await expect(editor).toContainText("intro");await expect(editor).toContainText("retained");expect(await editor.inputValue()).not.toContain("discarded");expect(await editor.inputValue()).not.toContain("first");expect(await calls(page)).toEqual(count);
+ await editor.fill("intro\n(1) first\n(2) retained\n(3) discarded");const beforeCancel=(await(await page.request.get("/api/v1/tests/"+exam.id+"/authoring")).json()).revision.snapshot;await page.getByRole("button",{name:"小問の分割案を作成",exact:true}).click();
+ const proposal=page.getByRole("dialog",{name:/の分割案/});await expect(proposal).toBeVisible();
+ await expect(page.getByRole("region",{name:"小問の分割案",exact:true})).toHaveCount(0);
+ await expect.poll(()=>proposal.evaluate(dialog=>dialog.contains(document.activeElement))).toBe(true);
+ await page.keyboard.press("Escape");await expect(proposal).toHaveCount(0);
+ expect((await(await page.request.get("/api/v1/tests/"+exam.id+"/authoring")).json()).revision.snapshot).toEqual(beforeCancel);
+ await page.getByRole("button",{name:"小問の分割案を作成",exact:true}).click();await expect(proposal).toBeVisible();
+ await proposal.getByLabel("分割部分 3の扱い",{exact:true}).selectOption("parent");await proposal.getByLabel("分割部分 4の扱い",{exact:true}).selectOption("exclude");const count=await calls(page);
+ await proposal.getByRole("button",{name:"分割を適用",exact:true}).click();const child=await selector.inputValue();await selector.selectOption(parent);await expect(editor).toContainText("intro");await expect(editor).toContainText("retained");expect(await editor.inputValue()).not.toContain("discarded");expect(await editor.inputValue()).not.toContain("first");expect(await calls(page)).toEqual(count);
  await selector.selectOption(child);await editor.fill("(1) Shared stem\n1. Deep A\n2. Deep B [split_failure]");await saveAuthoring(page);
  await page.getByRole("button",{name:"AIで小問の分割案を作成",exact:true}).click();await expect(page.getByRole("alert").filter({hasText:"分割案を取得できませんでした"})).toBeVisible();await expect(editor).toContainText("[split_failure]");await expect(page.getByRole("button",{name:"AIで小問の分割案を作成",exact:true})).toBeEnabled();
- await editor.fill("(1) Shared stem\n1. Deep A\n2. Deep B");await page.getByRole("button",{name:"AIで小問の分割案を作成",exact:true}).click();await expect(page.getByLabel("小問の分割案",{exact:true})).toBeVisible();await expect(page.getByLabel("分割部分 1の扱い",{exact:true})).toHaveValue("parent");
- await page.getByLabel("分割部分 1の扱い",{exact:true}).selectOption("child");await page.getByRole("button",{name:"分割を適用",exact:true}).click();await expect(page.getByRole("alert").filter({hasText:"重複"})).toBeVisible();await expect(selector).toHaveValue(child);
- await page.getByLabel("分割部分 1の扱い",{exact:true}).selectOption("parent");await page.getByRole("button",{name:"分割を適用",exact:true}).click();await expect(editor).toContainText("Deep A");await expect(selector.locator("option").filter({hasText:"問題1 > (1) > 1."})).toHaveCount(1);await expect(selector.locator("option").filter({hasText:"問題1 > (1) > (1)"})).toHaveCount(0);
+ await editor.fill("(1) Shared stem\n1. Deep A\n2. Deep B");await page.getByRole("button",{name:"AIで小問の分割案を作成",exact:true}).click();const nestedProposal=page.getByRole("dialog",{name:/の分割案/});await expect(nestedProposal).toBeVisible();await expect(nestedProposal.getByLabel("分割部分 1の扱い",{exact:true})).toHaveValue("parent");
+ await nestedProposal.getByLabel("分割部分 1の扱い",{exact:true}).selectOption("child");await nestedProposal.getByRole("button",{name:"分割を適用",exact:true}).click();await expect(page.getByRole("alert").filter({hasText:"重複"})).toBeVisible();await expect(selector).toHaveValue(child);
+ await nestedProposal.getByLabel("分割部分 1の扱い",{exact:true}).selectOption("parent");await nestedProposal.getByRole("button",{name:"分割を適用",exact:true}).click();await expect(editor).toContainText("Deep A");await expect(selector.locator("option").filter({hasText:"問題1 > (1) > 1."})).toHaveCount(1);await expect(selector.locator("option").filter({hasText:"問題1 > (1) > (1)"})).toHaveCount(0);
  await saveAuthoring(page);await page.reload();const row=(await(await page.request.get(`/api/v1/tests/${exam.id}/authoring`)).json()).revision;expect(row.snapshot.nodes.filter((n:{parent_key:string|null})=>n.parent_key===child)).toHaveLength(2);expect(JSON.stringify(row.snapshot.nodes)).not.toContain("discarded");expect(await(await page.request.get(`/api/v1/tests/${exam.id}/questions`)).json()).toEqual([]);
 });
 

@@ -108,6 +108,63 @@ def create_draft(session, test, actor=None, *, source_roots=None):
 
 
 def validate_snapshot(value, previous):
+    # Older drafts stored Rubric edits inside Answer candidate entries.  Read
+    # both sides through the same deterministic adapter before CAS validation
+    # so the first save upgrades the JSON shape without losing teacher work.
+    from .authoring_sources import normalize_authoring_snapshot
+    submitted_rubrics = deepcopy(value.get('rubrics', {})) if isinstance(value, dict) else {}
+    submitted_rubric_domain = deepcopy(value.get('domains', {}).get('rubric')) if isinstance(value, dict) else None
+    value = normalize_authoring_snapshot(value)
+    previous = normalize_authoring_snapshot(previous)
+    # Older clients edited the flattened `rubrics` map. Translate such a
+    # write into RubricDraft when the role-specific domain itself is unchanged.
+    # This preserves the API's legacy round-trip while keeping the separated
+    # domain authoritative after validation.
+    if (isinstance(submitted_rubrics, dict) and submitted_rubrics != previous.get('rubrics')
+            and submitted_rubric_domain in (None, previous.get('domains', {}).get('rubric'))):
+        value['rubrics'] = submitted_rubrics
+        rubric = value['domains']['rubric']
+        question_keys = set(value.get('rubrics', {})) | set(previous.get('rubrics', {}))
+        for key in question_keys:
+            submitted = value.get('rubrics', {}).get(key, [])
+            old_projection = previous.get('rubrics', {}).get(key, [])
+            if submitted == old_projection:
+                continue
+            incoming = {criterion.get('id'): criterion for criterion in submitted if isinstance(criterion, dict)}
+            known = set()
+            for entry in rubric.get('entries', []):
+                if entry.get('authoring_question_key') != key:
+                    continue
+                current = []
+                for criterion in entry.get('criteria', []):
+                    identifier = criterion.get('id')
+                    known.add(identifier)
+                    replacement = incoming.get(identifier)
+                    if replacement is None:
+                        current.append({**criterion, 'excluded': True})
+                        continue
+                    # Legacy projection writes can edit teacher-facing fields,
+                    # but may not rewrite criterion provenance or stable IDs.
+                    allowed = {field: replacement[field] for field in
+                        ('description', 'points', 'excluded', 'points_confirmed', 'grouping_confirmed')
+                        if field in replacement}
+                    current.append({**criterion, **allowed})
+                entry['criteria'] = current
+            additions = [deepcopy(criterion) for identifier, criterion in incoming.items() if identifier not in known]
+            if additions:
+                manual = next((entry for entry in rubric.get('entries', [])
+                               if entry.get('authoring_question_key') == key
+                               and entry.get('material_role') == 'teacher_manual'), None)
+                if manual is None:
+                    identity = (value.get('source_provenance', {}).get('authoring_origins', {})
+                                .get('identities', {}).get(key, {}).get('formal_question_id') or key)
+                    manual = {'id': f'teacher-rubric-{uuid4()}', 'authoring_question_key': key,
+                        'question_id': identity, 'material_role': 'teacher_manual', 'source_draft_id': None,
+                        'material_id': None, 'source_sha256': None,
+                        'source': {'kind': 'teacher_manual', 'material_id': None,
+                            'source_sha256': None, 'segments': []}, 'criteria': [], 'operation_history': []}
+                    rubric.setdefault('entries', []).append(manual)
+                manual['criteria'].extend(additions)
     if (not isinstance(value, dict) or value.get('schema_version') != 'test-authoring.v1'
             or set(value) - {'question_text_buffers'} != set(previous) - {'question_text_buffers'} or len(json.dumps(value, ensure_ascii=False)) > 4_000_000):
         raise AuthoringError('AUTHORING_INVALID_SNAPSHOT', '下書きの形式が不正です。')
@@ -267,20 +324,24 @@ def preflight(snapshot):
         issue(None, 'source', '保存済みレビューの元資料を確認できません。出典付きレビューを確認してください。')
     for entry in snapshot.get('domains', {}).get('answer', {}).get('entries', []):
         if entry.get('disposition') not in {'ignored', 'excluded'} and not entry.get('authoring_question_key'):
-            issue(None, 'answer', '設問未割当の解答・採点基準候補があります。対応先を確認してください。')
+            issue(None, 'answer', '設問未割当の模範解答候補があります。対応先を確認してください。')
     entries = snapshot.get('domains', {}).get('answer', {}).get('entries', [])
     for key in {e.get('authoring_question_key') for e in entries} - {None}:
         current = [e for e in entries if e.get('authoring_question_key') == key and
             e.get('disposition', 'include') == 'include']
-        from .authoring_sources import has_rubric_state
-        answer_candidates = [e for e in current if e.get('answer_text', '').strip() or
-            e.get('diagram_records') or not has_rubric_state(e)]
+        answer_candidates = [e for e in current if e.get('answer_text', '').strip() or e.get('diagram_records')]
         if sum(e.get('answer_kind', 'primary') == 'primary' for e in answer_candidates) > 1:
             issue(key, 'answer', '主な模範解答を1件にしてください。別解は別解として指定してください。')
     for entry in entries:
         classification = entry.get('semantic_classification') or {}
         if entry.get('disposition', 'include') == 'include' and classification.get('status') == 'needs_teacher_review':
             issue(entry.get('authoring_question_key'), 'answer', '解答候補の分類を確認してください。')
+    for entry in snapshot.get('domains', {}).get('rubric', {}).get('entries', []):
+        if entry.get('disposition') not in {'ignored', 'excluded'} and not entry.get('authoring_question_key'):
+            issue(None, 'rubric', '設問未割当の採点基準候補があります。対応先を確認してください。')
+    for candidate in snapshot.get('domains', {}).get('recovery', {}).get('rubric_candidates', []):
+        if not candidate.get('dismissed') and candidate.get('origin_role') == 'rubric_source':
+            issue(candidate.get('question_key'), 'rubric', '未割当の採点基準候補を確認してください。')
     if total != snapshot['metadata'].get('total_points'):
         issue(None, 'metadata', '設問の合計点とテストの合計点が一致していません。')
     # Fail closed rather than pretending a JSON copy is a grading snapshot.
@@ -388,9 +449,14 @@ def material_analysis_readiness(snapshot, material=None, *, editable=True, dirty
     domains = snapshot.get('domains', {})
     if material['role'] == 'question_sheet':
         analyzed = analyzed or domains.get('question', {}).get('document', {}).get('source_pdf_sha256') == material['sha256']
-    else:
+    elif material['role'] == 'model_answer_source':
         answer = domains.get('answer') or {}
         analyzed = analyzed or any(source.get('material_id') == material['id'] and
             source.get('source_sha256') == material['sha256']
             for source in [answer, *answer.get('sources', {}).values()])
+    else:
+        rubric = domains.get('rubric') or {}
+        analyzed = analyzed or any(source.get('material_id') == material['id'] and
+            source.get('source_sha256') == material['sha256']
+            for source in [rubric, *rubric.get('sources', {}).values()])
     return {'state': 'ready', 'reason': '', 'analyzed': analyzed}

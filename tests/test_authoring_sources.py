@@ -280,10 +280,11 @@ def test_question_analysis_merge_preserves_answer_rubric_and_sources():
     assert result['metadata'] == current['metadata']
     assert 'question_text_buffers' not in result
     assert result['domains']['question'] == analyzed['domains']['question']
-    assert {key: value for key, value in result['domains']['answer'].items() if key != 'entries'} == {key: value for key, value in current['domains']['answer'].items() if key != 'entries'}
+    assert result['domains']['answer']['material_id'] == 'answer-material'
+    assert result['domains']['answer']['material_role'] == 'model_answer_source'
     assert result['answers'] == {'q1': current['answers']['q1']}
-    assert result['rubrics'] == {'q1': current['rubrics']['q1']}
-    assert result['rubric_histories'] == {'q1': current['rubric_histories']['q1']}
+    assert result['rubrics'] == {}
+    assert result['rubric_histories'] == {}
     origins = result['source_provenance']['authoring_origins']
     assert origins['tokens'] == {'question': {'id': 'new-q'}, 'answer': {'id': 'answer-token'}}
     assert origins['diagnostics'] == [{'domain': 'answer', 'id': 'answer-draft'}]
@@ -297,5 +298,10 @@ def test_question_analysis_merge_preserves_answer_rubric_and_sources():
     assert unresolved['mapping_state'] == 'needs_review'
     assert unresolved['answer_text'] == 'Teacher answer'
     assert unresolved['diagram_records'] == [diagram]
-    assert unresolved['rubric_edits'] == answer_entry['rubric_edits']
-    assert unresolved['rubric_merge_history'] == answer_entry['rubric_merge_history']
+    assert all('rubric_edits' not in entry for entry in result['domains']['answer']['entries'])
+    unresolved_rubric = next(entry for entry in result['domains']['rubric']['entries']
+                             if entry.get('source_candidate_id') == 'answer-1')
+    assert unresolved_rubric['authoring_question_key'] is None
+    assert unresolved_rubric['disposition'] == 'unassigned'
+    assert unresolved_rubric['criteria'] == answer_entry['rubric_edits']
+    assert unresolved_rubric['operation_history'] == answer_entry['rubric_merge_history']

@@ -1,5 +1,5 @@
 "use client";
-import {useCallback, useEffect, useRef, useState} from "react";
+import {Fragment, useCallback, useEffect, useRef, useState} from "react";
 import {useParams} from "next/navigation";
 import Link from "next/link";
 import {AuthoringDialog} from "@/components/reviews/AuthoringDialog";
@@ -75,6 +75,7 @@ export default function TestAuthoringPage() {
   const [registrationError,setRegistrationError]=useState("");
   const [deleteMaterial,setDeleteMaterial]=useState<Material|null>(null);
   const [materialRoleChanges,setMaterialRoleChanges]=useState<Record<string,string>>({});
+  const [recoveryTargets,setRecoveryTargets]=useState<Record<string,string>>({});
   const [saving,setSaving]=useState(false);
   const [busy,setBusy]=useState(false),[error,setError]=useState("");
   const {notify,view:notificationView}=useAuthoringNotifications();
@@ -173,6 +174,20 @@ export default function TestAuthoringPage() {
       updateNode(reconciled);setSplitProposal(reviewQuestionSplit(proposal,node,true));
     }catch(e){if(questionToolScope.current===scope)setError(`分割案を取得できませんでした。本文は保持されています。時間をおいて再実行してください。${e instanceof Error?` (${e.message})`:""}`);}finally{splitInFlight.current=false;setSplitRunning(false);setBusy(false);}
   }
+  function applyQuestionSplitProposal(){
+    if(!snapshot||!splitProposal)return;
+    const target=nodes.find(candidate=>candidate.stable_key===splitProposal.targetKey);
+    if(!target){setError("対象設問が見つかりません。分割案を作り直してください。");setSplitProposal(null);return;}
+    if(splitDuplicate(target,splitProposal,nodes)){setError("同じ本文・出典の小問が既に存在するか、選択中の小問を重複して切り出そうとしています。親本文に残すか、分割範囲を見直してください。");return;}
+    const result=applyQuestionSplit(target,splitProposal,()=>`teacher-${localId()}`,nodes);
+    if(!result){setError("小問にする部分と元資料の対応を確認してください。");return;}
+    const orderOffset=Math.max(-1,...snapshot.nodes.filter(candidate=>candidate.parent_key===target.stable_key).map(candidate=>candidate.sort_order))+1;
+    result.children.forEach(child=>{child.sort_order+=orderOffset;});
+    change({...snapshot,nodes:[...snapshot.nodes.map(candidate=>candidate.stable_key===target.stable_key?result.updated:candidate),...result.children]});
+    const targetRegions=questionDomain?.document.regions||[];
+    setBuffers(current=>({...current,[target.stable_key]:questionContent(result.updated,targetRegions).text,...Object.fromEntries(result.children.map(child=>[child.stable_key,questionContent(child,targetRegions).text]))}));
+    setSelected(result.children[0]?.stable_key||target.stable_key);setSplitProposal(null);
+  }
   async function analyzeSource(domain:"question"|"answer",requestedMaterialId:string){
     if(splitProposal){setError("分割案を適用またはキャンセルしてから資料を解析してください。分割案は保持されています。");return;}
     if(!revision||!requestedMaterialId||dirty){setError("資料を選び、現在の変更を保存してから解析してください。");return;}
@@ -193,7 +208,8 @@ export default function TestAuthoringPage() {
       setRevision(row);setSnapshot(row.snapshot);setDirty(false);setDirtyDomains({});setExternalChange(false);setContinueExternal(false);
       setBuffers(authoringBuffers(row.snapshot));
       setSelected(current=>row.snapshot.nodes.some(n=>n.stable_key===current)?current:row.snapshot.nodes[0]?.stable_key||"all");
-      const outcome=row.snapshot.domains?.answer?.analysis_results?.[materialRole||"model_answer_source"]||row.snapshot.domains?.answer?.analysis_result;
+      const roleDomain=materialRole==="rubric_source"?row.snapshot.domains?.rubric:row.snapshot.domains?.answer;
+      const outcome=materialRole==="question_sheet"?undefined:(roleDomain?.analysis_results?.[materialRole||"model_answer_source"]||roleDomain?.analysis_result);
       const refreshed=await testAuthoring.review(id);setIssues(refreshed.issues);
       if(domain==="answer"&&outcome){
         setVisible(v=>({...v,answer:true,rubric:true}));
@@ -321,13 +337,45 @@ export default function TestAuthoringPage() {
   const activeRegions=regions.filter(r=>node?.ordered_content.some(item=>"region_id" in item&&item.region_id===r.region_id)||!!node?.formula_decisions[r.region_id]||!!node?.figure_decisions[r.region_id]);
   const answer=snapshot.answers[selected]||{primary:"",alternatives:[],diagram_records:[]};
   const criteria=snapshot.rubrics[selected]||[];
-  const hasRubricState=(entry:AuthoringEntry)=>entry.rubric_edits!==undefined||entry.semantic_classification?.segments.some(s=>s.category==="rubric");
-  const formalRubricFallback=!!criteria.length&&!snapshot.domains?.answer?.entries.some(e=>e.authoring_question_key===selected&&hasRubricState(e));
+  const rubricDomain=snapshot.domains?.rubric;
+  const rubricRecovery=(snapshot.domains?.recovery?.rubric_candidates||[]).filter(candidate=>!candidate.dismissed&&!candidate.promoted);
+  const rubricEntries:AuthoringEntry[]=(rubricDomain?.entries||[]).map(entry=>({id:entry.id,
+    question_id:entry.question_id||null,authoring_question_key:entry.authoring_question_key||null,mapping_state:"manual_mapped",
+    answer_text:"",answer_kind:"alternative",source:entry.source,source_draft_id:entry.source_draft_id||undefined,
+    material_role:entry.material_role,disposition:entry.disposition||"include",
+    semantic_classification:entry.semantic_classification,rubric_edits:entry.criteria,
+    rubric_merge_history:entry.operation_history,diagram_records:[]}));
   const supersededMaterialIds=new Set(snapshot.materials.map(m=>m.replaces_material_id).filter((id):id is string=>!!id));
   const questionStale=!!questionDomain&&snapshot.materials.some(m=>m.role==="question_sheet"&&m.sha256===questionDomain.document.source_pdf_sha256&&supersededMaterialIds.has(m.id));
   const answerSources=snapshot.domains?.answer?{[snapshot.domains.answer.draft_id]:snapshot.domains.answer,...snapshot.domains.answer.sources}:{};
   const staleAnswerSourceDraftIds=Object.entries(answerSources).filter(([,source])=>supersededMaterialIds.has(source.material_id)||materials.find(m=>m.id===source.material_id)?.material_type!=="model_answer_source").map(([draftId])=>draftId);
   const answerStale=staleAnswerSourceDraftIds.length>0;
+  function updateRecovery(candidateId:string,patch:Record<string,unknown>){
+    if(!snapshot?.domains?.recovery)return;
+    change({...snapshot,domains:{...snapshot.domains,recovery:{...snapshot.domains.recovery,
+      rubric_candidates:snapshot.domains.recovery.rubric_candidates.map(candidate=>candidate.id===candidateId?{...candidate,...patch}:candidate)}}},"rubric");
+  }
+  function promoteRecovery(candidateId:string){
+    if(!snapshot||!rubricDomain)return;
+    const candidate=rubricRecovery.find(item=>item.id===candidateId);if(!candidate)return;
+    const target=recoveryTargets[candidate.id]||candidate.question_key||orderedNodes().find(item=>!nodes.some(child=>child.included&&child.parent_key===item.stable_key))?.stable_key;
+    if(!target){setError("採点基準の追加先となる設問を選択してください。");return;}
+    const criterionId=`teacher-rubric-${localId()}`;
+    const criterion={id:criterionId,description:candidate.text,points:0,source_text:candidate.text,segment_ids:[candidate.segment_id],
+      grouping_confirmed:false,grouping_method:"teacher_recovery",points_conflict:true,points_confirmed:false,
+      provenance:{teacher_recovered:true,origin_role:candidate.origin_role,source_draft_id:candidate.source_draft_id,
+        source_binding_id:candidate.source_binding_id,source_sha256:candidate.source_sha256,source_candidate_id:candidate.source_candidate_id,
+        source_candidate_segment_id:candidate.segment_id,source_provenance:candidate.provenance}};
+    const existing=rubricDomain.entries.find(entry=>entry.authoring_question_key===target&&entry.material_role==="teacher_manual");
+    const newEntry=existing?{...existing,criteria:[...existing.criteria,criterion]}:{id:`teacher-rubric-${localId()}`,
+      authoring_question_key:target,question_id:snapshot.source_provenance.authoring_origins?.identities?.[target]?.formal_question_id||target,
+      material_role:"teacher_manual",source_draft_id:null,material_id:null,source_sha256:null,
+      source:{kind:"teacher_manual",material_id:null,source_sha256:null,segments:[]},criteria:[criterion],operation_history:[]};
+    const entries=existing?rubricDomain.entries.map(entry=>entry.id===existing.id?newEntry:entry):[...rubricDomain.entries,newEntry];
+    const recovery={...snapshot.domains?.recovery,rubric_candidates:snapshot.domains?.recovery?.rubric_candidates.map(item=>item.id===candidate.id?{...item,promoted:true}:item)||[]};
+    const rubrics={...snapshot.rubrics,[target]:[...(snapshot.rubrics[target]||[]),criterion]};
+    change({...snapshot,domains:{...snapshot.domains,rubric:{...rubricDomain,entries},recovery},rubrics},"rubric");
+  }
   const viewed=materials.find(m=>m.id===materialId);
   const analysisDomain=viewed?.material_type==="question_sheet"?"question":
     viewed&&["model_answer_source","rubric_source"].includes(viewed.material_type)?"answer":undefined;
@@ -353,7 +401,7 @@ export default function TestAuthoringPage() {
     {externalChange&&<section role="alert" className="panel"><p>外部の保存済みレビューが更新されています。統合下書きは上書きされていません。</p>
       <button disabled={busy} onClick={()=>{setContinueExternal(true);notify("info","現在の編集内容を継続します","外部レビューの更新は取り込みません。");}}>現在の下書きを継続</button>
       <button disabled={busy} onClick={importSources}>最新レビューを取り込む</button></section>}
-    {error&&<p role="alert" className="error">{error}</p>}
+    {error&&!splitProposal&&<p role="alert" className="error">{error}</p>}
     {sourceWarnings.length>0&&<section aria-label="保存済み内容の出典確認" className="authoring-source-notice" role="status"><p>⚠ 元資料との対応に確認が必要な設問があります。編集内容は保存されています。</p>{sourceWarnings.map((w,i)=><div key={i}><span>{w.message}</span>{w.question_key&&<button onClick={()=>navigate({question_key:w.question_key,section:"question",field:"source",message:w.message})}>確認する</button>}</div>)}</section>}
     {(sourceProblems.length>0||questionStale||answerStale)&&<p role="alert">元PDFとの対応が無効になっています。資料と保存済みレビューを確認し、必要なら明示的に再解析してください。</p>}
     <ReviewWorkspaceLayout actions={<div className="review-toolbar" aria-busy={busy}>
@@ -423,30 +471,16 @@ export default function TestAuthoringPage() {
             const next=editQuestionContent(node,regions,buffers[selected]??node.body_text);
             if(!next){setError("元資料との対応を保った分割案を作成できません。");return;}
             updateNode(next);const proposal=suggestSubquestions(next,questionDomain?.document.automatic_nodes.find(n=>n.stable_key===node.source_draft_stable_key));
-            setSplitProposal(proposal?reviewQuestionSplit(proposal,node):null);if(!proposal)notify("info","小問候補は見つかりませんでした","必要なら設問を追加してください。");
+            setError("");setSplitProposal(proposal?reviewQuestionSplit(proposal,node):null);if(!proposal)notify("info","小問候補は見つかりませんでした","必要なら設問を追加してください。");
           }}>小問の分割案を作成</button>
           <button disabled={readonly||saving||busy||splitRunning} aria-busy={splitRunning} onClick={()=>void suggestQuestionSplit()}>{splitRunning?<><span className="spinner" aria-hidden="true"/>分割案を作成中…</>:"AIで小問の分割案を作成"}</button>
           <button disabled={readonly||saving||analyzing} onClick={()=>{
             const next=editQuestionContent(node,regions,buffers[selected]??node.body_text);
             const proposal=next&&splitQuestionAtCaret(next,questionCaret.current,questionContent(next,regions).spans,questionDomain?.document.automatic_nodes.find(n=>n.stable_key===node.source_draft_stable_key)?.ordered_content);
             if(!proposal){setError("この位置は元資料の範囲を安全に分割できません。数式や図の境界を避け、分割位置を確認してください。");return;}
-            updateNode(next!);setSplitProposal(reviewQuestionSplit(proposal,node));
+            setError("");updateNode(next!);setSplitProposal(reviewQuestionSplit(proposal,node));
           }}>問題文のカーソル位置で分割</button>
-          {splitProposal&&splitProposal.targetKey===node.stable_key&&<section aria-label="小問の分割案"><h3>小問の分割案</h3>
-            <p role="status">資料解析は分割案を適用またはキャンセルしてから実行できます。分割案は保持されています。</p>
-            {splitProposal.children.map((child,index)=><div key={index} className="authoring-split-block"><label>小問名<input value={child.label} onChange={e=>setSplitProposal({...splitProposal,children:splitProposal.children.map((c,i)=>i===index?{...c,label:e.target.value}:c)})}/></label><hr className="authoring-split-divider"/><label>分割部分 {index+1}の扱い<select aria-label={`分割部分 ${index+1}の扱い`} value={child.role||"child"} onChange={e=>setSplitProposal({...splitProposal,children:splitProposal.children.map((c,i)=>i===index?{...c,role:e.target.value as "parent"|"child"|"exclude"}:c)})}><option value="parent">親本文に残す</option><option value="child">小問にする</option><option value="exclude">除外</option></select></label><pre>{questionContent({...node,ordered_content:child.items},regions).text}</pre><p>{child.mappingStatus==="automatic"?"元資料との対応を確認済み":"元資料との対応を確認できません。対応する読み取り項目を指定してください。"}</p>
-              {child.mappingStatus==="manual_required"&&<fieldset><legend>対応する読み取り項目</legend>{splitProposal.sourceOptions.map(option=><label key={option.id}><input type="checkbox" checked={child.selectedSourceIds.includes(option.id)} onChange={e=>setSplitProposal({...splitProposal,children:splitProposal.children.map((c,i)=>i===index?{...c,selectedSourceIds:e.target.checked?[...c.selectedSourceIds,option.id]:c.selectedSourceIds.filter(id=>id!==option.id)}:c)})}/>{option.label} — {option.excerpt}</label>)}<button onClick={()=>{const items=mapCandidateToSources(child.items,child.selectedSourceIds,splitProposal.sourceOptions);if(items)setSplitProposal({...splitProposal,children:splitProposal.children.map((c,i)=>i===index?{...c,items,mappingStatus:"manual_mapped",included:true}:c)});}}>この対応を使用</button></fieldset>}
-            </div>)}
-            <button disabled={splitProposal.children.some(c=>c.included&&(c.role||"child")==="child"&&(!["automatic","manual_mapped"].includes(c.mappingStatus)||!c.contentValid))} onClick={()=>{
-              if(splitDuplicate(node,splitProposal,nodes)){setError("同じ本文・出典の小問が既に存在するか、選択中の小問を重複して切り出そうとしています。親本文に残すか、分割範囲を見直してください。");return;}
-              const result=applyQuestionSplit(node,splitProposal,()=>`teacher-${localId()}`,nodes);if(!result){setError("小問にする部分と元資料の対応を確認してください。");return;}
-              const orderOffset=Math.max(-1,...snapshot.nodes.filter(n=>n.parent_key===node.stable_key).map(n=>n.sort_order))+1;
-              result.children.forEach(n=>{n.sort_order+=orderOffset;});
-              change({...snapshot,nodes:[...snapshot.nodes.map(n=>n.stable_key===node.stable_key?result.updated:n),...result.children]});
-              setBuffers(current=>({...current,[node.stable_key]:questionContent(result.updated,regions).text,...Object.fromEntries(result.children.map(n=>[n.stable_key,questionContent(n,regions).text]))}));
-              setSelected(result.children[0].stable_key);setSplitProposal(null);
-            }}>分割を適用</button><button onClick={()=>setSplitProposal(null)}>キャンセル</button>
-          </section>}
+
           </div><div hidden={questionSettings}>
           {questionDomain&&revision&&<DiagramReview path={`/tests/${id}/authoring/nodes/${selected}/diagrams`} revision={revision.edit_version}
             records={node.diagram_records} sourceStale={questionStale} disabled={readonly||saving||analyzing} label="図の確認" onSelect={setDiagramSelection}
@@ -455,40 +489,64 @@ export default function TestAuthoringPage() {
             onChange={(key,resolution)=>change({...snapshot,domains:{...snapshot.domains,question:{...questionDomain,snapshot:{...questionDomain.snapshot,warning_states:{...questionDomain.snapshot.warning_states,[key]:resolution}}}}})}/>}
           </div>
         </AuthoringPreviewEditor></section>}
-        {snapshot.domains?.answer&&(visible.answer||visible.rubric)&&revision&&<section id="authoring-answer" tabIndex={-1} aria-label="解答・採点基準"><span id="authoring-rubric" tabIndex={-1}/><h2>解答・採点基準</h2>
-          <AuthoringCandidates key={snapshot.domains.answer.draft_id} testId={id} draftId={snapshot.domains.answer.draft_id} revision={revision.edit_version} questionKey={selected}
-            staleSourceDraftIds={staleAnswerSourceDraftIds} entries={snapshot.domains.answer.entries} savedEntries={revision.snapshot.domains?.answer?.entries||[]} disabled={readonly||saving||analyzing}
-            answerEditing={editing.answer} rubricEditing={editing.rubric} onAnswerEditing={value=>setEditing(v=>({...v,answer:value}))} onRubricEditing={value=>setEditing(v=>({...v,rubric:value}))}
-            showAnswer={visible.answer} showRubric={visible.rubric&&!formalRubricFallback} questions={orderedNodes().map(n=>({key:n.stable_key,label:pathFor(n.stable_key),gradable:!nodes.some(c=>c.included&&c.parent_key===n.stable_key),sourceId:snapshot.source_provenance.authoring_origins?.identities[n.stable_key]?.formal_question_id||n.stable_key}))}
-            onSelect={setDiagramSelection} onChange={(rawEntries,domain)=>{
-              const entries=rawEntries.map(e=>hasRubricState(e)?{...e,rubric_edits:e.rubric_edits??rubricRows(e)}:e);
-              const answers={...snapshot.answers},rubrics={...snapshot.rubrics};
-              for(const key of new Set([...snapshot.domains!.answer!.entries,...entries].map(e=>e.authoring_question_key).filter(Boolean))){
-                const current=entries.filter(e=>e.authoring_question_key===key&&e.disposition!=="ignored"&&e.disposition!=="excluded"&&e.disposition!=="unassigned");
-                const primary=current.find(e=>(e.answer_kind||"primary")==="primary"&&(e.answer_text.trim()||e.diagram_records?.some(r=>r.state==="accepted")))||current.find(e=>(e.answer_kind||"primary")==="primary");
-                answers[key!]={primary:primary?.answer_text||"",alternatives:current.flatMap(e=>[...(e.answer_kind==="alternative"?[e.answer_text]:[]),...(e.manual_alternative_answers||e.semantic_classification?.manual_alternative_answers||e.semantic_classification?.alternative_answers||[]).map(a=>a.text)]),diagram_records:primary?.diagram_records||[]};
-                if(current.some(hasRubricState)||snapshot.domains!.answer!.entries.some(e=>e.authoring_question_key===key&&hasRubricState(e)))rubrics[key!]=current.flatMap(e=>rubricRows(e).filter(c=>!c.excluded));
+        {visible.answer&&<section id="authoring-answer" tabIndex={-1} aria-label="模範解答"><h2>模範解答</h2>
+          {snapshot.domains?.answer&&revision?<AuthoringCandidates key={`answer:${snapshot.domains.answer.draft_id}`} testId={id} draftId={snapshot.domains.answer.draft_id} revision={revision.edit_version} questionKey={selected}
+            staleSourceDraftIds={staleAnswerSourceDraftIds} entries={snapshot.domains.answer.entries as AuthoringEntry[]} savedEntries={(revision.snapshot.domains?.answer?.entries||[]) as AuthoringEntry[]} disabled={readonly||saving||analyzing}
+            answerEditing={editing.answer} rubricEditing={false} onAnswerEditing={value=>setEditing(v=>({...v,answer:value}))} onRubricEditing={()=>{}}
+            showAnswer showRubric={false} questions={orderedNodes().map(n=>({key:n.stable_key,label:pathFor(n.stable_key),gradable:!nodes.some(c=>c.included&&c.parent_key===n.stable_key),sourceId:snapshot.source_provenance.authoring_origins?.identities[n.stable_key]?.formal_question_id||n.stable_key}))}
+            onSelect={setDiagramSelection} onChange={entries=>{
+              const answerDomain=snapshot.domains?.answer;
+              if(!answerDomain)return;
+              const answers={...snapshot.answers};
+              for(const key of new Set([...answerDomain.entries,...entries].map(e=>e.authoring_question_key).filter((value):value is string=>!!value))){
+                const current=entries.filter(e=>e.authoring_question_key===key&&e.material_role!=="rubric_source"&&e.disposition!=="ignored"&&e.disposition!=="excluded"&&e.disposition!=="unassigned");
+                const primary=current.find(e=>(e.answer_kind||"primary")==="primary"&&(e.answer_text.trim()||e.diagram_records?.some(record=>record.state==="accepted")))||current.find(e=>(e.answer_kind||"primary")==="primary");
+                answers[key]={primary:primary?.answer_text||"",alternatives:current.flatMap(e=>[...(e.answer_kind==="alternative"?[e.answer_text]:[]),...(e.manual_alternative_answers||e.semantic_classification?.manual_alternative_answers||e.semantic_classification?.alternative_answers||[]).map(a=>a.text)]),diagram_records:primary?.diagram_records||[]};
               }
-              change({...snapshot,domains:{...snapshot.domains,answer:{...snapshot.domains!.answer!,entries}},answers,rubrics},domain||"answer");
-            }}/></section>}
-        {!snapshot.domains?.answer&&visible.answer&&<section id="authoring-answer" tabIndex={-1} aria-label="解答"><h2>解答</h2>
-          <AuthoringPreviewEditor editLabel="本文編集" label="解答" editing={editing.answer} onEditing={value=>setEditing(v=>({...v,answer:value}))} preview={<><MarkdownMathText source={answer.primary||"本文なし"}/>{answer.alternatives.map((text,i)=><div key={i}><h4>別解{i+1}</h4><MarkdownMathText source={text}/></div>)}<AcceptedDiagramPreview records={answer.diagram_records}/></>}>
-          <label>模範解答本文<textarea aria-label="模範解答本文" rows={4} disabled={readonly||saving||analyzing} value={answer.primary} onChange={e=>change({...snapshot,answers:{...snapshot.answers,[selected]:{...answer,primary:e.target.value}}})}/></label>
-          <LatexNormalizationControl text={answer.primary} contextType="model_answer" disabled={readonly||saving||analyzing} onApply={text=>change({...snapshot,answers:{...snapshot.answers,[selected]:{...answer,primary:text}}})}/>
-          {!!answer.diagram_records.length&&<p>保存済みの模範解答図: {answer.diagram_records.length}件（元の出典情報を保持）</p>}
-        </AuthoringPreviewEditor></section>}
-        {(!snapshot.domains?.answer||formalRubricFallback)&&visible.rubric&&<section id="authoring-rubric" tabIndex={-1} aria-label="採点基準"><h2>採点基準</h2>
-          <AuthoringCandidates answerEditing={editing.answer} rubricEditing={editing.rubric} onAnswerEditing={value=>setEditing(v=>({...v,answer:value}))} onRubricEditing={value=>setEditing(v=>({...v,rubric:value}))} testId={id} draftId="" revision={revision?.edit_version||1} questionKey={selected} showAnswer={false} showRubric
-            disabled={readonly||saving||analyzing} questions={orderedNodes().map(n=>({key:n.stable_key,label:pathFor(n.stable_key),gradable:!nodes.some(c=>c.included&&c.parent_key===n.stable_key)}))}
-            savedEntries={[]} entries={[{id:`formal-entry:${selected}`,mapping_state:"manual_mapped",question_id:null,authoring_question_key:selected,answer_text:"",source:{kind:"teacher_manual",material_id:null,source_sha256:null,segments:[]},
-              rubric_edits:criteria,rubric_merge_history:snapshot.rubric_histories?.[selected]||[]}]}
-            onSelect={setDiagramSelection} onChange={entries=>change({...snapshot,rubrics:{...snapshot.rubrics,[selected]:entries.flatMap(entry=>entry.rubric_edits||[])},
-              ...(snapshot.rubric_histories?{rubric_histories:{...snapshot.rubric_histories,[selected]:entries[0].rubric_merge_history||[]}}:{})})}/>
-
+              change({...snapshot,domains:{...snapshot.domains,answer:{...answerDomain,entries}},answers},"answer");
+            }}/>:<AuthoringPreviewEditor editLabel="本文編集" label="模範解答" editing={editing.answer} onEditing={value=>setEditing(v=>({...v,answer:value}))} preview={<div className="authoring-question-preview-frame authoring-answer-preview-frame"><MarkdownMathText source={answer.primary||"本文なし"}/>{answer.alternatives.map((text,index)=><div key={index}><h4>別解{index+1}</h4><MarkdownMathText source={text}/></div>)}<AcceptedDiagramPreview records={answer.diagram_records}/></div>}>
+            <label>模範解答本文<textarea aria-label="模範解答本文" rows={4} disabled={readonly||saving||analyzing} value={answer.primary} onChange={event=>change({...snapshot,answers:{...snapshot.answers,[selected]:{...answer,primary:event.target.value}}},"answer")}/></label>
+            <LatexNormalizationControl text={answer.primary} contextType="model_answer" disabled={readonly||saving||analyzing} onApply={text=>change({...snapshot,answers:{...snapshot.answers,[selected]:{...answer,primary:text}}},"answer")}/>
+          </AuthoringPreviewEditor>}
+        </section>}
+        {visible.rubric&&<section id="authoring-rubric" tabIndex={-1} aria-label="採点基準"><h2>採点基準</h2>
+          {rubricRecovery.length>0&&<section aria-label="未割当の採点基準候補"><h3>未割当の採点基準候補 {rubricRecovery.length}件</h3><p>候補は採点基準へ自動登録されていません。内容と対応先を確認してください。</p>
+            {rubricRecovery.map(candidate=><article className="panel" key={candidate.id}><MarkdownMathText source={candidate.text}/><p>{candidate.origin_role==="model_answer_source"?"模範解答資料内で見つかった採点基準候補":"採点基準資料からの候補"}</p>
+              <label>対象設問<select aria-label="未割当候補の対象設問" value={recoveryTargets[candidate.id]||candidate.question_key||""} onChange={event=>setRecoveryTargets(current=>({...current,[candidate.id]:event.target.value}))}><option value="">設問を選択</option>{orderedNodes().filter(item=>!nodes.some(child=>child.included&&child.parent_key===item.stable_key)).map(item=><option key={item.stable_key} value={item.stable_key}>{pathFor(item.stable_key)}</option>)}</select></label>
+              <button type="button" disabled={readonly||saving||analyzing||!(recoveryTargets[candidate.id]||candidate.question_key)} onClick={()=>promoteRecovery(candidate.id)}>採点基準として追加</button>
+              <button type="button" disabled={readonly||saving||analyzing} onClick={()=>updateRecovery(candidate.id,{dismissed:true})}>無視</button>
+            </article>)}
+          </section>}
+          <AuthoringCandidates key={`rubric:${rubricDomain?.draft_id||"manual"}`} testId={id} draftId={rubricDomain?.draft_id||"manual-rubric"} revision={revision?.edit_version||1} questionKey={selected}
+            entries={rubricEntries} savedEntries={rubricEntries} disabled={readonly||saving||analyzing} answerEditing={false} rubricEditing={editing.rubric}
+            onAnswerEditing={()=>{}} onRubricEditing={value=>setEditing(v=>({...v,rubric:value}))} showAnswer={false} showRubric
+            questions={orderedNodes().map(n=>({key:n.stable_key,label:pathFor(n.stable_key),gradable:!nodes.some(c=>c.included&&c.parent_key===n.stable_key)}))}
+            onSelect={setDiagramSelection} onChange={updated=>{
+              const oldById=new Map((rubricDomain?.entries||[]).map(entry=>[entry.id,entry]));
+              const entries=updated.map(entry=>{
+                const old=oldById.get(entry.id);
+                return old?{...old,criteria:entry.rubric_edits||old.criteria,operation_history:entry.rubric_merge_history||old.operation_history,authoring_question_key:entry.authoring_question_key,question_id:entry.question_id,disposition:entry.disposition,semantic_classification:entry.semantic_classification}:
+                  {id:entry.id,authoring_question_key:entry.authoring_question_key,question_id:entry.question_id,material_role:"teacher_manual",source_draft_id:null,material_id:null,source_sha256:null,source:entry.source,candidate_text:"",disposition:"include" as const,criteria:entry.rubric_edits||[],operation_history:entry.rubric_merge_history||[]};
+              });
+              const domain={...(rubricDomain||{entries:[],sources:{},analysis_result:null,analysis_results:{}}),entries};
+              const rubrics={...snapshot.rubrics};
+              for(const key of new Set([...rubricEntries,...updated].map(entry=>entry.authoring_question_key).filter((value):value is string=>!!value)))
+                rubrics[key]=entries.filter(entry=>entry.authoring_question_key===key&&entry.disposition!=="excluded"&&entry.disposition!=="ignored").flatMap(entry=>entry.criteria.filter(criterion=>!criterion.excluded));
+              change({...snapshot,domains:{...snapshot.domains,rubric:domain},rubrics},"rubric");
+            }}/>
         </section>}
       </>}
 
     </ReviewWorkspaceLayout>
+    {splitProposal&&(()=>{const target=nodes.find(candidate=>candidate.stable_key===splitProposal.targetKey);if(!target)return null;return <AuthoringDialog title={`${pathFor(target.stable_key)}の分割案`} onCancel={()=>setSplitProposal(null)} actions={<><button type="button" onClick={()=>setSplitProposal(null)}>取消</button><button type="button" disabled={splitProposal.children.some(child=>child.included&&(child.role||"child")==="child"&&(!["automatic","manual_mapped"].includes(child.mappingStatus)||!child.contentValid))} onClick={applyQuestionSplitProposal}>分割を適用</button></>}>
+      <p>元の問題文</p><div className="authoring-question-preview-frame"><MarkdownMathText source={buffers[target.stable_key]??questionContent(target,regions).text}/></div>
+      {error&&<p role="alert" className="error">{error}</p>}<h3>分割後の候補</h3>{splitProposal.children.map((child,index)=><Fragment key={`${target.stable_key}:${index}`}><div className="authoring-split-block">
+        <label>小問名<input value={child.label} onChange={event=>setSplitProposal(current=>current?{...current,children:current.children.map((candidate,i)=>i===index?{...candidate,label:event.target.value}:candidate)}:current)}/></label>
+        <label>分割部分 {index+1}の扱い<select aria-label={`分割部分 ${index+1}の扱い`} value={child.role||"child"} onChange={event=>setSplitProposal(current=>current?{...current,children:current.children.map((candidate,i)=>i===index?{...candidate,role:event.target.value as "parent"|"child"|"exclude"}:candidate)}:current)}><option value="parent">親本文に残す</option><option value="child">小問にする</option><option value="exclude">除外</option></select></label>
+        <pre>{questionContent({...target,ordered_content:child.items},regions).text}</pre><p>{child.mappingStatus==="automatic"?"元資料との対応を確認済み":"元資料との対応を確認できません。対応する読み取り項目を指定してください。"}</p>
+        {child.mappingStatus==="manual_required"&&<fieldset><legend>対応する読み取り項目</legend>{splitProposal.sourceOptions.map(option=><label key={option.id}><input type="checkbox" checked={child.selectedSourceIds.includes(option.id)} onChange={event=>setSplitProposal(current=>current?{...current,children:current.children.map((candidate,i)=>i===index?{...candidate,selectedSourceIds:event.target.checked?[...candidate.selectedSourceIds,option.id]:candidate.selectedSourceIds.filter(value=>value!==option.id)}:candidate)}:current)}/>{option.label} — {option.excerpt}</label>)}<button type="button" onClick={()=>{const items=mapCandidateToSources(child.items,child.selectedSourceIds,splitProposal.sourceOptions);if(items)setSplitProposal(current=>current?{...current,children:current.children.map((candidate,i)=>i===index?{...candidate,items,mappingStatus:"manual_mapped",included:true}:candidate)}:current);}}>この対応を使用</button></fieldset>}
+      </div>{index<splitProposal.children.length-1&&<hr className="authoring-split-divider"/>}</Fragment>)}
+    </AuthoringDialog>;})()}
     {registrationPrompt&&<AuthoringDialog title="保存して解析へ進みますか？" onCancel={()=>{if(!saving)setRegistrationPrompt(null);}} busy={saving} actions={<><button type="button" disabled={saving} onClick={()=>setRegistrationPrompt(null)}>いいえ</button><button type="button" disabled={saving} onClick={()=>void saveThenAnalyzeRegistered()}>{saving?"保存中…":"はい"}</button></>}>
       <p>ファイルを読み込みました。</p><p>解析には保存が必要です。保存と解析確認へ進みますか？</p>{registrationError&&<p role="alert" className="error">{registrationError}</p>}
     </AuthoringDialog>}

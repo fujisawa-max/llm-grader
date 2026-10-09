@@ -86,7 +86,11 @@ def test_atomic_draft_save_preserves_formal_entities_and_conflicts(workspace):
     result=w.client.put(base(w)+'/authoring',json={'expected_edit_version':1,'snapshot':value})
     assert result.status_code==200, result.text
     assert result.json()['edit_version']==2
-    assert w.client.get(base(w)+'/authoring').json()['revision']['snapshot']==value
+    saved_snapshot=w.client.get(base(w)+'/authoring').json()['revision']['snapshot']
+    assert saved_snapshot['nodes']==value['nodes']
+    assert saved_snapshot['answers']==value['answers']
+    assert saved_snapshot['rubrics'][w.question][0]['description']=='Changed rubric'
+    assert saved_snapshot['domains']['rubric']['entries'][0]['criteria'][0]['description']=='Changed rubric'
     conflict=w.client.put(base(w)+'/authoring',json={'expected_edit_version':1,'snapshot':row['snapshot']})
     assert conflict.status_code==409
     with w.sf() as s:
@@ -351,7 +355,12 @@ def test_exact_buffers_split_points_answer_rubric_roundtrip(workspace):
     value['rubrics']['teacher-child'] = [{'id': 'manual', 'description': 'criterion', 'points': 10}]
     saved = w.client.put(base(w)+'/authoring', json={'snapshot': value, 'expected_edit_version': row['edit_version']})
     assert saved.status_code == 200, saved.text
-    assert saved.json()['snapshot'] == value
+    saved_snapshot=saved.json()['snapshot']
+    assert saved_snapshot['nodes']==value['nodes']
+    assert saved_snapshot['answers']==value['answers']
+    assert saved_snapshot['rubrics']['teacher-child']==value['rubrics']['teacher-child']
+    assert next(entry for entry in saved_snapshot['domains']['rubric']['entries']
+                if entry['authoring_question_key']=='teacher-child')['criteria']==value['rubrics']['teacher-child']
     assert w.client.get(base(w)+'/authoring').json()['revision'] == saved.json()
     assert begin(w) == saved.json()
     conflict = w.client.put(base(w)+'/authoring', json={'snapshot': row['snapshot'], 'expected_edit_version': 1})

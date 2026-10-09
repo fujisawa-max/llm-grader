@@ -40,14 +40,14 @@ test("current preview and retained editor history; explicit add/replace material
   const seed=await(await page.request.get(`/api/v1/tests/${process.env.MODEL_ANSWER_CLASSIFICATION_TEST_ID}`)).json();
   const exam=await(await page.request.post(`/api/v1/offerings/${seed.course_offering_id}/tests`,{data:{name:"Preview material controls",total_points:10}})).json(),base=`/api/v1/tests/${exam.id}`;
   await page.goto(`/tests/${exam.id}/authoring`);await page.getByRole("button",{name:"設問を追加",exact:true}).waitFor();await page.getByRole("button",{name:"設問を追加",exact:true}).click();
-  const question=page.getByLabel("問題の表示切替",{exact:true}),answer=page.getByLabel("解答の表示切替",{exact:true}),rubric=page.getByLabel("採点基準の表示切替",{exact:true});
+  const question=page.locator("#authoring-question"),answer=page.locator("#authoring-answer"),rubric=page.locator("#authoring-rubric");
   await expect(question.getByRole("button",{name:"本文編集",exact:true})).toBeVisible();await expect(answer.getByRole("button",{name:"本文編集",exact:true})).toBeVisible();await expect(rubric.getByRole("button",{name:"編集する",exact:true})).toBeVisible();
   await expect(page.getByLabel("問題文",{exact:true})).not.toBeVisible();await expect(page.getByLabel("模範解答本文",{exact:true})).not.toBeVisible();
   await expect(page.getByRole("button",{name:"設問を追加",exact:true})).toHaveCount(1);
   await expect(page.locator(".authoring-target-controls").getByRole("button",{name:"設問を追加",exact:true})).toBeVisible();
   await expect(page.getByLabel("テスト全体確認",{exact:true})).toHaveCount(0);
   await expect(page.locator(".authoring-question-metadata")).toContainText("大問：問題1 ／ 配点：－点（未設定）");
-  await expect(page.locator(".authoring-question-preview-frame")).toBeVisible();
+  await expect(page.locator("#authoring-question .authoring-question-preview-frame")).toBeVisible();
   await question.getByRole("button",{name:"設問設定の変更",exact:true}).click();
   await question.locator('input[type="number"]').fill("30");
   await question.getByRole("button",{name:"プレビューに戻る",exact:true}).click();
@@ -83,7 +83,7 @@ test("current preview and retained editor history; explicit add/replace material
   await expect(page.getByText("未保存の変更があります",{exact:true})).toBeVisible();expect(await calls(page)).toEqual(counts);
   await page.getByRole("button",{name:"保存",exact:true}).first().click();await expect(page.locator(".authoring-toast").filter({hasText:"保存しました"}).last()).toBeVisible();
   const saved=(await(await page.request.get(base+"/authoring")).json()).revision,replacementRef=saved.snapshot.materials.find((m:{id:string;replaces_material_id?:string})=>m.replaces_material_id===old);expect(replacementRef).toBeTruthy();
-  await page.reload();await expect(page.getByLabel("問題プレビュー",{exact:true})).toContainText("貼付");await expect(page.getByLabel("解答プレビュー",{exact:true})).toContainText("日本語");await expect(page.getByLabel("模範解答本文",{exact:true})).not.toBeVisible();
+  await page.reload();await expect(page.locator("#authoring-question .authoring-question-preview-frame")).toContainText("貼付");await expect(page.locator("#authoring-answer .authoring-answer-preview-frame")).toContainText("日本語");await expect(page.getByLabel("模範解答本文",{exact:true})).not.toBeVisible();
   await question.getByRole("button",{name:"本文編集",exact:true}).click();await expect(page.getByLabel("問題文",{exact:true})).toHaveValue(qtext);await answer.getByRole("button",{name:"本文編集",exact:true}).click();await expect(page.getByLabel("模範解答本文",{exact:true})).toHaveValue(atext);
   await selector.selectOption(replacementRef!.id);const materialActions=page.getByRole("group",{name:"利用資料の操作"});await expect(materialActions.getByRole("button",{name:"解析",exact:true})).toBeEnabled();
   await confirmAnalysis(page,materialActions,"解析");await expect(materialActions.getByRole("button",{name:"再解析",exact:true})).toBeEnabled();

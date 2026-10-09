@@ -10,7 +10,8 @@ workspace = source_workspace
 def test_rubric_text_split_does_not_require_answer_artifact_and_preserves_revision(workspace):
     w = workspace
     path, row = begin(w, w.answer['test_id'])
-    entry_id = row['snapshot']['domains']['answer']['entries'][0]['id']
+    key = row['snapshot']['nodes'][0]['stable_key']
+    entry_id = f'formal-entry:{key}'
     before = w.client.get(path).json()['revision']
     with patch('scoring.authoring_answers.AuthoringAnswers', side_effect=ValueError('authoring_material_replaced')):
         result = w.client.post(path+f'/entries/{entry_id}/rubric-split', json={
@@ -81,8 +82,12 @@ def test_saved_unassigned_criterion_can_be_split_before_assignment(workspace):
     w = workspace
     path, row = begin(w, w.answer['test_id'])
     value = deepcopy(row['snapshot'])
-    entry = value['domains']['answer']['entries'][0]
-    entry.update(authoring_question_key=None, disposition='unassigned', mapping_state='needs_review')
+    entry = {'id': f'teacher-rubric-{uuid4()}', 'authoring_question_key': None,
+        'material_role': 'teacher_manual', 'source_draft_id': None, 'material_id': None,
+        'source_sha256': None, 'source': {'kind': 'teacher_manual', 'material_id': None,
+            'source_sha256': None, 'segments': []}, 'criteria': [{'id': 'c', 'description': 'first second', 'points': 0}],
+        'operation_history': [], 'disposition': 'unassigned'}
+    value['domains']['rubric']['entries'].append(entry)
     row = save(w, path, row, value)
     result = w.client.post(path+f'/entries/{entry["id"]}/rubric-split', json={
         'expected_revision': row['edit_version'], 'candidate_id': 'c', 'text': 'first second', 'offset': 6})

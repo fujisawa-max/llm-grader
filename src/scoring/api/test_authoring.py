@@ -78,11 +78,14 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
 
     def view(row):
         from ..test_authoring import source_warnings, material_analysis_readiness
+        from ..authoring_sources import normalize_authoring_snapshot
+        from ..pdf_native import canonical_hash
+        snapshot = normalize_authoring_snapshot(row.snapshot)
         return {**{k: getattr(row, k) for k in ('id', 'test_id', 'revision', 'edit_version', 'state',
-            'snapshot', 'snapshot_sha256', 'baseline_sha256')},
-            'source_warnings': source_warnings(row.snapshot),
-            'analysis_readiness': {m['id']: material_analysis_readiness(row.snapshot, m,
-                editable=row.state in {'draft', 'final_review'}) for m in row.snapshot['materials']}}
+            'baseline_sha256')}, 'snapshot_sha256': canonical_hash(snapshot), 'snapshot': snapshot,
+            'source_warnings': source_warnings(snapshot),
+            'analysis_readiness': {m['id']: material_analysis_readiness(snapshot, m,
+                editable=row.state in {'draft', 'final_review'}) for m in snapshot['materials']}}
 
 
     def error(exc, s):
@@ -94,7 +97,8 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
             return []
         from ..test_authoring import replacement_problems
         problems = replacement_problems(row.snapshot)
-        domains = row.snapshot.get('domains', {})
+        from ..authoring_sources import normalize_authoring_snapshot
+        domains = normalize_authoring_snapshot(row.snapshot).get('domains', {})
         from ..source_registration import deleted_material_ids
         deleted = deleted_material_ids(session, row.test_id)
         answer = domains.get('answer') or {}
@@ -291,7 +295,11 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
                         ~TestMaterial.id.in_(deleted_material_ids(s, test_id) or {''})).order_by(
                         ModelAnswerImportDraft.updated_at.desc(), ModelAnswerImportDraft.id.desc()))
                     if draft:
-                        merge_answer_analysis(snapshot, draft, role_name)
+                        if role_name == 'model_answer_source':
+                            merge_answer_analysis(snapshot, draft)
+                        else:
+                            from ..authoring_sources import merge_rubric_analysis
+                            merge_rubric_analysis(snapshot, draft)
             if old_tokens.get('question') != tokens['question']:
                 origin['pending_question_review'] = tokens['question']
             origin['tokens'] = tokens
@@ -347,8 +355,14 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
         draft = answer_create(test_id, ImportCreate(material_id=v.material_id), s,
             questions_override=questions, commit=False)
         mark_analysis(snapshot, row.snapshot, s.get(TestMaterial, draft.material_id))
-        from ..authoring_sources import merge_answer_analysis
-        merge_answer_analysis(snapshot, draft, selected_material.material_type)
+        if selected_material.material_type == 'model_answer_source':
+            from ..authoring_sources import merge_answer_analysis
+            merge_answer_analysis(snapshot, draft)
+        elif selected_material.material_type == 'rubric_source':
+            from ..authoring_sources import merge_rubric_analysis
+            merge_rubric_analysis(snapshot, draft)
+        else:
+            raise HTTPException(422, 'AUTHORING_ANALYSIS_ROLE_UNSUPPORTED')
         origin = snapshot['source_provenance'].setdefault('authoring_origins', {})
         tokens = deepcopy(origin.get('tokens') or source_tokens(s, test_id))
         token_name = 'rubric' if selected_material.material_type == 'rubric_source' else 'answer'
@@ -591,6 +605,7 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
     @r.post('/tests/{test_id}/authoring/entries/{entry_id}/rubric-split')
     def rubric_split(test_id: str, entry_id: str, body: RubricSplitTool, s=Depends(db)):
         from ..rubric_split import reconstruct_split
+        from ..authoring_sources import normalize_authoring_snapshot
         try:
             # Splitting teacher text does not depend on PDF/diagram validity.
             # Keep authorization/CAS and target identity, without requiring an
@@ -599,16 +614,17 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
             row = latest(s, test_id)
             if not row or row.edit_version != body.expected_revision or row.state != 'draft':
                 raise HTTPException(409, 'AUTHORING_SAVE_CONFLICT')
-            entry = next((e for e in row.snapshot.get('domains', {}).get('answer', {}).get('entries', [])
+            normalized = normalize_authoring_snapshot(row.snapshot)
+            entry = next((e for e in normalized.get('domains', {}).get('rubric', {}).get('entries', [])
                           if e['id'] == entry_id), None)
             key = entry.get('authoring_question_key') if entry else body.question_key
             if entry_id.startswith('formal-entry:'):
                 key = entry_id.removeprefix('formal-entry:')
             elif entry is None:
                 from uuid import UUID
-                if not entry_id.startswith('teacher-entry-'):
+                if not entry_id.startswith(('teacher-entry-', 'teacher-rubric-')):
                     raise ValueError('authoring_answer_candidate_missing')
-                UUID(entry_id.removeprefix('teacher-entry-'))
+                UUID(entry_id.removeprefix('teacher-entry-').removeprefix('teacher-rubric-'))
             node = next((n for n in row.snapshot['nodes'] if n['stable_key'] == key), None)
             if not node and (entry is None or key is not None):
                 raise HTTPException(404, 'AUTHORING_TARGET_MISSING')
@@ -637,8 +653,15 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
         from ..rubric_consolidation import consolidate_rubrics
         import time
         try:
-            _, entry, _ = answer_context(test_id, entry_id, s, body.expected_revision)
-            classification = entry.get('semantic_classification') or {}
+            owned(test_id, s)
+            row = latest(s, test_id)
+            if not row or row.edit_version != body.expected_revision or row.state != 'draft':
+                raise HTTPException(409, {'error': {'code': 'revision_conflict'}})
+            from ..authoring_sources import normalize_authoring_snapshot
+            normalized = normalize_authoring_snapshot(row.snapshot)
+            entry = next((candidate for candidate in normalized.get('domains', {}).get('rubric', {}).get('entries', [])
+                          if candidate.get('id') == entry_id), None)
+            classification = (entry or {}).get('semantic_classification') or {}
             if body.criteria is not None:
                 if len({c.id for c in body.criteria}) != len(body.criteria):
                     raise ValueError('rubric_duplicate_candidate')
