@@ -170,6 +170,7 @@
 .diagram-bounds input{width:100%}
 .diagram-review article{border-top:1px solid var(--border,#ddd);margin-top:16px;padding-top:8px}
 .diagram-review .review-crop{max-height:360px;object-fit:contain;display:block}
+.diagram-save-guidance{border:1px solid var(--accent);border-radius:6px;padding:10px 12px;background:#eef5fa;color:var(--accent)}
 @media(max-width:600px){.diagram-bounds{grid-template-columns:repeat(2,minmax(0,1fr))}}
 
 .review-workspace-source>label{display:flex;flex-direction:column;gap:5px;flex:none;min-width:0;width:100%}

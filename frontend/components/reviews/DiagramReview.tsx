@@ -194,7 +194,7 @@ export function DiagramReview({path, revision, records = [], disabled, sourceSta
     </article>)}
     {targetQuestionId && <section aria-label="この大問ですでに使用している図">
       <h4>この大問ですでに使用している図</h4>
-      {unsavedDiagramChanges && <p className="muted">他の小問で図を再利用するには、図を選択した後に保存してください。</p>}
+      {unsavedDiagramChanges && <p className="diagram-save-guidance">他の小問で図を再利用するには、図を選択した後に保存してください。</p>}
       {reuseError && <p className="notice">{reuseError}</p>}
       {!reusable.length && !reuseError && <p className="muted">再利用できる保存済みの図はありません。</p>}
       {reusable.map(record => <article key={`${record.id}:${record.reuse_ref}`}>
