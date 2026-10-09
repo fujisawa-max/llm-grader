@@ -23,8 +23,8 @@ function errorMessage(e: unknown) {
   return "図の出典または範囲を確認できません。範囲を見直すか、再度図候補を確認してください。";
 }
 
-export function DiagramReview({path, revision, records = [], disabled, sourceStale, targetQuestionId, assignmentQuestionId, autoParentFallback = false, disabledReason, label, onChange, onSelect}: {
-  path: string; revision: number; records?: DiagramRecord[]; disabled: boolean; sourceStale?: boolean; targetQuestionId?: string; assignmentQuestionId?: string; autoParentFallback?: boolean; disabledReason?: string; label: string;
+export function DiagramReview({path, revision, records = [], disabled, sourceStale, targetQuestionId, assignmentQuestionId, autoParentFallback = false, unsavedDiagramChanges = false, disabledReason, label, onChange, onSelect}: {
+  path: string; revision: number; records?: DiagramRecord[]; disabled: boolean; sourceStale?: boolean; targetQuestionId?: string; assignmentQuestionId?: string; autoParentFallback?: boolean; unsavedDiagramChanges?: boolean; disabledReason?: string; label: string;
   onChange: (records: DiagramRecord[]) => void; onSelect: (selection: DiagramSelection) => void;
 }) {
   const requestPath = (suffix = "", selectedScope?: DiagramScope, reuseRef?: string) => {
@@ -44,6 +44,7 @@ export function DiagramReview({path, revision, records = [], disabled, sourceSta
   const [fallback, setFallback] = useState<Discovery["fallback"]>();
   const [discoveryScope, setDiscoveryScope] = useState<DiagramScope>("exact");
   const [candidates, setCandidates] = useState<DiagramRecord[]>([]);
+  const [discovering, setDiscovering] = useState(false);
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   const [errorDetails, setErrorDetails] = useState<string>();
   const [loaded, setLoaded] = useState(false), [editing, setEditing] = useState<DiagramRecord>();
@@ -53,7 +54,7 @@ export function DiagramReview({path, revision, records = [], disabled, sourceSta
     const epoch = ++requestEpoch.current;
     setReusable([]); setReuseError("");
     setDiagnostics(undefined); setFallback(undefined); setDiscoveryScope("exact");
-    setBusy(false); setCandidates(sourceStale ? records.map(r => ({...r, state: "candidate", status: "unresolved", reason_code: "diagram_source_stale", trust_state: "hard_invalid", teacher_confirmed: false})) : []); setLoaded(false); setEditing(undefined); setPreview(undefined); setError("");
+    setBusy(false); setDiscovering(false); setCandidates(sourceStale ? records.map(r => ({...r, state: "candidate", status: "unresolved", reason_code: "diagram_source_stale", trust_state: "hard_invalid", teacher_confirmed: false})) : []); setLoaded(false); setEditing(undefined); setPreview(undefined); setError("");
     // Resuming saved review never requests discovery/vision.
     if (records.length && !sourceStale) apiFetch<Discovery>(requestPath()).then(r => {
       if (active && requestEpoch.current === epoch) {
@@ -89,7 +90,7 @@ export function DiagramReview({path, revision, records = [], disabled, sourceSta
   }, [path, revision, sourceStale, targetQuestionId]);
   async function discover(selectedScope: DiagramScope = "exact") {
     const epoch = ++requestEpoch.current;
-    setBusy(true); setError("");
+    setBusy(true); setDiscovering(true); setError("");
     try {
       let result = await apiFetch<Discovery>(requestPath("", selectedScope), json({expected_revision: revision}));
       if (currentScope.current !== scope || requestEpoch.current !== epoch) return;
@@ -104,7 +105,7 @@ export function DiagramReview({path, revision, records = [], disabled, sourceSta
       setLoaded(true); setFallback(result.fallback); setDiagnostics(result.diagnostics); setDiscoveryScope(selectedScope);
       if (result.diagrams[0]) onSelect({record: result.diagrams[0], manual: false});
     } catch (e) { if (currentScope.current === scope && requestEpoch.current === epoch) {setError(errorMessage(e)); setErrorDetails(errorCode(e));} }
-    finally {if (currentScope.current === scope && requestEpoch.current === epoch) setBusy(false);}
+    finally {if (currentScope.current === scope && requestEpoch.current === epoch) {setBusy(false); setDiscovering(false);}}
   }
   function decide(candidate: DiagramRecord, state: DiagramRecord["state"]) {
     const targetAliases = [assignmentQuestionId, targetQuestionId].filter((value): value is string => !!value);
@@ -141,7 +142,8 @@ export function DiagramReview({path, revision, records = [], disabled, sourceSta
   return <section className="panel section diagram-review" aria-label={label} aria-busy={busy} tabIndex={-1}>
     <h3>{label}</h3>
     <p className="muted">図の出典・範囲を確認して選択します。保存・登録は上部の操作から行います。</p>
-    <button type="button" disabled={disabled || busy || sourceStale || !!disabledReason} onClick={() => discover()}>{busy ? "図の範囲を確認中…" : "図候補を確認"}</button>
+    <button type="button" disabled={disabled || busy || sourceStale || !!disabledReason} onClick={() => discover()}>{discovering ? <><span className="spinner" aria-hidden="true"/>図候補を探しています…</> : busy ? "図の範囲を確認中…" : "図候補を確認"}</button>
+    {discovering && <p className="muted" role="status">図候補を探索しています…</p>}
     {!loaded && !records.length && <p className="muted">まだ図候補を確認していません。</p>}
     {disabledReason && <p className="muted">{disabledReason}</p>}
     {sourceStale && <p className="notice">設問の構造・対応先の変更を保存してから、図候補を確認してください。</p>}
@@ -176,6 +178,7 @@ export function DiagramReview({path, revision, records = [], disabled, sourceSta
     </article>)}
     {targetQuestionId && <section aria-label="この大問ですでに使用している図">
       <h4>この大問ですでに使用している図</h4>
+      {unsavedDiagramChanges && <p className="muted">他の小問で図を再利用するには、図を選択した後に保存してください。</p>}
       {reuseError && <p className="notice">{reuseError}</p>}
       {!reusable.length && !reuseError && <p className="muted">再利用できる保存済みの図はありません。</p>}
       {reusable.map(record => <article key={`${record.id}:${record.reuse_ref}`}>
