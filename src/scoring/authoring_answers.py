@@ -159,6 +159,9 @@ class AuthoringAnswers:
                 continue
             if entry.get('diagram_records'):
                 original['diagram_records'] = self.diagrams(entry).validate(entry['diagram_records'], self.row.edit_version+1)
+                from .authoring_answer_inclusion import accept_answer_diagram
+                accept_answer_diagram(original, saved.get(entry['id'], {}).get('diagram_records', []),
+                    target_valid=entry.get('question_id') in gradable)
         active_entries = [entry for entry in self.primary_bound['entries']
                           if entry.get('source_draft_id', self.primary_bound['draft_id']) in self.sources
                           and self.role_by_source_id.get(entry.get('source_draft_id', self.primary_bound['draft_id']),

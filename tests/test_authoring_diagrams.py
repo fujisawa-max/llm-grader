@@ -2,6 +2,8 @@ from copy import deepcopy
 from uuid import uuid4
 from unittest.mock import patch
 
+import pytest
+
 from tests.test_diagram_review_api import workspace as source_workspace, clean
 
 workspace = source_workspace
@@ -70,7 +72,8 @@ def test_answer_draft_precedence_and_manual_diagram_roundtrip(workspace):
     assert not any(i['question_key'] == key and i['section'] == 'answer' for i in w.client.get(path+'/review').json()['issues'])
 
 
-def test_split_children_share_confirmed_parent_diagram_without_formal_ids(workspace):
+@pytest.mark.parametrize("automatic_exclusion", [False, True])
+def test_split_children_share_confirmed_parent_diagram_without_formal_ids(workspace, automatic_exclusion):
     w = workspace
     path, row = begin(w, w.answer['test_id'])
     snapshot = deepcopy(row['snapshot'])
@@ -85,6 +88,9 @@ def test_split_children_share_confirmed_parent_diagram_without_formal_ids(worksp
         children.append(child)
     snapshot['nodes'].extend(children)
     first, second = [manual(c['stable_key']) for c in children]
+    if automatic_exclusion:
+        first.update(disposition='excluded', mapping_state='automatic',
+            ignore_reason='classified_as_non_answer', semantic_classification={'status': 'classified', 'segments': []})
     snapshot['domains']['answer']['entries'].extend([first, second])
     row = save(w, path, row, snapshot)
     endpoint = path+f'/entries/{first["id"]}/diagrams?question_id={children[0]["stable_key"]}'
@@ -118,7 +124,7 @@ def test_split_children_share_confirmed_parent_diagram_without_formal_ids(worksp
     origin_state = next(state for state in trace['entry_states'] if state['entry_id'] == first['id'])
     assert origin_state['disposition_present'] is True
     assert origin_state['disposition'] == origin_state['effective_disposition'] == 'include'
-    assert origin_state['mapping_state'] == 'manual_mapped'
+    assert origin_state['mapping_state'] == ('automatic' if automatic_exclusion else 'manual_mapped')
     assert origin_state['accepted_diagram_count'] == 1
     assert {'entry_id': first['id'], 'question_id': children[0]['stable_key'],
         'diagram_id': source['id'], 'outcome': 'included', 'reason': None} in trace['decisions']
