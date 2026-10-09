@@ -503,7 +503,7 @@ export default function TestAuthoringPage() {
           {snapshot.domains?.answer&&revision?<AuthoringCandidates key={`answer:${snapshot.domains.answer.draft_id}`} testId={id} draftId={snapshot.domains.answer.draft_id} revision={revision.edit_version} questionKey={selected}
             staleSourceDraftIds={staleAnswerSourceDraftIds} entries={snapshot.domains.answer.entries as AuthoringEntry[]} savedEntries={(revision.snapshot.domains?.answer?.entries||[]) as AuthoringEntry[]} disabled={readonly||saving||analyzing}
             answerEditing={editing.answer} rubricEditing={false} onAnswerEditing={value=>setEditing(v=>({...v,answer:value}))} onRubricEditing={()=>{}}
-            showAnswer showRubric={false} questions={orderedNodes().map(n=>({key:n.stable_key,label:pathFor(n.stable_key),gradable:!nodes.some(c=>c.included&&c.parent_key===n.stable_key),sourceId:snapshot.source_provenance.authoring_origins?.identities[n.stable_key]?.formal_question_id||n.stable_key}))}
+            showAnswer showRubric={false} questions={orderedNodes().map(n=>({key:n.stable_key,parentKey:n.parent_key,label:pathFor(n.stable_key),gradable:!nodes.some(c=>c.included&&c.parent_key===n.stable_key),sourceId:snapshot.source_provenance.authoring_origins?.identities[n.stable_key]?.formal_question_id||n.stable_key}))}
             onSelect={selection=>{if(selection.record.source_type==="manual_pdf_crop"&&selection.record.material_id){setMaterialId(String(selection.record.material_id));setSourceMode("pdf");}setDiagramSelection(selection);}} onChange={entries=>{
               const answerDomain=snapshot.domains?.answer;
               if(!answerDomain)return;
@@ -523,7 +523,7 @@ export default function TestAuthoringPage() {
           <AuthoringCandidates key={`rubric:${rubricDomain?.draft_id||"manual"}`} testId={id} draftId={rubricDomain?.draft_id||"manual-rubric"} revision={revision?.edit_version||1} questionKey={selected}
             entries={rubricEntries} savedEntries={rubricEntries} disabled={readonly||saving||analyzing} answerEditing={false} rubricEditing={editing.rubric}
             onAnswerEditing={()=>{}} onRubricEditing={value=>setEditing(v=>({...v,rubric:value}))} showAnswer={false} showRubric
-            questions={orderedNodes().map(n=>({key:n.stable_key,label:pathFor(n.stable_key),gradable:!nodes.some(c=>c.included&&c.parent_key===n.stable_key)}))}
+            questions={orderedNodes().map(n=>({key:n.stable_key,parentKey:n.parent_key,label:pathFor(n.stable_key),gradable:!nodes.some(c=>c.included&&c.parent_key===n.stable_key)}))}
             onSelect={setDiagramSelection} onChange={updated=>{
               const oldById=new Map((rubricDomain?.entries||[]).map(entry=>[entry.id,entry]));
               const entries=updated.map(entry=>{

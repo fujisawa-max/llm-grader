@@ -12,3 +12,16 @@ export function canonicalQuestionPath(key: string, nodes: CanonicalQuestionNode[
   }
   return labels.join(" > ") || fallback;
 }
+
+/** Same top-parent scope as saved diagram sibling reuse; invalid chains fail closed. */
+export function canonicalQuestionRoot(key: string, nodes: CanonicalQuestionNode[]): string | undefined {
+  const byKey = new Map(nodes.map(node => [node.key, node]));
+  const seen = new Set<string>();
+  let current = byKey.get(key);
+  while (current && !seen.has(current.key)) {
+    seen.add(current.key);
+    if (!current.parentKey) return current.key;
+    current = byKey.get(current.parentKey);
+  }
+  return undefined;
+}

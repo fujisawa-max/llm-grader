@@ -1,5 +1,5 @@
 import {test, expect} from "@playwright/test";
-import {canonicalQuestionPath} from "../lib/canonicalQuestionPath";
+import {canonicalQuestionPath,canonicalQuestionRoot} from "../lib/canonicalQuestionPath";
 import {questionBreadcrumb} from "../lib/modelAnswerQuestionNavigation";
 import {buildQuestionPath} from "../lib/reviewValidation";
 import {questionReviewIssues} from "../lib/questionReviewIssues";
@@ -49,4 +49,19 @@ test("warning resolution and score edits clear current issue lists without reloa
   expect(make().map(i=>i.issueType)).toEqual(["warning","score"]);
   document.snapshot.warning_states={w:{state:"acknowledged"}};nodes[2].score_points=10;
   expect(make()).toEqual([]);
+});
+
+
+test("diagram guidance scope follows the same major tree, including grandchildren, and rejects invalid ancestry",()=>{
+  const nodes=[
+    {key:"q3",label:"問題3"}, {key:"a",parentKey:"q3",label:"(1)"},
+    {key:"b",parentKey:"q3",label:"(2)"}, {key:"nested",parentKey:"a",label:"(i)"},
+    {key:"q2",label:"問題2"}, {key:"orphan",parentKey:"missing",label:"(1)"},
+    {key:"cycle-a",parentKey:"cycle-b",label:"A"}, {key:"cycle-b",parentKey:"cycle-a",label:"B"},
+  ];
+  expect(canonicalQuestionRoot("a",nodes)).toBe(canonicalQuestionRoot("b",nodes));
+  expect(canonicalQuestionRoot("nested",nodes)).toBe("q3");
+  expect(canonicalQuestionRoot("q2",nodes)).not.toBe(canonicalQuestionRoot("a",nodes));
+  expect(canonicalQuestionRoot("orphan",nodes)).toBeUndefined();
+  expect(canonicalQuestionRoot("cycle-a",nodes)).toBeUndefined();
 });
