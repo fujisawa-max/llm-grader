@@ -133,16 +133,29 @@ class ConfirmedDiagramReuse:
             'source_confirmation_reason_code': origin.get('confirmation_reason_code'),
             'acceptance_method': 'reused_confirmed_diagram' if value['state'] == 'accepted' else None}
 
-    def available(self, revision):
+    def available(self, revision, diagnostics=None):
+        def trace(entry, record, outcome, reason=None):
+            if diagnostics is not None:
+                diagnostics.append({'entry_id': entry.get('id'),
+                    'question_id': entry.get('question_id'), 'diagram_id': record.get('id') if record else None,
+                    'outcome': outcome, 'reason': reason})
+
         result, seen = [], set()
         for entry in self.context['entries']:
-            if (entry.get('question_id') == self.current.assigned or entry.get('disposition', 'include') != 'include'
-                    or entry.get('question_id') not in self.current.questions
-                    or self.root(entry['question_id']) != self.root(self.current.assigned)):
+            reason = (
+                'same_target' if entry.get('question_id') == self.current.assigned else
+                'entry_not_included' if entry.get('disposition', 'include') != 'include' else
+                'unknown_question' if entry.get('question_id') not in self.current.questions else
+                'different_major' if self.root(entry['question_id']) != self.root(self.current.assigned) else None)
+            if reason:
+                trace(entry, None, 'excluded', reason)
                 continue
             for record in entry.get('diagram_records', []):
-                if (record.get('state') != 'accepted' or record.get('trust_state') == 'hard_invalid'
-                        or record.get('reason_code') == 'diagram_source_stale'):
+                reason = ('not_accepted' if record.get('state') != 'accepted' else
+                    'hard_invalid' if record.get('trust_state') == 'hard_invalid' else
+                    'diagram_source_stale' if record.get('reason_code') == 'diagram_source_stale' else None)
+                if reason:
+                    trace(entry, record, 'excluded', reason)
                     continue
                 try:
                     if record.get('scope') == 'reuse':
@@ -164,11 +177,14 @@ class ConfirmedDiagramReuse:
                         ref = self.reference(entry, origin)
                     key = (origin['id'], origin['crop_sha256'])
                     if key in seen:
+                        trace(entry, record, 'excluded', 'duplicate_artifact')
                         continue
                     value = self.record(origin['id'], ref, revision=revision)
                     result.append(value)
                     seen.add(key)
-                except (ValueError, KeyError, OSError):
+                    trace(entry, record, 'included')
+                except (ValueError, KeyError, OSError) as exc:
+                    trace(entry, record, 'excluded', str(exc) if isinstance(exc, ValueError) else type(exc).__name__)
                     # Invalid/missing artifacts are not offered as teacher tasks.
                     continue
         return result

@@ -545,7 +545,8 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
     @r.post('/tests/{test_id}/authoring/entries/{entry_id}/diagrams')
     def answer_diagrams(test_id: str, entry_id: str, request: Request,
         body: DiagramRequest | None = None, question_id: str | None = None,
-        scope: Literal['exact', 'parent', 'pdf', 'reuse', 'manual'] | None = None, s=Depends(db)):
+        scope: Literal['exact', 'parent', 'pdf', 'reuse', 'manual'] | None = None,
+        reuse_diagnostics: bool = False, s=Depends(db)):
         try:
             context, entry, row = answer_context(test_id, entry_id, s, body.expected_revision if body else None, question_id)
             if not hasattr(context, 'diagrams'):
@@ -554,7 +555,25 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
             if scope == 'reuse':
                 if request.method != 'GET':
                     raise ValueError('diagram_invalid_scope')
-                return answer_diagram_view(engine, engine.reuse().available(row.edit_version), test_id, entry_id, question_id, True)
+                decisions = [] if reuse_diagnostics else None
+                records = engine.reuse().available(row.edit_version, diagnostics=decisions)
+                view = answer_diagram_view(engine, records, test_id, entry_id, question_id, True)
+                if reuse_diagnostics:
+                    for other in context.entries:
+                        if other.get('source_draft_id') != context.bound['draft_id']:
+                            decisions.append({'entry_id': other['id'], 'question_id': other.get('question_id'),
+                                'diagram_id': None, 'outcome': 'excluded', 'reason': 'source_draft_mismatch'})
+                    view['reuse_diagnostics'] = {'revision_id': row.id, 'edit_version': row.edit_version,
+                        'source_draft_id': context.bound['draft_id'], 'material_id': context.bound['material_id'],
+                        'source_sha256': context.bound['source_sha256'], 'source_artifact': context.bound['artifact_ref'],
+                        'target_question_id': engine.assigned, 'target_root': engine.reuse().root(engine.assigned),
+                        'saved_entry_count': len(context.entries),
+                        'saved_diagram_count': sum(len(e.get('diagram_records', [])) for e in context.entries),
+                        'saved_accepted_diagram_count': sum(r.get('state') == 'accepted'
+                            for e in context.entries for r in e.get('diagram_records', [])),
+                        'compatible_source_entry_count': len(engine.reuse_context['entries']),
+                        'candidate_count': len(records), 'decisions': decisions}
+                return view
             if request.method == 'POST' and body:
                 engine.discover(getattr(classifier, 'manager', None), scope or 'exact')
             return answer_diagram_view(engine, engine.records(entry.get('diagram_records', []),

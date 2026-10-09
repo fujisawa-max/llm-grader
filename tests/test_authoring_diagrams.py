@@ -95,6 +95,11 @@ def test_split_children_share_confirmed_parent_diagram_without_formal_ids(worksp
     result = w.client.post(endpoint+'&scope=parent', json={'expected_revision': row['edit_version']})
     assert result.status_code == 200, result.text
     source = result.json()['diagrams'][0]
+    reuse_endpoint = path+f'/entries/{second["id"]}/diagrams?question_id={children[1]["stable_key"]}&scope=reuse'
+    before = w.client.get(reuse_endpoint+'&reuse_diagnostics=true')
+    assert before.status_code == 200, before.text
+    assert before.json()['reusable_diagrams'] == []
+    assert before.json()['reuse_diagnostics']['target_root'] == parent['stable_key']
     snapshot = deepcopy(row['snapshot'])
     next(e for e in snapshot['domains']['answer']['entries'] if e['id'] == first['id'])['diagram_records'] = [{**clean(source), 'state': 'accepted'}]
     row = save(w, path, row, snapshot)
@@ -102,6 +107,18 @@ def test_split_children_share_confirmed_parent_diagram_without_formal_ids(worksp
         result = w.client.get(path+f'/entries/{second["id"]}/diagrams?question_id={children[1]["stable_key"]}&scope=reuse')
     assert result.status_code == 200, result.text
     discovery.assert_not_called()
+    assert 'reuse_diagnostics' not in result.json()
+    diagnosed = w.client.get(reuse_endpoint+'&reuse_diagnostics=true')
+    assert diagnosed.status_code == 200, diagnosed.text
+    assert diagnosed.json()['reusable_diagrams'] == result.json()['reusable_diagrams']
+    trace = diagnosed.json()['reuse_diagnostics']
+    assert trace['candidate_count'] == 1
+    assert trace['source_draft_id'] == w.answer['id']
+    assert trace['target_root'] == parent['stable_key']
+    assert {'entry_id': first['id'], 'question_id': children[0]['stable_key'],
+        'diagram_id': source['id'], 'outcome': 'included', 'reason': None} in trace['decisions']
+    assert {'entry_id': second['id'], 'question_id': children[1]['stable_key'],
+        'diagram_id': None, 'outcome': 'excluded', 'reason': 'same_target'} in trace['decisions']
     reused = result.json()['reusable_diagrams'][0]
     assert reused['crop_sha256'] == source['crop_sha256']
     assert reused['source_question_id'] == parent['stable_key']
