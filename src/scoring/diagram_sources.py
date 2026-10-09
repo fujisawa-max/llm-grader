@@ -1,7 +1,7 @@
 """Server-loaded ownership adapters for the shared diagram extractor."""
 from copy import deepcopy
 
-from .diagram_regions import DiagramRegionExtractor, visual_elements, _contains, _near
+from .diagram_regions import DiagramRegionExtractor, visual_elements, _contains
 from .pdf_native import native_vector_elements, sha256_file
 from .question_source_ownership import owned_native_ids
 from .review_document import _source_owner
@@ -179,19 +179,31 @@ def model_answer_diagram_candidates(source, ir, store, *, entry, question_region
                            and r['page_index'] == index]
         bounds[index] = discovery_bounds + ancestor_bounds
         blocked[index] = [[r['left'], r['top'], r['right'], r['bottom']] for r in sibling]
+        def overlaps(a, b):
+            return all(min(a[k+2], b[k+2]) > max(a[k], b[k]) for k in (0, 1))
+
         ids = [e['element_id'] for e in visual_elements(page) if e.get('bbox')
             and sum(_contains(b, e['bbox']) for b in discovery_bounds) == 1
-            and not any(_near(b, e['bbox']) for b in blocked[index])]
+            and not any(overlaps(b, e['bbox']) for b in blocked[index])]
         labels = {i for s in entry.get('source', {}).get('segments', [])
                   if s.get('page_index') == index for i in s.get('element_ids', [])}
         if not entry.get('source', {}).get('segments'):
             labels = {e['element_id'] for e in page['elements'] if e.get('bbox')
-                      and sum(_contains(b, e['bbox']) for b in bounds[index]) == 1
-                      and not any(_near(b, e['bbox']) for b in blocked[index])}
-        ownership[index] = ids + sorted(labels)
-        exclusions[index] = [e['element_id'] for e in visual_elements(page) if e['element_id'] not in ids]
+                      and sum(_contains(b, e['bbox']) for b in discovery_bounds) == 1
+                      and not any(overlaps(b, e['bbox']) for b in blocked[index])}
+        # Source segments can contain image IDs too. Labels must never bypass
+        # the scope checks above or put an image in both allowed/excluded sets.
+        text_ids = {e['element_id'] for e in page['elements'] if e.get('type') == 'text'}
+        ownership[index] = ids + sorted(labels & text_ids)
+        # Only proven sibling-owned visuals are competing evidence. A path
+        # crossing a heading boundary (e.g. an annotation box) is not owned by
+        # either region and must not poison a complete, in-scope diagram.
+        exclusions[index] = [e['element_id'] for e in visual_elements(page)
+                             if e['element_id'] not in ids and e.get('bbox')
+                             and any(_contains(b, e['bbox']) for b in blocked[index])]
     engine = DiagramRegionExtractor(source, ir, store)
     engine.allowed_bounds, engine.blocked_bounds = bounds, blocked
+    engine.limit_crop_padding = True
     engine.ownership_key = {'bounds': bounds, 'discovery_bounds': {
         p['page_index']: [[r['left'], r['top'], r['right'], r['bottom']]
                           for r in question_regions if r['question_id'] == qid and r['page_index'] == p['page_index']]

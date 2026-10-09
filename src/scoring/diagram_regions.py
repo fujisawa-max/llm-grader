@@ -219,7 +219,16 @@ class DiagramRegionExtractor:
         bounds = page_space(page).cropbox
         if not _contains(bounds, box):
             raise ValueError("diagram_crop_outside_page")
-        geometry = crop_geometry(page, box, "figure", POLICY)
+        policy = POLICY
+        if getattr(self, 'limit_crop_padding', False):
+            # Keep the source-derived bbox unchanged. Reduce only optional
+            # renderer padding at a proven Question/parent boundary.
+            containing = [b for b in self.allowed_bounds.get(page['page_index'], []) if _contains(b, box)]
+            if not containing:
+                raise ValueError('diagram_source_boundary')
+            clearance = max(min(box[0]-b[0], box[1]-b[1], b[2]-box[2], b[3]-box[3]) for b in containing)
+            policy = {**POLICY, 'figure_margin': min(POLICY['figure_margin'], clearance)}
+        geometry = crop_geometry(page, box, "figure", policy)
         expanded = geometry['expanded_bbox']
         if hasattr(self, 'allowed_bounds'):
             if not any(_contains(b, expanded) for b in self.allowed_bounds.get(page['page_index'], [])):
@@ -243,7 +252,7 @@ class DiagramRegionExtractor:
             temp = output.with_name(f".{uuid4()}.png")
             render = PyMuPdfRegionRenderer().render(self.source, page,
                 {"page_index": page["page_index"], "region_id": candidate["id"],
-                 "region_type": "figure", "crop": geometry}, POLICY, temp)
+                 "region_type": "figure", "crop": geometry}, policy, temp)
             temp.replace(output)
             write_diagram_json(self.store, f"diagrams/{key}.json", render)
         return {**candidate, "final_bbox": box, "crop_bbox": geometry["expanded_bbox"],

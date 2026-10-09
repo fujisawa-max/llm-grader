@@ -542,6 +542,7 @@ def main():
                         "e2e/authoring-preview-materials-real.spec.ts",
                         "e2e/authoring-analysis-access-real.spec.ts",
                         "e2e/authoring-split-merge-real.spec.ts",
+                        "e2e/authoring-sample-q5-diagram-real.spec.ts",
                         "e2e/authoring-save-resume-real.spec.ts",
                         "e2e/authoring-endurance-real.spec.ts",
                     ]

@@ -23,8 +23,8 @@ function errorMessage(e: unknown) {
   return "図の出典または範囲を確認できません。範囲を見直すか、再度図候補を確認してください。";
 }
 
-export function DiagramReview({path, revision, records = [], disabled, sourceStale, targetQuestionId, assignmentQuestionId, disabledReason, label, onChange, onSelect}: {
-  path: string; revision: number; records?: DiagramRecord[]; disabled: boolean; sourceStale?: boolean; targetQuestionId?: string; assignmentQuestionId?: string; disabledReason?: string; label: string;
+export function DiagramReview({path, revision, records = [], disabled, sourceStale, targetQuestionId, assignmentQuestionId, autoParentFallback = false, disabledReason, label, onChange, onSelect}: {
+  path: string; revision: number; records?: DiagramRecord[]; disabled: boolean; sourceStale?: boolean; targetQuestionId?: string; assignmentQuestionId?: string; autoParentFallback?: boolean; disabledReason?: string; label: string;
   onChange: (records: DiagramRecord[]) => void; onSelect: (selection: DiagramSelection) => void;
 }) {
   const requestPath = (suffix = "", selectedScope?: DiagramScope, reuseRef?: string) => {
@@ -91,7 +91,14 @@ export function DiagramReview({path, revision, records = [], disabled, sourceSta
     const epoch = ++requestEpoch.current;
     setBusy(true); setError("");
     try {
-      const result = await apiFetch<Discovery>(requestPath("", selectedScope), json({expected_revision: revision}));
+      let result = await apiFetch<Discovery>(requestPath("", selectedScope), json({expected_revision: revision}));
+      if (currentScope.current !== scope || requestEpoch.current !== epoch) return;
+      if (autoParentFallback && selectedScope === "exact" && !result.diagrams.length && result.fallback?.scope === "parent") {
+        // The server proves this parent scope. Show its candidates during the
+        // explicit discovery action; acceptance still requires teacher review.
+        selectedScope = "parent";
+        result = await apiFetch<Discovery>(requestPath("", selectedScope), json({expected_revision: revision}));
+      }
       if (currentScope.current !== scope || requestEpoch.current !== epoch) return;
       setCandidates(result.diagrams.map(c => mergeRecord(c, recordsRef.current)));
       setLoaded(true); setFallback(result.fallback); setDiagnostics(result.diagnostics); setDiscoveryScope(selectedScope);
