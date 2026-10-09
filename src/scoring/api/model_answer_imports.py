@@ -1021,6 +1021,10 @@ def router(db, artifact_root, classifier=None):
     @routes.post("/model-answer-import-drafts/{draft_id}/confirm")
     def confirm(draft_id: str, body: ConfirmRequest, session=Depends(db)):
         draft = owned_draft(draft_id, session)
+        from ..db.models import Test
+        exam = session.get(Test, draft.test_id)
+        if exam and exam.active_confirmed_revision_id:
+            fail(409, "TEST_CONFIRMED_REVISION_READ_ONLY", "確定済みの採点基盤は直接変更できません。修正版で編集してください。")
         if draft.snapshot.get("authoring_only"):
             fail(409, "AUTHORING_NOT_PUBLISHABLE", "統合編集の下書きは個別に正式登録できません")
         revision_check(draft, body.expected_revision)

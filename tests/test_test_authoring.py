@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import importlib
 
 import pytest
-from sqlalchemy import select, func, inspect
+from sqlalchemy import select, func, inspect, create_engine, MetaData, Table, Column, String
 from fastapi.testclient import TestClient
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
@@ -13,7 +13,8 @@ from scoring.api import create_app
 from scoring.auth import hash_password
 from scoring.db import create_session_factory, init_database
 from scoring.db.models import (TestQuestion as Question, ModelAnswer, RubricVersion,
-    TestAuthoringRevision as Revision, TestArchive as Archive, GradingJob, Test as Exam)
+    TestAuthoringRevision as Revision, TestArchive as Archive, GradingJob, Test as Exam,
+    ConfirmedAuthoringRevision)
 from scoring.domain import DomainService
 from scoring.test_authoring import validate_snapshot, AuthoringError
 
@@ -44,7 +45,8 @@ def workspace(tmp_path):
         s.commit()
         ids = dict(legacy=legacy.id, fresh=fresh.id, foreign=foreign.id, course=course.id,
             offering=offering.id, question=q.id, answer=a.id, rubric=rub.id)
-    client = TestClient(create_app(sf, question_import_root=tmp_path/'artifacts', allowed_roots=[tmp_path]))
+    client = TestClient(create_app(sf, question_import_root=tmp_path/'artifacts', allowed_roots=[tmp_path]),
+        raise_server_exceptions=False)
     assert client.post('/api/v1/auth/login', json={'email':'author@example.invalid',
         'password':'authoring-test-password'}).status_code == 200
     yield SimpleNamespace(client=client, sf=sf, engine=engine, **ids)
@@ -137,16 +139,141 @@ def test_non_finite_points_fail_closed(workspace,points):
 
 def test_publication_boundary_never_partially_registers(workspace):
     w=workspace
-    begin(w)
+    row=begin(w)
     review=w.client.get(base(w)+'/authoring/review').json()
-    assert not review['can_confirm']
-    assert any(i['section']=='publication' for i in review['issues'])
-    assert w.client.post(base(w)+'/authoring/confirm').status_code==409
+    assert review['can_confirm']
+    confirmed=w.client.post(base(w)+'/authoring/confirm',json={'revision_id':row['id'],
+        'expected_edit_version':row['edit_version'],'expected_snapshot_sha256':row['snapshot_sha256']})
+    assert confirmed.status_code==200,confirmed.text
     with w.sf() as s:
         assert s.scalar(select(func.count()).select_from(Question))==1
+        assert s.scalar(select(func.count()).select_from(ModelAnswer))==2
+        assert s.scalar(select(func.count()).select_from(RubricVersion))==2
+        assert s.scalar(select(Revision.state))=='confirmed'
+        basis=s.scalar(select(ConfirmedAuthoringRevision))
+        assert basis.snapshot_sha256==row['snapshot_sha256']
+        assert basis.snapshot==row['snapshot']
+        formal_question=s.get(Question,w.question)
+        assert formal_question.question_text==basis.snapshot['nodes'][0]['body_text']
+        current_answer=s.scalar(select(ModelAnswer).where(ModelAnswer.test_id==w.legacy,ModelAnswer.is_current.is_(True)))
+        assert current_answer.answer_text==basis.snapshot['answers'][w.question]['primary']
+        current_rubric=s.scalar(select(RubricVersion).where(RubricVersion.test_id==w.legacy,RubricVersion.status=='approved'))
+        assert current_rubric.rubric_json['questions'][0]['criteria']==basis.snapshot['rubrics'][w.question]
+        with pytest.raises(ValueError,match='TEST_CONFIRMED_REVISION_READ_ONLY'):
+            formal_question.question_text='attempted post-confirm edit'
+            s.commit()
+        s.rollback()
+        with pytest.raises(ValueError,match='CONFIRMED_AUTHORING_REVISION_IMMUTABLE'):
+            basis.snapshot={'mutated':True}
+            s.commit()
+        s.rollback()
+    duplicate=w.client.post(base(w)+'/authoring/confirm',json={'revision_id':row['id'],
+        'expected_edit_version':row['edit_version'],'expected_snapshot_sha256':row['snapshot_sha256']})
+    assert duplicate.status_code==200 and duplicate.json()['id']==confirmed.json()['id']
+    with w.sf() as s:
+        assert s.scalar(select(func.count()).select_from(ConfirmedAuthoringRevision))==1
+
+
+def test_confirmation_stale_review_is_rejected(workspace):
+    w=workspace
+    row=begin(w)
+    saved=w.client.put(base(w)+'/authoring',json={'expected_edit_version':row['edit_version'],
+        'snapshot':row['snapshot']})
+    assert saved.status_code==200
+    response=w.client.post(base(w)+'/authoring/confirm',json={'revision_id':row['id'],
+        'expected_edit_version':row['edit_version'],'expected_snapshot_sha256':row['snapshot_sha256']})
+    assert response.status_code==409
+    with w.sf() as s:
+        assert s.scalar(select(func.count()).select_from(ConfirmedAuthoringRevision))==0
+        assert s.scalar(select(Revision.state))=='draft'
+
+
+def test_confirmation_failure_rolls_back_formal_projection_and_basis(workspace,monkeypatch):
+    w=workspace
+    row=begin(w)
+    import scoring.authoring_confirmation as confirmation
+    project=confirmation.project_confirmed_snapshot
+    def fail_after_projection(session,test,snapshot,actor):
+        project(session,test,snapshot,actor)
+        raise RuntimeError('injected confirmation failure')
+    monkeypatch.setattr(confirmation,'project_confirmed_snapshot',fail_after_projection)
+    response=w.client.post(base(w)+'/authoring/confirm',json={'revision_id':row['id'],
+        'expected_edit_version':row['edit_version'],'expected_snapshot_sha256':row['snapshot_sha256']})
+    assert response.status_code==500
+    with w.sf() as s:
+        assert s.scalar(select(func.count()).select_from(ConfirmedAuthoringRevision))==0
+        assert s.scalar(select(Revision.state))=='draft'
+        assert s.get(Exam,w.legacy).active_confirmed_revision_id is None
         assert s.scalar(select(func.count()).select_from(ModelAnswer))==1
         assert s.scalar(select(func.count()).select_from(RubricVersion))==1
-        assert s.scalar(select(Revision.state))=='draft'
+
+
+def test_confirmation_readiness_blocks_inconsistent_points(workspace):
+    w=workspace
+    row=begin(w)
+    value=deepcopy(row['snapshot'])
+    value['nodes'][0]['score_points']=8
+    value['metadata']['total_points']=8
+    value['rubrics'][w.question][0]['points']=7
+    saved=w.client.put(base(w)+'/authoring',json={'expected_edit_version':1,'snapshot':value})
+    assert saved.status_code==200,saved.text
+    review=w.client.get(base(w)+'/authoring/review').json()
+    assert not review['can_confirm']
+    assert any(issue['section']=='rubric' for issue in review['issues'])
+
+
+def test_submission_and_grading_job_pin_confirmed_revision(workspace,monkeypatch):
+    w=workspace
+    row=begin(w)
+    response=w.client.post(base(w)+'/authoring/confirm',json={'revision_id':row['id'],
+        'expected_edit_version':row['edit_version'],'expected_snapshot_sha256':row['snapshot_sha256']})
+    assert response.status_code==200,response.text
+    basis_id=response.json()['id']
+    with w.sf() as s:
+        from scoring.domain import DomainService
+        d=DomainService(s)
+        student=d.student(w.offering,student_identifier='CONFIRM-1')
+        material=d.material(w.legacy,material_type='student_answer_source',storage_ref='/unused/student.pdf',
+            original_filename='student.pdf',mime_type='application/pdf',sha256='a'*64)
+        submission=d.submission(w.legacy,student.id,submission_key='confirm-submission',material_id=material.id)
+        assert submission.confirmed_authoring_revision_id==basis_id
+        rubric=s.scalar(select(RubricVersion).where(RubricVersion.test_id==w.legacy,RubricVersion.status=='approved'))
+        questions=list(s.scalars(select(Question).where(Question.test_id==w.legacy,Question.is_gradable.is_(True))))
+        policy=d.policy(w.legacy,policy_text='policy',is_current=True)
+        s.flush()
+        import scoring.grading_inputs as grading_inputs
+        import scoring.grading_mapping as grading_mapping
+        monkeypatch.setattr(grading_inputs,'prepare_inputs',lambda *args,**kwargs:{})
+        monkeypatch.setattr(grading_mapping,'prepare_submission_bundles',lambda *args,**kwargs:[])
+        from scoring.domain_adapter import DomainGradingJobAdapter
+        job,_=DomainGradingJobAdapter(s).create_legacy_job(s.get(Exam,w.legacy),rubric,questions,policy,[submission],
+            assignment_path='/unused/a',run_path='/unused/r',config_path='/unused/c')
+        assert job.confirmed_authoring_revision_id==basis_id
+        assert job.metadata_json['grading_input_manifest']['confirmed_authoring_revision_id']==basis_id
+
+
+def test_confirmed_revision_migration_is_additive_on_sqlite():
+    engine=create_engine('sqlite://')
+    metadata=MetaData()
+    Table('users',metadata,Column('id',String(36),primary_key=True))
+    tests=Table('tests',metadata,Column('id',String(36),primary_key=True))
+    Table('test_authoring_revisions',metadata,Column('id',String(36),primary_key=True))
+    Table('student_submissions',metadata,Column('id',String(36),primary_key=True))
+    Table('grading_jobs',metadata,Column('id',String(36),primary_key=True))
+    metadata.create_all(engine)
+    module=importlib.import_module('migrations.versions.0017_confirmed_authoring_revision')
+    with engine.begin() as connection:
+        connection.execute(tests.insert().values(id='legacy-test'))
+        with Operations.context(MigrationContext.configure(connection)):
+            module.upgrade()
+        assert connection.execute(select(tests.c.id)).scalar_one()=='legacy-test'
+        assert 'active_confirmed_revision_id' in {c['name'] for c in inspect(connection).get_columns('tests')}
+        assert 'confirmed_authoring_revision_id' in {c['name'] for c in inspect(connection).get_columns('student_submissions')}
+        assert 'confirmed_authoring_revision_id' in {c['name'] for c in inspect(connection).get_columns('grading_jobs')}
+        with Operations.context(MigrationContext.configure(connection)):
+            module.downgrade()
+        assert 'confirmed_authoring_revisions' not in inspect(connection).get_table_names()
+    engine.dispose()
 
 
 def test_confirmed_record_is_immutable_and_explicit_new_draft(workspace):

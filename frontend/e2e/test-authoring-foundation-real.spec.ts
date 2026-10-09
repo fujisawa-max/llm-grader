@@ -68,7 +68,7 @@ test("whole-test drafts preserve local caret, materials, section state and forma
   await expect(page.getByText("未保存の変更があります",{exact:true})).not.toBeVisible();
   await page.getByRole("button",{name:"最終確認へ"}).click();
   await expect(page.getByRole("heading",{name:"テスト全体確認",exact:true})).toBeVisible();
-  await expect(page.getByRole("button",{name:"試験内容を確定",exact:true})).toBeDisabled();
+  await expect(page.getByRole("button",{name:"この内容でテストを確定",exact:true})).toBeEnabled();
   for(const domain of ["questions","model-answers","rubrics"]){expect(await (await page.request.get(base+`/${domain}`)).json()).toEqual([]);}
   expect(await (await page.request.get("/api/v1/system/runtimes")).json()).toEqual(runtimes);
   const offering=await (await page.request.get(`/api/v1/offerings/${seed.course_offering_id}`)).json();

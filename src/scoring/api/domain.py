@@ -140,6 +140,7 @@ def router(db, artifact_root=None, allowed_roots=None, grading_visual_config=Non
     def test_patch(i,v:TestUpdate,s=Depends(db)):
         x=owned_test_or_error(i,s); d=v.model_dump(exclude_none=True)
         if "status" in d: raise HTTPException(409,"use transition endpoint for status")
+        if x.active_confirmed_revision_id and d: raise HTTPException(409,"TEST_CONFIRMED_REVISION_READ_ONLY")
         [setattr(x,k,val) for k,val in d.items()]; s.add(DomainEvent(entity_type="test",entity_id=x.id,event_type="test_updated")); s.commit(); return obj(x)
     @r.post("/tests/{tid}/questions",status_code=201)
     def questions(tid,v:QuestionCreate,s=Depends(db)):
@@ -153,6 +154,8 @@ def router(db, artifact_root=None, allowed_roots=None, grading_visual_config=Non
     @r.patch("/questions/{i}")
     def question_patch(i,v:QuestionUpdate,s=Depends(db)):
         x=get(TestQuestion,i,s); owned_test_or_error(x.test_id,s)
+        exam=s.get(Test,x.test_id)
+        if exam and exam.active_confirmed_revision_id: raise HTTPException(409,"TEST_CONFIRMED_REVISION_READ_ONLY")
         if (x.provenance or {}).get("origin") == "review_import":
             raise HTTPException(409, "imported_question_read_only")
         [setattr(x,k,val) for k,val in v.model_dump(exclude_none=True).items()]; s.commit(); return obj(x)
@@ -171,7 +174,8 @@ def router(db, artifact_root=None, allowed_roots=None, grading_visual_config=Non
 
     @r.delete("/tests/{tid}/materials/{mid}")
     def material_delete(tid: str, mid: str, s=Depends(db)):
-        owned_test_or_error(tid, s)
+        exam=owned_test_or_error(tid, s)
+        if exam.active_confirmed_revision_id: raise HTTPException(409,"TEST_CONFIRMED_REVISION_READ_ONLY")
         material = s.get(TestMaterial, mid)
         from ..source_registration import deleted_material_ids
         if not material or material.test_id != tid or mid in deleted_material_ids(s, tid):
@@ -184,7 +188,8 @@ def router(db, artifact_root=None, allowed_roots=None, grading_visual_config=Non
 
     @r.patch("/tests/{tid}/materials/{mid}/role")
     def material_role_change(tid: str, mid: str, body: MaterialRoleChange, s=Depends(db)):
-        owned_test_or_error(tid, s)
+        exam=owned_test_or_error(tid, s)
+        if exam.active_confirmed_revision_id: raise HTTPException(409,"TEST_CONFIRMED_REVISION_READ_ONLY")
         from ..source_registration import reuse_source, deleted_material_ids
         material = s.get(TestMaterial, mid)
         if not material or material.test_id != tid or mid in deleted_material_ids(s, tid):

@@ -5,7 +5,8 @@ from sqlalchemy import select, delete, func, case
 
 from ..review_document import ReviewError
 from ..db.models import (Test, CourseOffering, Course,
-    TestArchive, GradingJob, DomainEvent, TestMaterial)
+    TestArchive, GradingJob, DomainEvent, TestMaterial, TestAuthoringRevision,
+    ConfirmedAuthoringRevision, StudentSubmission)
 from ..test_authoring import (AuthoringError, projection, latest, create_draft,
     save_draft, preflight, archive_impact, baseline_hash)
 
@@ -54,6 +55,12 @@ class ConsolidationTool(BaseModel):
 class ArchiveRequest(BaseModel):
     test_name: str
     impact_sha256: str = Field(pattern=r'^[0-9a-f]{64}$')
+
+
+class ConfirmAuthoring(BaseModel):
+    revision_id: str = Field(min_length=1, max_length=36)
+    expected_edit_version: int = Field(ge=1)
+    expected_snapshot_sha256: str = Field(pattern=r'^[0-9a-f]{64}$')
 
 
 def router(db, question_root=None, answer_root=None, classifier=None, answer_create=None):
@@ -153,9 +160,23 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
         from ..authoring_sources import source_tokens
         tokens = source_tokens(s, test_id)
         bound = (row.snapshot.get('source_provenance', {}).get('authoring_origins') or {}).get('tokens') if row else tokens
+        confirmed = s.get(ConfirmedAuthoringRevision, test.active_confirmed_revision_id) if test.active_confirmed_revision_id else None
         return {'revision': view(row) if row else None, 'legacy': projection(s, test),
             'external_source_change': bound != tokens, 'source_tokens': tokens, 'source_problems': source_problems(row, s),
-            'publication_available': False}
+            'publication_available': True, 'confirmed_revision': _confirmed_view(s, confirmed) if confirmed else None}
+
+    def _confirmed_view(session, row):
+        from ..db.models import User
+        actor = session.get(User, row.confirmed_by) if row.confirmed_by else None
+        return {'id': row.id, 'revision': row.revision, 'edit_version': row.edit_version,
+            'snapshot_sha256': row.snapshot_sha256, 'confirmed_at': row.confirmed_at.isoformat(),
+            'confirmed_by': actor.display_name if actor else None, 'snapshot': row.snapshot}
+
+    @r.get('/tests/{test_id}/authoring/confirmed')
+    def confirmed_authoring(test_id: str, s=Depends(db)):
+        test = owned(test_id, s)
+        row = s.get(ConfirmedAuthoringRevision, test.active_confirmed_revision_id) if test.active_confirmed_revision_id else None
+        return {'active': _confirmed_view(s, row) if row else None}
 
     @r.post('/tests/{test_id}/authoring/revisions')
     def begin(test_id: str, s=Depends(db)):
@@ -770,15 +791,94 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
         if row and row.baseline_sha256 != baseline_hash(projection(s, test)):
             result['issues'].append({'question_key': None, 'section': 'source',
                 'message': '元の正式内容が変更されています。出典付きレビューを確認してください。'})
+        formal_questions = s.scalar(select(func.count()).select_from(__import__('scoring.db.models', fromlist=['TestQuestion']).TestQuestion).where(
+            __import__('scoring.db.models', fromlist=['TestQuestion']).TestQuestion.test_id == test_id)) or 0
+        submissions = s.scalar(select(func.count()).select_from(StudentSubmission).where(StudentSubmission.test_id == test_id)) or 0
+        jobs = s.scalar(select(func.count()).select_from(GradingJob).where(GradingJob.test_id == test_id)) or 0
+        if formal_questions and (submissions or jobs):
+            result['issues'].append({'question_key': None, 'section': 'publication',
+                'message': '過去の採点履歴があるため、正式内容を安全に更新できません。'})
+        result['can_confirm'] = bool(row and row.state in {'draft', 'final_review'}) and not result['issues']
         return result
 
     @r.post('/tests/{test_id}/authoring/confirm')
-    def confirm(test_id: str, s=Depends(db)):
-        owned(test_id, s)
-        # Publishing requires atomic domain adapters + submission/job revision
-        # pins. Never silently freeze only a JSON draft or individual sections.
-        raise HTTPException(409, {'error': {'code': 'AUTHORING_PUBLICATION_NOT_READY',
-            'message': 'この画面からの試験内容確定は現在利用できません。'}})
+    def confirm(test_id: str, v: ConfirmAuthoring, s=Depends(db)):
+        from sqlalchemy import update
+        from sqlalchemy.exc import IntegrityError
+        from ..authoring_sources import normalize_authoring_snapshot
+        from ..pdf_native import canonical_hash
+        from ..db.models import now
+        test = owned(test_id, s)
+        try:
+            s.scalar(select(Test).where(Test.id == test_id).with_for_update())
+            prior = s.scalar(select(ConfirmedAuthoringRevision).where(
+                ConfirmedAuthoringRevision.test_id == test_id,
+                ConfirmedAuthoringRevision.authoring_revision_id == v.revision_id))
+            if prior:
+                if prior.snapshot_sha256 != v.expected_snapshot_sha256 or prior.edit_version != v.expected_edit_version:
+                    raise HTTPException(409, {'error': {'code': 'AUTHORING_CONFIRM_CONFLICT', 'message': '確認対象が更新されています。再読み込みしてください。'}})
+                return _confirmed_view(s, prior)
+            row = latest(s, test_id)
+            if (not row or row.id != v.revision_id or row.edit_version != v.expected_edit_version
+                    or row.state not in {'draft', 'final_review'}
+                    or canonical_hash(normalize_authoring_snapshot(row.snapshot)) != v.expected_snapshot_sha256):
+                raise HTTPException(409, {'error': {'code': 'AUTHORING_CONFIRM_CONFLICT', 'message': '保存済み内容が更新されています。再読み込みして最終確認をやり直してください。'}})
+            validate_materials(row.snapshot, s, test_id)
+            if row.snapshot.get('domains', {}).get('answer'):
+                from ..authoring_answers import AuthoringAnswers
+                AuthoringAnswers(s, answer_root, row, row.snapshot).validate()
+            if row.snapshot.get('domains', {}).get('question'):
+                from ..authoring_question import AuthoringQuestionReview
+                from ..review_document import ReviewError
+                try:
+                    AuthoringQuestionReview(s, question_root, row, row.snapshot).validate_working(row.snapshot)
+                except (ReviewError, ValueError) as exc:
+                    raise ValueError('AUTHORING_INVALID_HIERARCHY') from exc
+            if source_problems(row, s):
+                raise HTTPException(409, {'error': {'code': 'AUTHORING_SOURCE_INVALID', 'message': '資料の出典状態を確認してから確定してください。'}})
+            if row.baseline_sha256 != baseline_hash(projection(s, test)):
+                raise HTTPException(409, {'error': {'code': 'AUTHORING_BASELINE_CHANGED', 'message': '正式内容が確認時から変更されています。再読み込みしてください。'}})
+            readiness = preflight(row.snapshot)
+            if readiness['issues']:
+                raise HTTPException(409, {'error': {'code': 'AUTHORING_BLOCKED', 'message': '最終確認の要修正項目を解消してください。', 'issues': readiness['issues']}})
+            from ..test_authoring import source_warnings
+            if source_warnings(row.snapshot):
+                raise HTTPException(409, {'error': {'code': 'AUTHORING_SOURCE_WARNING', 'message': '問題文と元資料の対応を確認してください。'}})
+            from ..authoring_confirmation import project_confirmed_snapshot
+            s.info['authoring_confirmation_projection'] = True
+            project_confirmed_snapshot(s, test, row.snapshot, s.info['auth_user'].id)
+            confirmed = ConfirmedAuthoringRevision(test_id=test_id, authoring_revision_id=row.id,
+                revision=row.revision, edit_version=row.edit_version, snapshot_sha256=v.expected_snapshot_sha256,
+                snapshot=normalize_authoring_snapshot(row.snapshot), confirmed_by=s.info['auth_user'].id, confirmed_at=now())
+            s.add(confirmed)
+            s.flush()
+            changed = s.execute(update(TestAuthoringRevision).where(TestAuthoringRevision.id == row.id,
+                TestAuthoringRevision.edit_version == v.expected_edit_version,
+                TestAuthoringRevision.state.in_(['draft', 'final_review']))
+                .values(state='confirmed', updated_at=now()))
+            if changed.rowcount != 1:
+                raise HTTPException(409, {'error': {'code': 'AUTHORING_CONFIRM_CONFLICT', 'message': '保存版が更新されています。再読み込みしてください。'}})
+            test.active_confirmed_revision_id = confirmed.id
+            s.add(DomainEvent(entity_type='test', entity_id=test_id, event_type='authoring_revision_confirmed',
+                actor_user_id=s.info['auth_user'].id, payload={'confirmed_revision_id': confirmed.id,
+                    'authoring_revision_id': row.id, 'snapshot_sha256': v.expected_snapshot_sha256}))
+            s.commit()
+            return _confirmed_view(s, confirmed)
+        except HTTPException:
+            s.rollback()
+            raise
+        except ValueError as exc:
+            s.rollback()
+            code = str(exc) if str(exc).startswith(('AUTHORING_', 'TEST_', 'CONFIRMED_')) else 'AUTHORING_CONFIRMATION_FAILED'
+            raise HTTPException(409, {'error': {'code': code, 'message': '確定できませんでした。内容を再確認してください。'}}) from exc
+        except IntegrityError as exc:
+            s.rollback()
+            raise HTTPException(409, {'error': {'code': 'AUTHORING_CONFIRM_CONFLICT', 'message': '確認対象が同時に更新されました。再読み込みしてください。'}}) from exc
+        except Exception:
+            s.rollback()
+            raise
+        finally:
+            s.info.pop('authoring_confirmation_projection', None)
 
     @r.get('/tests/{test_id}/archive-impact')
     def impact(test_id: str, s=Depends(db)):

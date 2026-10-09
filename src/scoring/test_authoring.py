@@ -344,9 +344,10 @@ def preflight(snapshot):
             issue(candidate.get('question_key'), 'rubric', '未割当の採点基準候補を確認してください。')
     if total != snapshot['metadata'].get('total_points'):
         issue(None, 'metadata', '設問の合計点とテストの合計点が一致していません。')
-    # Fail closed rather than pretending a JSON copy is a grading snapshot.
-    issue(None, 'publication', 'この画面からの試験内容確定は現在利用できません。')
-    return {'issues': issues, 'total_points': total, 'can_confirm': False}
+    return {'issues': issues, 'notifications': [], 'total_points': total,
+        'question_count': len(nodes), 'gradable_question_count': sum(1 for n in nodes if not any(
+            c.get('included', True) and c.get('parent_key') == n['stable_key'] for c in nodes)),
+        'can_confirm': not issues}
 
 
 def archive_impact(session, test):

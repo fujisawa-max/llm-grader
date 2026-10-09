@@ -34,6 +34,9 @@ class GradingJob(Base):
     metadata_json: Mapped[dict] = mapped_column("metadata", JSON, default=dict)
     test_id: Mapped[str | None] = mapped_column(ForeignKey("tests.id"), nullable=True, index=True)
     rubric_version_id: Mapped[str | None] = mapped_column(ForeignKey("rubric_versions.id"), nullable=True)
+    confirmed_authoring_revision_id: Mapped[str | None] = mapped_column(
+        ForeignKey("confirmed_authoring_revisions.id"), nullable=True, index=True
+    )
     items: Mapped[list["GradingJobItem"]] = relationship(
         back_populates="job", cascade="all, delete-orphan"
     )
@@ -223,6 +226,10 @@ class Test(Base):
     test_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String(32), default="draft")
     total_points: Mapped[float] = mapped_column(Float, default=0)
+    active_confirmed_revision_id: Mapped[str | None] = mapped_column(
+        ForeignKey("confirmed_authoring_revisions.id", use_alter=True, name="fk_tests_active_confirmed_revision"),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
@@ -382,6 +389,9 @@ class StudentSubmission(Base):
     material_id: Mapped[str] = mapped_column(ForeignKey("test_materials.id"))
     attempt_number: Mapped[int] = mapped_column(Integer, default=1)
     status: Mapped[str] = mapped_column(String(32), default="uploaded")
+    confirmed_authoring_revision_id: Mapped[str | None] = mapped_column(
+        ForeignKey("confirmed_authoring_revisions.id"), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
@@ -636,6 +646,21 @@ class TestAuthoringRevision(Base):
     created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class ConfirmedAuthoringRevision(Base):
+    """Immutable, exact saved authoring snapshot used as a grading basis."""
+    __tablename__ = "confirmed_authoring_revisions"
+    __table_args__ = (UniqueConstraint("test_id", "authoring_revision_id", name="uq_confirmed_authoring_source"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    test_id: Mapped[str] = mapped_column(ForeignKey("tests.id"), index=True)
+    authoring_revision_id: Mapped[str] = mapped_column(ForeignKey("test_authoring_revisions.id"), index=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    edit_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    snapshot_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
+    confirmed_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
 class TestArchive(Base):

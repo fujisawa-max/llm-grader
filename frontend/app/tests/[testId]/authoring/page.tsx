@@ -10,7 +10,7 @@ import {NodeEditor} from "@/components/reviews/NodeEditor";
 import {SourcePdfPreview} from "@/components/SourcePdfPreview";
 import {LatexNormalizationControl} from "@/components/LatexNormalizationControl";
 import {LoadingState, ErrorState} from "@/components/ui";
-import {testAuthoring, type AuthoringRevision, type AuthoringSnapshot, type AuthoringIssue} from "@/lib/api/testAuthoring";
+import {testAuthoring, type AuthoringRevision, type AuthoringSnapshot, type AuthoringIssue, type AuthoringReview} from "@/lib/api/testAuthoring";
 import {authoringBuffers,prepareAuthoringSave,analysisReadiness} from "@/lib/authoringState";
 import {testData} from "@/lib/api/domain";
 import {apiFetch, json} from "@/lib/api/client";
@@ -69,6 +69,8 @@ export default function TestAuthoringPage() {
   const currentEditVersion=revision?.edit_version;
   const [visible,setVisible]=useState({question:true,answer:true,rubric:true});
   const [issues,setIssues]=useState<AuthoringIssue[]>([]);
+  const [reviewData,setReviewData]=useState<AuthoringReview|null>(null);
+  const [confirmOpen,setConfirmOpen]=useState(false);
   const [issuesOpen,setIssuesOpen]=useState(false);
   const [analysisRequest,setAnalysisRequest]=useState<{domain:"question"|"answer";materialId:string}|null>(null);
   const [registrationPrompt,setRegistrationPrompt]=useState<{materialId:string;role:string}|null>(null);
@@ -262,12 +264,22 @@ export default function TestAuthoringPage() {
   }
   async function finalReview(){
     setBusy(true);try{
-      if(dirty&&snapshot&&revision){
-        const value=prepareAuthoringSave(snapshot,buffers);setIssues((await testAuthoring.reviewLocal(id,value,revision.edit_version)).issues);
-      }else setIssues((await testAuthoring.review(id)).issues);
+      const result=dirty&&snapshot&&revision?await testAuthoring.reviewLocal(id,prepareAuthoringSave(snapshot,buffers),revision.edit_version):await testAuthoring.review(id);
+      const finalResult=dirty?{...result,can_confirm:false,issues:[...result.issues,{question_key:null,section:"save",message:"未保存の変更があります。保存してから最終確認してください。"}]}:result;
+      setReviewData(finalResult);setIssues(finalResult.issues);
       setSelected("all");
     }
     catch(e){setError(e instanceof Error?e.message:"確認できませんでした。");}finally{setBusy(false);}}
+  async function confirmAuthoring(){
+    if(!revision||dirty)return;
+    setBusy(true);setError("");
+    try{
+      await testAuthoring.confirm(id,revision.id,revision.edit_version,revision.snapshot_sha256);
+      const data=await testAuthoring.get(id);
+      if(data.revision){synchronize(data.revision);setReviewData(null);setConfirmOpen(false);setIssues([]);notify("success","テスト内容を確定しました",`確定版 ${data.revision.revision} を採点基盤として登録しました。`);}
+    }catch(e){const message=e instanceof Error?e.message:"テスト内容を確定できませんでした。";setError(message);notify("error","確定できませんでした",message);}
+    finally{setBusy(false);}
+  }
   async function upload(files:FileList|null){if(!files||!snapshot)return;
     const old=replacement?materials.find(m=>m.id===replacement):undefined;
     if(old&&!window.confirm(`${old.original_filename}を差し替えます。元資料は保持されますが、出典付きの確認結果は再確認が必要になります。自動で再解析しません。続行しますか？`)){if(fileInput.current)fileInput.current.value="";return;}setBusy(true);setError("");try{
@@ -459,11 +471,21 @@ export default function TestAuthoringPage() {
       {selected==="all"?<section aria-label="テスト全体確認"><h2>テスト全体確認</h2>
         <label>テスト名<input disabled={readonly||saving||analyzing} value={snapshot.metadata.name} onChange={e=>change({...snapshot,metadata:{...snapshot.metadata,name:e.target.value}})}/></label>
         <label>合計点<input type="number" disabled={readonly||saving||analyzing} value={snapshot.metadata.total_points} onChange={e=>change({...snapshot,metadata:{...snapshot.metadata,total_points:Number(e.target.value)}})}/></label>
-        <ol>{nodes.filter(n=>n.included).map(n=><li key={n.stable_key}>{pathFor(n.stable_key)} — {effectiveQuestionScore(n.stable_key,nodes).points??"未設定"}点</li>)}</ol>
+        <table aria-label="テスト全体の設問と採点準備"><thead><tr><th>設問</th><th>配点</th><th>模範解答</th><th>採点基準</th><th>図</th><th>出典</th></tr></thead><tbody>{orderedNodes().filter(n=>n.included).map(n=>{
+          const gradable=!nodes.some(child=>child.included&&child.parent_key===n.stable_key);
+          const points=effectiveQuestionScore(n.stable_key,nodes).points;
+          const answerValue=snapshot.answers[n.stable_key];
+          const accepted=(answerValue?.diagram_records||[]).some(record=>record.state==="accepted"&&record.trust_state!=="hard_invalid");
+          const answerReady=!!answerValue?.primary?.trim()||accepted;
+          const rubricCriteria=snapshot.rubrics[n.stable_key]||[];
+          const rubricReady=rubricCriteria.length>0&&points!==null&&rubricCriteria.reduce((sum,c)=>sum+c.points,0)===points;
+          const hasSourceProblem=sourceWarnings.some(w=>w.question_key===n.stable_key)||sourceProblems.length>0&&sourceWarnings.length===0;
+          return <tr key={n.stable_key}><th scope="row">{pathFor(n.stable_key)}</th><td>{gradable?`${points??"未設定"}点`:"小問合計"}</td><td>{gradable?(answerReady?"準備完了":"未登録"):"—"}</td><td>{gradable?(rubricReady?`${rubricCriteria.length}基準・${rubricCriteria.reduce((sum,c)=>sum+c.points,0)}点`:"確認が必要"):"—"}</td><td>{accepted?"確認済み図あり":"なし"}</td><td>{hasSourceProblem?"確認が必要":"確認済み"}</td></tr>;
+        })}</tbody></table>
         <ul>{issues.map((issue,index)=><li key={index}>{issue.question_key||issue.section==="answer"?<button onClick={()=>navigate(issue)}>{issue.question_key?pathFor(issue.question_key):"設問未割当"} — {issue.message}</button>:issue.message}</li>)}</ul>
         {questionDomain&&questionDomain.document.warnings.length>0&&<WarningPanel targetLabel={w=>{const owner=warningQuestion(w);return owner?pathFor(owner.stable_key):"試験全体";}} warnings={questionDomain.document.warnings} states={questionDomain.snapshot.warning_states||{}} readonly={readonly||saving||analyzing}
             onChange={(key,resolution)=>change({...snapshot,domains:{...snapshot.domains,question:{...questionDomain,snapshot:{...questionDomain.snapshot,warning_states:{...questionDomain.snapshot.warning_states,[key]:resolution}}}}})}/>}
-        <button disabled title="この画面からの試験内容確定は現在利用できません。">試験内容を確定</button>
+        {revision?.state==="confirmed"?<p role="status">確定済み — revision {revision.revision} / edit {revision.edit_version}</p>:<><p>{dirty?"未保存の変更があります。確定するには先に保存してください。":`保存版 revision ${revision?.revision??"－"} / edit ${revision?.edit_version??"－"}`}</p><p>設問 {reviewData?.question_count??nodes.filter(n=>n.included).length}件・採点対象 {reviewData?.gradable_question_count??"－"}件・合計 {reviewData?.total_points??"－"}点</p><ul>{issues.map((issue,index)=><li key={index}>{issue.question_key?pathFor(issue.question_key):issue.section} — {issue.message}</li>)}</ul><button disabled={readonly||busy||dirty||!reviewData?.can_confirm} onClick={()=>setConfirmOpen(true)}>この内容でテストを確定</button></>}
       </section>:(node||selected==="unassigned")&&<>
         {visible.question&&node&&<section id="authoring-question" tabIndex={-1} aria-label="問題"><h2>問題</h2>
 
@@ -552,6 +574,9 @@ export default function TestAuthoringPage() {
     </AuthoringDialog>;})()}
     {registrationPrompt&&<AuthoringDialog title="保存して解析へ進みますか？" onCancel={()=>{if(!saving)setRegistrationPrompt(null);}} busy={saving} actions={<><button type="button" disabled={saving} onClick={()=>setRegistrationPrompt(null)}>いいえ</button><button type="button" disabled={saving} onClick={()=>void saveThenAnalyzeRegistered()}>{saving?"保存中…":"はい"}</button></>}>
       <p>ファイルを読み込みました。</p><p>解析には保存が必要です。保存と解析確認へ進みますか？</p>{registrationError&&<p role="alert" className="error">{registrationError}</p>}
+    </AuthoringDialog>}
+    {confirmOpen&&revision&&reviewData&&<AuthoringDialog title="この内容でテストを確定しますか？" onCancel={()=>{if(!busy)setConfirmOpen(false);}} busy={busy} actions={<><button type="button" disabled={busy} onClick={()=>setConfirmOpen(false)}>戻る</button><button type="button" disabled={busy||dirty||!reviewData.can_confirm} onClick={()=>void confirmAuthoring()}>{busy?"確定中…":"この内容でテストを確定"}</button></>}>
+      <p>{snapshot.metadata.name}</p><p>保存版 revision {revision.revision} / edit {revision.edit_version}</p><p>設問 {reviewData.question_count}件・合計 {reviewData.total_points}点</p><p>要修正事項 {reviewData.issues.length}件</p>{reviewData.issues.length>0&&<ul>{reviewData.issues.map((issue,index)=><li key={index}>{issue.message}</li>)}</ul>}
     </AuthoringDialog>}
     {deleteMaterial&&<AuthoringDialog title="この資料を削除しますか？" onCancel={()=>{if(!busy)setDeleteMaterial(null);}} busy={busy} actions={<><button type="button" disabled={busy} onClick={()=>setDeleteMaterial(null)}>キャンセル</button><button type="button" disabled={busy} onClick={()=>void removeMaterial(deleteMaterial)}>資料を削除</button></>}>
       <p>削除するのはこの資料の種類の登録です。同じ元ファイルを使う別の資料や、保存済みの解答・採点基準本文は削除されません。</p><p>元資料との関連が解除される場合があります。</p>

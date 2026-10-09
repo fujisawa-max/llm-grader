@@ -421,6 +421,9 @@ class QuestionImportConfirmationService(QuestionImportPlanner):
         draft, store, dv, ir = svc._draft(review.draft_id)
         extraction = self.s.get(QuestionImportExtraction, draft.extraction_id)
         self.s.scalar(select(Test).where(Test.id == extraction.test_id).with_for_update())
+        locked_test = self.s.get(Test, extraction.test_id)
+        if locked_test and locked_test.active_confirmed_revision_id:
+            raise ReviewError("test_confirmed_read_only")
         prior = self.s.scalar(
             select(QuestionImportConfirmation).where(
                 QuestionImportConfirmation.review_id == review_id

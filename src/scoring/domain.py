@@ -124,7 +124,9 @@ class DomainService:
         material=self.s.get(TestMaterial,v.get("material_id"))
         if not t or not st or st.course_offering_id != t.course_offering_id: raise ValueError("student/test offering mismatch")
         if not material or material.test_id != test_id: raise ValueError("material/test mismatch")
-        x=StudentSubmission(id=str(uuid4()), test_id=test_id, student_id=student_id, **v); self.s.add(x); self.s.flush(); self._event("submission",x.id,"submission_created"); return x
+        x=StudentSubmission(id=str(uuid4()), test_id=test_id, student_id=student_id,
+            confirmed_authoring_revision_id=t.active_confirmed_revision_id if t else None, **v)
+        self.s.add(x); self.s.flush(); self._event("submission",x.id,"submission_created"); return x
     def sample_answer(self, test_id, **v):
         material_id=v.get("material_id")
         if material_id and (not self.s.get(TestMaterial, material_id) or self.s.get(TestMaterial, material_id).test_id != test_id): raise ValueError("material/test mismatch")

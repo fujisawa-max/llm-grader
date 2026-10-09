@@ -18,4 +18,6 @@ def create_session_factory(url="sqlite:///llm_grader.db"):
 
 
 def init_database(engine):
+    # Importing registers the confirmed-basis immutability guard on ORM flushes.
+    from .. import authoring_confirmation  # noqa: F401
     Base.metadata.create_all(engine)
