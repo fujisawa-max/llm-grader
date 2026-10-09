@@ -115,6 +115,11 @@ def test_split_children_share_confirmed_parent_diagram_without_formal_ids(worksp
     assert trace['candidate_count'] == 1
     assert trace['source_draft_id'] == w.answer['id']
     assert trace['target_root'] == parent['stable_key']
+    origin_state = next(state for state in trace['entry_states'] if state['entry_id'] == first['id'])
+    assert origin_state['disposition_present'] is True
+    assert origin_state['disposition'] == origin_state['effective_disposition'] == 'include'
+    assert origin_state['mapping_state'] == 'manual_mapped'
+    assert origin_state['accepted_diagram_count'] == 1
     assert {'entry_id': first['id'], 'question_id': children[0]['stable_key'],
         'diagram_id': source['id'], 'outcome': 'included', 'reason': None} in trace['decisions']
     assert {'entry_id': second['id'], 'question_id': children[1]['stable_key'],

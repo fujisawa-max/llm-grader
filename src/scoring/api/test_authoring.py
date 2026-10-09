@@ -572,6 +572,20 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
                         'saved_accepted_diagram_count': sum(r.get('state') == 'accepted'
                             for e in context.entries for r in e.get('diagram_records', [])),
                         'compatible_source_entry_count': len(engine.reuse_context['entries']),
+                        'entry_states': [{
+                            'entry_id': candidate['id'],
+                            'question_id': candidate.get('question_id'),
+                            'authoring_question_key': candidate.get('authoring_question_key'),
+                            'disposition_present': 'disposition' in candidate,
+                            'disposition': candidate.get('disposition'),
+                            'effective_disposition': candidate.get('disposition', 'include'),
+                            'mapping_state': candidate.get('mapping_state'),
+                            'ignore_reason': candidate.get('ignore_reason'),
+                            'classification_status': (candidate.get('semantic_classification') or {}).get('status'),
+                            'source_draft_id': candidate.get('source_draft_id'),
+                            'accepted_diagram_count': sum(record.get('state') == 'accepted'
+                                for record in candidate.get('diagram_records', [])),
+                        } for candidate in context.entries],
                         'candidate_count': len(records), 'decisions': decisions}
                 return view
             if request.method == 'POST' and body:

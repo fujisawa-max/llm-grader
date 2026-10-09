@@ -89,6 +89,22 @@ def test_unaccepted_or_excluded_not_offered(shared, state):
     assert reusable(shared)[3] == []
 
 
+@pytest.mark.parametrize('disposition', ['ignored', 'excluded', 'unassigned', None])
+def test_accepted_diagram_does_not_bypass_origin_entry_inclusion(shared, disposition):
+    """Saved acceptance alone must not override a non-included origin."""
+    w = shared
+    origin_id, _ = save_origin(w)
+    with w.sf() as session:
+        draft = session.get(ModelAnswerImportDraft, w.answer['id'])
+        snapshot = deepcopy(draft.snapshot)
+        origin = next(entry for entry in snapshot['entries'] if entry['id'] == origin_id)
+        assert origin['diagram_records'][0]['state'] == 'accepted'
+        origin['disposition'] = disposition
+        draft.snapshot = snapshot
+        session.commit()
+    assert reusable(w)[3] == []
+
+
 @pytest.mark.parametrize('field,value', [('source_sha256', '0'*64), ('trust_state', 'hard_invalid'),
     ('id', 'diagram-'+'0'*24), ('context_sha256', '0'*64)])
 def test_stale_or_invalid_saved_sources_not_offered(shared, field, value):
