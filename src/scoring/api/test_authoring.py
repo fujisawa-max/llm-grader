@@ -5,7 +5,7 @@ from sqlalchemy import select, delete, func, case
 
 from ..review_document import ReviewError
 from ..db.models import (Test, CourseOffering, Course,
-    TestArchive, GradingJob, DomainEvent)
+    TestArchive, GradingJob, DomainEvent, TestMaterial)
 from ..test_authoring import (AuthoringError, projection, latest, create_draft,
     save_draft, preflight, archive_impact, baseline_hash)
 
@@ -67,7 +67,6 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
         return test
 
     def validate_materials(snapshot, session, test_id):
-        from ..db.models import TestMaterial
         for reference in snapshot.get('materials', []):
             material = session.get(TestMaterial, reference['id']) if isinstance(reference, dict) and isinstance(reference.get('id'), str) else None
             if (not material or material.test_id != test_id or reference.get('sha256') != material.sha256
@@ -96,6 +95,24 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
         from ..test_authoring import replacement_problems
         problems = replacement_problems(row.snapshot)
         domains = row.snapshot.get('domains', {})
+        from ..source_registration import deleted_material_ids
+        deleted = deleted_material_ids(session, row.test_id)
+        answer = domains.get('answer') or {}
+        referenced = {answer.get('material_id')}
+        referenced.discard(None)
+        if referenced & deleted:
+            root_role = answer.get('material_role', 'model_answer_source')
+            problems.append({'domain': 'rubric' if root_role == 'rubric_source' else 'answer',
+                'code': 'source_binding_deleted'})
+        for source in answer.get('sources', {}).values():
+            if source.get('material_id') in deleted:
+                role = source.get('material_role')
+                problems.append({'domain': 'rubric' if role == 'rubric_source' else 'answer',
+                    'code': 'source_binding_deleted'})
+        question = domains.get('question') or {}
+        question_material = question.get('document', {}).get('material_id')
+        if question_material in deleted:
+            problems.append({'domain': 'question', 'code': 'question_source_binding_deleted'})
         if domains.get('question'):
             try:
                 from ..authoring_question import AuthoringQuestionReview
@@ -247,6 +264,7 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
     @r.post('/tests/{test_id}/authoring/source-import')
     def import_sources(test_id: str, v: SourceImport, s=Depends(db)):
         from ..authoring_sources import source_projection
+        from ..db.models import ModelAnswerImportDraft, TestMaterial
         test = owned(test_id, s)
         row = latest(s, test_id)
         if not row or row.state != 'draft' or row.edit_version != v.expected_edit_version:
@@ -256,22 +274,32 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
         if not v.analysis_material_id:
             from copy import deepcopy
             from ..authoring_sources import source_tokens, merge_answer_analysis
-            from ..db.models import ModelAnswerImportDraft
-            imported = snapshot.get('domains', {}).get('answer')
             snapshot = deepcopy(row.snapshot)
             origin = snapshot['source_provenance'].setdefault('authoring_origins', {})
             tokens = source_tokens(s, test_id)
             old_tokens = origin.get('tokens', {})
             # Saved legacy review import is domain-scoped. A changed Question
             # review cannot restore the old hierarchy/text over teacher edits.
-            if imported and old_tokens.get('answer') != tokens['answer']:
-                merge_answer_analysis(snapshot, s.get(ModelAnswerImportDraft, imported['draft_id']))
+            for role_name in ('model_answer_source', 'rubric_source'):
+                token_name = 'answer' if role_name == 'model_answer_source' else 'rubric'
+                if old_tokens.get(token_name) != tokens.get(token_name):
+                    from ..source_registration import deleted_material_ids
+                    draft = s.scalar(select(ModelAnswerImportDraft).join(TestMaterial,
+                        TestMaterial.id == ModelAnswerImportDraft.material_id).where(
+                        ModelAnswerImportDraft.test_id == test_id,
+                        TestMaterial.material_type == role_name,
+                        ~TestMaterial.id.in_(deleted_material_ids(s, test_id) or {''})).order_by(
+                        ModelAnswerImportDraft.updated_at.desc(), ModelAnswerImportDraft.id.desc()))
+                    if draft:
+                        merge_answer_analysis(snapshot, draft, role_name)
             if old_tokens.get('question') != tokens['question']:
                 origin['pending_question_review'] = tokens['question']
             origin['tokens'] = tokens
         if v.analysis_material_id:
-            from ..db.models import TestMaterial
             material = s.get(TestMaterial, v.analysis_material_id)
+            from ..source_registration import deleted_material_ids
+            if material and material.id in deleted_material_ids(s, test_id):
+                raise HTTPException(409, 'MATERIAL_BINDING_DELETED')
             sha = snapshot.get('domains', {}).get('question', {}).get('document', {}).get('source_pdf_sha256')
             if not material or material.test_id != test_id or material.material_type != 'question_sheet' or material.sha256 != sha:
                 raise HTTPException(409, 'AUTHORING_ANALYSIS_SOURCE_CHANGED')
@@ -300,10 +328,12 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
             raise HTTPException(503, 'AUTHORING_ANALYSIS_UNAVAILABLE')
         snapshot = deepcopy(row.snapshot)
         from ..test_authoring import material_analysis_readiness
-        from ..db.models import TestMaterial
         selected_material = s.get(TestMaterial, v.material_id)
         if not selected_material or selected_material.test_id != test_id:
             raise HTTPException(404, 'MATERIAL_NOT_FOUND')
+        from ..source_registration import deleted_material_ids
+        if selected_material.id in deleted_material_ids(s, test_id):
+            raise HTTPException(409, 'MATERIAL_BINDING_DELETED')
         ref = next((m for m in snapshot['materials'] if m['id'] == v.material_id), None)
         if ref is None:
             ref = {'id': selected_material.id, 'sha256': selected_material.sha256, 'role': selected_material.material_type}
@@ -316,13 +346,13 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
         aliases, questions = authoring_questions(snapshot)
         draft = answer_create(test_id, ImportCreate(material_id=v.material_id), s,
             questions_override=questions, commit=False)
-        from ..db.models import TestMaterial
         mark_analysis(snapshot, row.snapshot, s.get(TestMaterial, draft.material_id))
         from ..authoring_sources import merge_answer_analysis
         merge_answer_analysis(snapshot, draft, selected_material.material_type)
         origin = snapshot['source_provenance'].setdefault('authoring_origins', {})
         tokens = deepcopy(origin.get('tokens') or source_tokens(s, test_id))
-        tokens['answer'] = source_tokens(s, test_id)['answer']
+        token_name = 'rubric' if selected_material.material_type == 'rubric_source' else 'answer'
+        tokens[token_name] = source_tokens(s, test_id)[token_name]
         origin['tokens'] = tokens
         row = apply_analysis_snapshot(s, row, snapshot, v.expected_edit_version, v.preserve_previous)
         s.commit()

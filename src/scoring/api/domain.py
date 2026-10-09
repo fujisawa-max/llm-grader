@@ -16,6 +16,9 @@ from .schemas import (UserCreate, CourseCreate, CourseUpdate, OfferingCreate, Of
 class MaterialReuse(BaseModel):
     material_type: str
 
+class MaterialRoleChange(BaseModel):
+    material_type: str
+
 def router(db, artifact_root=None, allowed_roots=None, grading_visual_config=None,
            storage_root=None):
     r=APIRouter(prefix="/api/v1")
@@ -161,7 +164,49 @@ def router(db, artifact_root=None, allowed_roots=None, grading_visual_config=Non
             s.rollback(); raise HTTPException(400, str(e))
     @r.get("/tests/{tid}/materials")
     def materials_list(tid, s=Depends(db)):
-        return [obj(x) for x in s.scalars(select(TestMaterial).where(TestMaterial.test_id == tid))]
+        owned_test_or_error(tid, s)
+        from ..source_registration import deleted_material_ids
+        deleted = deleted_material_ids(s, tid)
+        return [obj(x) for x in s.scalars(select(TestMaterial).where(TestMaterial.test_id == tid)) if x.id not in deleted]
+
+    @r.delete("/tests/{tid}/materials/{mid}")
+    def material_delete(tid: str, mid: str, s=Depends(db)):
+        owned_test_or_error(tid, s)
+        material = s.get(TestMaterial, mid)
+        from ..source_registration import deleted_material_ids
+        if not material or material.test_id != tid or mid in deleted_material_ids(s, tid):
+            raise HTTPException(404, "material not found")
+        s.add(DomainEvent(entity_type="material", entity_id=mid, actor_user_id=actor(s).id,
+                          event_type="material_binding_deleted",
+                          payload={"test_id": tid, "role": material.material_type}))
+        s.commit()
+        return {"deleted": True, "material_id": mid}
+
+    @r.patch("/tests/{tid}/materials/{mid}/role")
+    def material_role_change(tid: str, mid: str, body: MaterialRoleChange, s=Depends(db)):
+        owned_test_or_error(tid, s)
+        from ..source_registration import reuse_source, deleted_material_ids
+        material = s.get(TestMaterial, mid)
+        if not material or material.test_id != tid or mid in deleted_material_ids(s, tid):
+            raise HTTPException(404, "material not found")
+        try:
+            collision = s.scalar(select(TestMaterial).where(TestMaterial.test_id == tid,
+                TestMaterial.material_type == body.material_type, TestMaterial.sha256 == material.sha256))
+            if collision and collision.id != mid and collision.id not in deleted_material_ids(s, tid):
+                raise ValueError("同じファイルは変更先の資料の種類で登録済みです")
+            replacement, reused = reuse_source(s, storage_root or artifact_root, tid, mid,
+                body.material_type, allowed_roots)
+            if replacement.id == mid:
+                raise ValueError("資料の種類が同じです")
+            s.add(DomainEvent(entity_type="material", entity_id=mid, actor_user_id=actor(s).id,
+                              event_type="material_binding_deleted",
+                              payload={"test_id": tid, "role": material.material_type,
+                                       "replaced_by": replacement.id}))
+            s.commit()
+            return {**obj(replacement), "reused": reused}
+        except ValueError as exc:
+            s.rollback()
+            raise HTTPException(409, str(exc)) from exc
 
     @r.post("/tests/{tid}/materials/upload", status_code=201)
     async def material_upload(tid: str, request: Request, s=Depends(db)):
@@ -205,7 +250,8 @@ def router(db, artifact_root=None, allowed_roots=None, grading_visual_config=Non
         still the source of truth and the bytes are never copied or rewritten.
         """
         material = get(TestMaterial, mid, s)
-        if material.test_id != tid:
+        from ..source_registration import deleted_material_ids
+        if material.test_id != tid or mid in deleted_material_ids(s, tid):
             raise HTTPException(404, "material not found")
         stored = Path(material.storage_ref)
         # Question/context assets are rooted at ``artifact_root`` (the

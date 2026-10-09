@@ -26,13 +26,13 @@ test("compact material controls, role-aware explicit analysis and every Test edi
   if(role==="rubric_source"){
     const registered=await(await page.request.get(base+"/materials")).json(),source=registered.find((m:{material_type:string})=>m.material_type==="model_answer_source");
     let uploads=0;const track=(request:{url:()=>string})=>{if(request.url().includes("/materials/upload"))uploads++;};page.on("request",track);
-    await page.getByRole("button",{name:"既存ファイルを再利用",exact:true}).click();await page.getByLabel("既存ファイル",{exact:true}).selectOption(source.id);await page.getByRole("button",{name:"採点基準として追加",exact:true}).click();
+    await page.getByRole("button",{name:"既存ファイルを再利用",exact:true}).click();await page.getByLabel("既存ファイル",{exact:true}).selectOption(source.id);await page.getByRole("button",{name:"採点基準として追加",exact:true}).click();await page.getByRole("button",{name:"いいえ",exact:true}).click();
     await expect(select).toContainText("採点基準 — model_answer_source.pdf");page.off("request",track);expect(uploads).toBe(0);expect(await calls(page)).toEqual(before);
     const bindings=await(await page.request.get(base+"/materials")).json(),rubric=bindings.find((m:{material_type:string})=>m.material_type==="rubric_source");expect(rubric.id).not.toBe(source.id);expect(rubric.sha256).toBe(source.sha256);expect(rubric.storage_ref).toBe(source.storage_ref);
-  }else {await page.getByLabel("資料を追加",{exact:true}).setInputFiles({name:role+".pdf",mimeType:"application/pdf",buffer});await expect(select).toContainText(role+".pdf");}
+  }else {await page.getByLabel("資料を追加",{exact:true}).setInputFiles({name:role+".pdf",mimeType:"application/pdf",buffer});await expect(select).toContainText(role+".pdf");await page.getByRole("button",{name:"いいえ",exact:true}).click();}
  }
  files.push(...await(await page.request.get(base+"/materials")).json());
- await select.selectOption(files.find(m=>m.material_type==="supplementary_source")!.id);await expect(controls.getByRole("button",{name:"解析",exact:true})).toBeDisabled();await expect(page.getByText("選択資料の解析: この資料は解析対象ではありません。",{exact:true})).toBeVisible();
+ await select.selectOption(files.find(m=>m.material_type==="supplementary_source")!.id);await expect(controls.getByRole("button",{name:"解析",exact:true})).toBeDisabled();const unsupportedHint=controls.getByRole("group",{name:"解析できない理由",exact:true});await unsupportedHint.hover();await expect(page.getByRole("tooltip")).toHaveText("この資料は解析対象ではありません。");
  await select.selectOption(files.find(m=>m.material_type==="model_answer_source")!.id);await expect(controls.getByRole("button",{name:"解析",exact:true})).toBeDisabled();await expectUnsavedAnalysisHint(page,controls);
  await page.getByRole("button",{name:/通知履歴、未読/}).click();await page.getByRole("region",{name:"通知履歴"}).getByRole("button",{name:"すべて既読"}).click();await page.getByRole("button",{name:"通知履歴を閉じる"}).click();
  await page.getByRole("button",{name:"保存",exact:true}).first().click();await expect(page.locator(".authoring-toast").filter({hasText:"保存しました"}).last()).toBeVisible();await expect(controls.getByRole("button",{name:"解析",exact:true})).toBeEnabled();expect(await calls(page)).toEqual(before);

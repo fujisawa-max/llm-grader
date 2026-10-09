@@ -13,7 +13,7 @@ test("AI split feedback/review and sequential answer/rubric analysis preserve th
  const select=page.getByLabel("利用資料",{exact:true}),controls=page.getByRole("group",{name:"利用資料の操作"});
  for(const [role,kind] of [["question_sheet","QUESTION"],["model_answer_source","ANSWER"],["rubric_source","RUBRIC"]]){
   await select.selectOption("action:add");await page.getByLabel("資料の種類",{exact:true}).selectOption(role);
-  await page.getByLabel("資料を追加",{exact:true}).setInputFiles({name:`split-${kind}.pdf`,mimeType:"application/pdf",buffer:await readFile(process.env[`AUTHORING_SPLIT_${kind}_PDF_PATH`]!)});await expect(select).toContainText(`split-${kind}.pdf`);
+  await page.getByLabel("資料を追加",{exact:true}).setInputFiles({name:`split-${kind}.pdf`,mimeType:"application/pdf",buffer:await readFile(process.env[`AUTHORING_SPLIT_${kind}_PDF_PATH`]!)});await expect(select).toContainText(`split-${kind}.pdf`);await page.getByRole("button",{name:"いいえ",exact:true}).click();
  }
  await saveAuthoring(page);
  const materials=await(await page.request.get(base+"/materials")).json();
@@ -79,7 +79,7 @@ test("unmatched analysis is actionable and retained for explicit manual assignme
  const target=await page.getByLabel("対象設問",{exact:true}).inputValue(),view=page.getByLabel("問題の表示切替",{exact:true});
  await view.getByRole("button",{name:"設問設定の変更",exact:true}).click();await page.getByLabel(/設問番号・見出し/).fill("問題9");
  const select=page.getByLabel("利用資料",{exact:true});await select.selectOption("action:add");await page.getByLabel("資料の種類",{exact:true}).selectOption("model_answer_source");
- await page.getByLabel("資料を追加",{exact:true}).setInputFiles({name:"unmatched.pdf",mimeType:"application/pdf",buffer:await readFile(process.env.AUTHORING_SPLIT_ANSWER_PDF_PATH!)});
+ await page.getByLabel("資料を追加",{exact:true}).setInputFiles({name:"unmatched.pdf",mimeType:"application/pdf",buffer:await readFile(process.env.AUTHORING_SPLIT_ANSWER_PDF_PATH!)});await page.getByRole("button",{name:"いいえ",exact:true}).click();
  await saveAuthoring(page);
  const tree=(await(await page.request.get(base+"/authoring")).json()).revision.snapshot.nodes;
  await confirmAnalysis(page,page.getByRole("group",{name:"利用資料の操作"}),"解析");

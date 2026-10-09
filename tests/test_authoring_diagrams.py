@@ -419,10 +419,12 @@ def test_cross_material_merge_preserves_answer_rubric_sources_and_unresolved():
         return SimpleNamespace(id=identifier, material_id=material, revision=1,
             source_sha256=material, artifact_ref=identifier, snapshot={'entries': entries})
     original_nodes = deepcopy(snapshot['nodes'])
-    merge_answer_analysis(snapshot, draft('answer', 'pdf-a', [{'id': 'a', 'question_id': 'leaf', 'answer_text': 'correct answer'}]))
+    merge_answer_analysis(snapshot, draft('answer', 'pdf-a', [{'id': 'a', 'question_id': 'leaf', 'answer_text': 'correct answer'}]), 'model_answer_source')
     result = merge_answer_analysis(snapshot, draft('rubric', 'pdf-b', [
-        {'id': 'r', 'question_id': 'leaf', 'answer_text': '', 'rubric_edits': [{'id': 'c', 'description': 'criterion', 'points': 5}]},
-        {'id': 'unresolved', 'question_id': 'foreign', 'answer_text': 'not guessed'}]))
+        {'id': 'r', 'question_id': 'leaf', 'answer_text': '', 'rubric_edits': [{'id': 'c', 'description': 'criterion', 'points': 5}],
+         'semantic_classification': {'segments': [{'id': 's1', 'category': 'rubric'}]}},
+        {'id': 'unresolved', 'question_id': 'foreign', 'answer_text': 'not guessed',
+         'semantic_classification': {'segments': [{'id': 's2', 'category': 'rubric'}]}}]), material_role='rubric_source')
     assert snapshot['nodes'] == original_nodes
     assert snapshot['answers']['leaf']['primary'] == 'correct answer'
     assert snapshot['rubrics']['leaf'][0]['description'] == 'criterion'
@@ -431,7 +433,7 @@ def test_cross_material_merge_preserves_answer_rubric_sources_and_unresolved():
     assert bound['sources']['answer']['material_id'] == 'pdf-a'
     assert next(e for e in bound['entries'] if e['id'] == 'a')['source_draft_id'] == 'answer'
     assert next(e for e in bound['entries'] if e['id'] == 'unresolved')['authoring_question_key'] is None
-    zero = merge_answer_analysis(snapshot, draft('unknown', 'pdf-c', [{'id': 'u', 'question_id': 'other', 'answer_text': 'unknown'}]))
+    zero = merge_answer_analysis(snapshot, draft('unknown', 'pdf-c', [{'id': 'u', 'question_id': 'other', 'answer_text': 'unknown'}]), 'model_answer_source')
     assert zero['status'] == 'needs_assignment' and zero['assigned_count'] == 0
     assert snapshot['nodes'] == original_nodes
 
@@ -614,3 +616,28 @@ def test_retained_material_keeps_authorized_diagram_context_after_other_analysis
     assert w.client.get(selected['preview_url']).status_code == 200
     saved = save(w, path, row, row['snapshot'])
     assert w.client.get(path).json()['revision'] == saved
+
+
+def test_answer_analysis_never_projects_rubric_segments_into_rubric_domain():
+    from types import SimpleNamespace
+    from scoring.authoring_sources import merge_answer_analysis
+
+    snapshot = {'nodes': [{'stable_key': 'leaf', 'parent_key': None, 'included': True,
+        'label': {'raw': '問題1'}, 'body_text': 'Question', 'node_type': 'major_question',
+        'ordered_content': [], 'sort_order': 0, 'score_semantics': 'direct', 'score_points': 5}],
+        'source_provenance': {}, 'answers': {}, 'rubrics': {}}
+    draft = SimpleNamespace(id='answer-draft', material_id='answer-binding', revision=1,
+        source_sha256='shared-sha', artifact_ref='answer-ir', snapshot={'entries': [{
+            'id': 'answer-entry', 'question_id': 'leaf', 'answer_text': 'Answer text',
+            'semantic_classification': {'status': 'classified', 'segments': [
+                {'id': 'answer-segment', 'text': 'Answer text', 'category': 'model_answer'},
+                {'id': 'rubric-segment', 'text': 'Explain evidence', 'category': 'rubric'}],
+                'rubric_groups': [{'id': 'rubric-group', 'kind': 'rubric', 'segment_ids': ['rubric-segment'],
+                    'description': 'Explain evidence', 'points': 5}]}}], 'question_regions': []})
+
+    merge_answer_analysis(snapshot, draft, 'model_answer_source')
+
+    assert snapshot['answers']['leaf']['primary'] == 'Answer text'
+    assert snapshot['rubrics'] == {}
+    retained = snapshot['domains']['answer']['entries'][0]
+    assert any(segment['category'] == 'rubric' for segment in retained['semantic_classification']['segments'])

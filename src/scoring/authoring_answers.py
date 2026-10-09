@@ -28,24 +28,47 @@ class AuthoringAnswers:
     def __init__(self, session, root, row, snapshot=None):
         self.row = row
         self.snapshot = snapshot if snapshot is not None else row.snapshot
-        self.bound = self.snapshot.get('domains', {}).get('answer')
-        if not self.bound:
+        root_bound = self.snapshot.get('domains', {}).get('answer')
+        if not root_bound:
             raise ValueError('authoring_answer_source_missing')
         self.session, self.root = session, root
-        self.primary_bound = self.bound
-        self.sources = {self.bound['draft_id']: self.bound, **self.bound.get('sources', {})}
+        all_sources = {root_bound['draft_id']: root_bound, **root_bound.get('sources', {})}
+        from .source_registration import deleted_material_ids
+        deleted = deleted_material_ids(session, row.test_id)
+        self.sources = {identifier: source for identifier, source in all_sources.items()
+                        if source.get('material_id') not in deleted}
+        if not self.sources:
+            raise ValueError('authoring_answer_source_missing')
+        answer_sources = [(identifier, source) for identifier, source in self.sources.items()
+                          if source.get('material_role', 'model_answer_source') == 'model_answer_source']
+        primary_id, primary_source = answer_sources[0] if answer_sources else next(iter(self.sources.items()))
+        self.primary_bound = {**primary_source, 'entries': root_bound.get('entries', [])}
+        self.bound = self.primary_bound
         for source in self.sources.values():
             self._select_source(source)
         self._select_source(self.primary_bound)
         self.manual_source_id = next((identifier for identifier, source in self.sources.items()
             if session.get(TestMaterial, source['material_id']).material_type == 'model_answer_source'),
-            self.primary_bound['draft_id'])
+            None)
         self.aliases, self.questions = authoring_questions(self.snapshot)
-        self.entries = [{**deepcopy(e), 'question_id': self.aliases.get(e.get('authoring_question_key'))}
-            for e in self.primary_bound['entries']]
+        role_source_ids = {source.get('material_role'): identifier for identifier, source in self.sources.items()}
+        self.role_by_source_id = {identifier: source.get('material_role', 'model_answer_source')
+                                  for identifier, source in self.sources.items()}
+        self.entries = []
+        for original in root_bound.get('entries', []):
+            entry = deepcopy(original)
+            source_id = entry.get('source_draft_id')
+            if not source_id:
+                source_id = role_source_ids.get(entry.get('material_role'), self.primary_bound['draft_id'])
+            if entry.get('source', {}).get('kind') == 'teacher_manual':
+                source_id = self.manual_source_id
+            if source_id not in self.sources and entry.get('source', {}).get('kind') != 'teacher_manual':
+                continue
+            entry['source_draft_id'] = source_id
+            entry['question_id'] = self.aliases.get(entry.get('authoring_question_key'))
+            self.entries.append(entry)
         for entry in self.entries:
-            entry.setdefault('source_draft_id', self.manual_source_id if
-                entry.get('source', {}).get('kind') == 'teacher_manual' else self.primary_bound['draft_id'])
+            entry.setdefault('source_draft_id', self.manual_source_id)
 
     def _select_source(self, source):
         self.bound = source
@@ -101,7 +124,11 @@ class AuthoringAnswers:
         gradable = {q.id for q in self.questions if q.is_gradable}
         saved = {e['id']: e for e in self.row.snapshot.get('domains', {}).get('answer', {}).get('entries', [])}
         previous_keys = {e.get('authoring_question_key') for e in saved.values()}
-        for entry, original in zip(self.entries, self.primary_bound['entries'], strict=True):
+        originals = {entry['id']: entry for entry in self.primary_bound['entries']}
+        for entry in self.entries:
+            original = originals.get(entry['id'])
+            if original is None:
+                continue
             if (self.snapshot is not self.row.snapshot and entry.get('source', {}).get('kind') == 'teacher_manual'
                     and entry['source_draft_id'] != self.primary_bound['draft_id']):
                 original.setdefault('source_draft_id', entry['source_draft_id'])
@@ -125,22 +152,26 @@ class AuthoringAnswers:
                 continue
             if entry.get('diagram_records'):
                 original['diagram_records'] = self.diagrams(entry).validate(entry['diagram_records'], self.row.edit_version+1)
-        for key in (previous_keys | {e.get('authoring_question_key') for e in self.primary_bound['entries']}) - {None}:
-            included = [e for e in self.primary_bound['entries'] if e.get('authoring_question_key') == key
+        active_entries = [entry for entry in self.primary_bound['entries']
+                          if entry.get('source_draft_id', self.primary_bound['draft_id']) in self.sources]
+        def role_for(entry):
+            if entry.get('source', {}).get('kind') == 'teacher_manual':
+                return entry.get('material_role', 'model_answer_source')
+            return self.role_by_source_id.get(entry.get('source_draft_id', self.primary_bound['draft_id']),
+                'model_answer_source')
+        for key in (previous_keys | {e.get('authoring_question_key') for e in active_entries}) - {None}:
+            included = [e for e in active_entries if e.get('authoring_question_key') == key
                 and e.get('disposition', 'include') == 'include']
-            answer_included = [e for e in included if self.session.get(TestMaterial,
-                self.sources[e.get('source_draft_id', self.manual_source_id)]['material_id']).material_type != 'rubric_source']
+            answer_included = [e for e in included if role_for(e) != 'rubric_source']
             primary_entries = [e for e in answer_included if e.get('answer_kind', 'primary') == 'primary']
             primary = next((e for e in primary_entries if e.get('answer_text', '').strip() or
                            any(r.get('state') == 'accepted' for r in e.get('diagram_records', []))),
                            primary_entries[0] if primary_entries else None)
-            self.snapshot['answers'][key] = {'primary': primary.get('answer_text', '') if primary else '',
-                'alternatives': answer_alternatives(answer_included),
-                'diagram_records': deepcopy(primary.get('diagram_records', [])) if primary else []}
-            rubric_included = [e for e in included if self.session.get(TestMaterial,
-                self.sources[e.get('source_draft_id', self.manual_source_id)]['material_id']).material_type == 'rubric_source']
-            if not rubric_included:
-                rubric_included = included
+            if answer_included:
+                self.snapshot['answers'][key] = {'primary': primary.get('answer_text', '') if primary else '',
+                    'alternatives': answer_alternatives(answer_included),
+                    'diagram_records': deepcopy(primary.get('diagram_records', [])) if primary else []}
+            rubric_included = [e for e in included if role_for(e) == 'rubric_source']
             prior_rubric = any(e.get('authoring_question_key') == key and has_rubric_state(e) for e in saved.values())
-            if any(has_rubric_state(e) for e in included) or (not included and prior_rubric):
+            if rubric_included and (any(has_rubric_state(e) for e in rubric_included) or prior_rubric):
                 self.snapshot['rubrics'][key] = [c for e in rubric_included for c in rubric_projection(e)]

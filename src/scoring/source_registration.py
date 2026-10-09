@@ -16,6 +16,14 @@ ROLES = {"question_sheet", "model_answer_source", "student_answer_source", "rubr
 MAX_PAGES = 100
 
 
+def deleted_material_ids(session, test_id):
+    """Return soft-deleted role bindings; the immutable source file is retained."""
+    from .db.models import DomainEvent
+    return {row.entity_id for row in session.scalars(select(DomainEvent).where(
+        DomainEvent.entity_type == 'material', DomainEvent.event_type == 'material_binding_deleted'))
+        if row.entity_id and (row.payload or {}).get('test_id') == test_id}
+
+
 def inspect_source(data, filename, content_type):
     suffix = Path(filename).suffix.lower()
     if not data or len(data) > MAX_SOURCE_BYTES:
@@ -56,9 +64,11 @@ def register_source(session, root, test_id, role, filename, content_type, data):
     # Serialize registration against the Test row for PostgreSQL deduplication.
     from .db.models import Test
     session.scalar(select(Test).where(Test.id == test_id).with_for_update())
-    prior = session.scalar(select(TestMaterial).where(
+    deleted = deleted_material_ids(session, test_id)
+    matches = list(session.scalars(select(TestMaterial).where(
         TestMaterial.test_id == test_id, TestMaterial.material_type == role,
-        TestMaterial.sha256 == digest))
+        TestMaterial.sha256 == digest)))
+    prior = next((item for item in matches if item.id not in deleted), None)
     path = Path(root).resolve() / "sources" / test_id / (digest + Path(filename).suffix.lower())
     if prior:
         old = Path(prior.storage_ref)
@@ -80,15 +90,18 @@ def reuse_source(session, root, test_id, material_id, role, allowed_roots=None):
     from .db.models import Test
     session.scalar(select(Test).where(Test.id == test_id).with_for_update())
     source = session.get(TestMaterial, material_id)
-    if not source or source.test_id != test_id or source.material_type not in ROLES - {'student_answer_source'}:
+    if (not source or source.test_id != test_id or source.id in deleted_material_ids(session, test_id)
+            or source.material_type not in ROLES - {'student_answer_source'}):
         raise ValueError('このテストの資料を選択してください')
     path = Path(source.storage_ref)
     path = (path if path.is_absolute() else Path(root) / path).resolve()
     if (not any(path.is_relative_to(Path(base).resolve()) for base in [root, *(allowed_roots or [])]) or not path.is_file()
             or not source.sha256 or hashlib.sha256(path.read_bytes()).hexdigest() != source.sha256):
         raise ValueError('保存済み資料の整合性を確認してください')
-    prior = session.scalar(select(TestMaterial).where(TestMaterial.test_id == test_id,
-        TestMaterial.material_type == role, TestMaterial.sha256 == source.sha256))
+    deleted = deleted_material_ids(session, test_id)
+    matches = list(session.scalars(select(TestMaterial).where(TestMaterial.test_id == test_id,
+        TestMaterial.material_type == role, TestMaterial.sha256 == source.sha256)))
+    prior = next((item for item in matches if item.id not in deleted), None)
     if prior:
         return prior, True
     return DomainService(session).material(test_id, material_type=role,

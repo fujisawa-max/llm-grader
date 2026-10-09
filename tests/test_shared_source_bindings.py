@@ -34,6 +34,67 @@ def test_existing_source_roles_share_bytes_and_protect_duplicate_and_foreign(wor
     assert w.client.post(base+f'/{answer["id"]}/reuse', json={'material_type': 'question_sheet'}).status_code == 422
 
 
+def test_delete_and_role_change_only_remove_role_binding(workspace):
+    w = workspace
+    base = f'/api/v1/tests/{w.answer["test_id"]}/materials'
+    answer = next(m for m in w.client.get(base).json() if m['id'] == w.answer['material_id'])
+    rubric = w.client.post(base+f'/{answer["id"]}/reuse', json={'material_type': 'rubric_source'}).json()
+    source_path = Path(answer['storage_ref'])
+    assert source_path.exists()
+    changed = w.client.patch(base+f'/{rubric["id"]}/role', json={'material_type': 'question_sheet'})
+    assert changed.status_code == 200, changed.text
+    question_binding = changed.json()
+    assert question_binding['id'] != rubric['id']
+    assert question_binding['sha256'] == answer['sha256']
+    assert question_binding['storage_ref'] == answer['storage_ref']
+    visible = w.client.get(base).json()
+    assert {m['id'] for m in visible} >= {answer['id'], question_binding['id']}
+    assert rubric['id'] not in {m['id'] for m in visible}
+    assert source_path.exists()
+    duplicate = w.client.patch(base+f'/{answer["id"]}/role', json={'material_type': 'question_sheet'})
+    assert duplicate.status_code == 409
+    deleted = w.client.delete(base+f'/{question_binding["id"]}')
+    assert deleted.status_code == 200
+    assert w.client.get(base+f'/{question_binding["id"]}/file').status_code == 404
+    assert answer['id'] in {m['id'] for m in w.client.get(base).json()}
+    assert source_path.exists()
+
+
+def test_resume_projects_latest_answer_and_rubric_imports_into_separate_domains(workspace):
+    from scoring.db.models import ModelAnswerImportDraft, TestMaterial
+    from uuid import uuid4
+    w = workspace
+    test_id = w.answer['test_id']
+    path = f'/api/v1/tests/{test_id}/materials'
+    rubric_binding = w.client.post(path+f'/{w.answer["material_id"]}/reuse',
+        json={'material_type': 'rubric_source'}).json()
+    entry = deepcopy(w.answer['entries'][0])
+    entry['answer_text'] = 'rubric-like text must not become an Answer'
+    entry['rubric_edits'] = [{'id': 'rubric-resume', 'description': 'Explicit rubric criterion', 'points': 4,
+                              'segment_ids': [], 'provenance': {'source': 'teacher'}}]
+    entry['semantic_classification'] = {'status': 'teacher_reviewed', 'segments': [
+        {'id': 'rubric-segment-resume', 'category': 'rubric', 'text': 'Explicit rubric criterion'}],
+        'rubric_groups': []}
+    with w.sf() as session:
+        original_draft = session.get(ModelAnswerImportDraft, w.answer['id'])
+        material = session.get(TestMaterial, rubric_binding['id'])
+        session.add(ModelAnswerImportDraft(id=str(uuid4()), test_id=test_id, material_id=material.id,
+            source_sha256=material.sha256, artifact_ref=original_draft.artifact_ref, revision=1,
+            snapshot={'entries': [entry], 'question_regions': original_draft.snapshot.get('question_regions', [])}))
+        session.commit()
+    # A fresh authoring projection must select one revision per material role.
+    resumed = w.client.post(f'/api/v1/tests/{test_id}/authoring/revisions')
+    assert resumed.status_code == 200, resumed.text
+    snapshot = resumed.json()['snapshot']
+    key = snapshot['nodes'][0]['stable_key']
+    assert snapshot['answers'][key]['primary'] == w.answer['entries'][0]['answer_text']
+    assert snapshot['rubrics'][key][0]['description'] == 'Explicit rubric criterion'
+    roles = {source['material_id']: source['material_role']
+             for source in snapshot['domains']['answer']['sources'].values()}
+    assert roles[w.answer['material_id']] == 'model_answer_source'
+    assert roles[rubric_binding['id']] == 'rubric_source'
+
+
 def test_shared_roles_merge_independently_and_replacement_is_binding_local(workspace):
     w = workspace
     path, row = begin(w, w.answer['test_id'])
@@ -52,11 +113,14 @@ def test_shared_roles_merge_independently_and_replacement_is_binding_local(works
         snapshot={'entries': [entry], 'question_regions': []})
     merge_answer_analysis(snapshot, draft, 'model_answer_source')
     assert snapshot['rubrics'][key][0]['description'] == 'Teacher criterion'
+    answer_outcome = deepcopy(snapshot['domains']['answer']['analysis_results']['model_answer_source'])
     answer_before = deepcopy(snapshot['answers'])
     draft.id, draft.material_id = 'rubric-draft', 'rubric-binding'
     merge_answer_analysis(snapshot, draft, 'rubric_source')
     assert snapshot['answers'] == answer_before
     assert snapshot['rubrics'][key][0]['description'] == 'New criterion'
+    assert snapshot['domains']['answer']['analysis_results']['model_answer_source'] == answer_outcome
+    assert 'rubric_source' in snapshot['domains']['answer']['analysis_results']
     assert snapshot['nodes'] == original
     rubric_before = deepcopy(snapshot['rubrics'])
     draft.id, draft.material_id = 'answer-again', w.answer['material_id']

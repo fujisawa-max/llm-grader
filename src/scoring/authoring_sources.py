@@ -6,7 +6,7 @@ from pathlib import Path
 from sqlalchemy import select
 
 from .db.models import (QuestionImportReview, QuestionImportDraft, QuestionImportExtraction,
-    ModelAnswerImportDraft, TestMaterial, TestQuestion)
+    ModelAnswerImportDraft, TestMaterial, TestQuestion, DomainEvent)
 from .pdf_native import canonical_hash, sha256_file
 from .question_reviews import QuestionReviewService, ReviewError
 
@@ -16,18 +16,36 @@ def source_tokens(session, test_id):
     question = session.scalar(select(QuestionImportReview).join(QuestionImportDraft)
         .join(QuestionImportExtraction).where(QuestionImportExtraction.test_id == test_id)
         .order_by(QuestionImportReview.updated_at.desc(), QuestionImportReview.id.desc()))
-    answer = session.scalar(select(ModelAnswerImportDraft).where(ModelAnswerImportDraft.test_id == test_id)
-        .order_by(ModelAnswerImportDraft.updated_at.desc(), ModelAnswerImportDraft.id.desc()))
+    answer_drafts = session.scalars(select(ModelAnswerImportDraft).join(TestMaterial,
+        TestMaterial.id == ModelAnswerImportDraft.material_id).where(
+        ModelAnswerImportDraft.test_id == test_id, TestMaterial.material_type == 'model_answer_source')
+        .order_by(ModelAnswerImportDraft.updated_at.desc(), ModelAnswerImportDraft.id.desc())).all()
+    rubric_drafts = session.scalars(select(ModelAnswerImportDraft).join(TestMaterial,
+        TestMaterial.id == ModelAnswerImportDraft.material_id).where(
+        ModelAnswerImportDraft.test_id == test_id, TestMaterial.material_type == 'rubric_source')
+        .order_by(ModelAnswerImportDraft.updated_at.desc(), ModelAnswerImportDraft.id.desc())).all()
+    deleted = {row.entity_id for row in session.scalars(select(DomainEvent).where(
+        DomainEvent.entity_type == 'material', DomainEvent.event_type == 'material_binding_deleted'))
+        if row.entity_id and (row.payload or {}).get('test_id') == test_id}
+    answer_drafts = [draft for draft in answer_drafts if draft.material_id not in deleted]
+    rubric_drafts = [draft for draft in rubric_drafts if draft.material_id not in deleted]
+    answer = answer_drafts[0] if answer_drafts else None
+    rubric = rubric_drafts[0] if rubric_drafts else None
     return {'question': {'id': question.id, 'revision': question.current_revision,
         'sha256': question.current_revision_sha256} if question else None,
         'answer': {'id': answer.id, 'revision': answer.revision,
-            'sha256': canonical_hash(answer.snapshot), 'source_sha256': answer.source_sha256} if answer else None}
+            'sha256': canonical_hash(answer.snapshot), 'source_sha256': answer.source_sha256} if answer else None,
+        'rubric': {'id': rubric.id, 'revision': rubric.revision,
+            'sha256': canonical_hash(rubric.snapshot), 'source_sha256': rubric.source_sha256} if rubric else None}
 
 
 def _answer_valid(session, draft, root):
     material = session.get(TestMaterial, draft.material_id)
     if not material or material.test_id != draft.test_id or material.sha256 != draft.source_sha256:
         raise ValueError('model_answer_source_stale')
+    from .source_registration import deleted_material_ids
+    if material.id in deleted_material_ids(session, draft.test_id):
+        raise ValueError('model_answer_source_binding_deleted')
     root = Path(root).resolve()
     pdf = Path(material.storage_ref)
     pdf = (pdf if pdf.is_absolute() else root / pdf).resolve()
@@ -115,31 +133,60 @@ def source_projection(session, test, formal, question_root, answer_root):
     formal_to_key.update({k: k for k in identities})
     drafts = session.scalars(select(ModelAnswerImportDraft).where(ModelAnswerImportDraft.test_id == test.id)
         .order_by(ModelAnswerImportDraft.updated_at.desc(), ModelAnswerImportDraft.id.desc())).all()
+    from .source_registration import deleted_material_ids
+    deleted = deleted_material_ids(session, test.id)
+    latest_by_role = {}
     for draft in drafts:
+        material = session.get(TestMaterial, draft.material_id)
+        if not material or material.id in deleted or material.material_type not in {'model_answer_source', 'rubric_source'}:
+            continue
         try:
             _answer_valid(session, draft, answer_root)
         except (OSError, ValueError, KeyError, TypeError):
-            diagnostics.append({'domain': 'answer', 'id': draft.id, 'code': 'model_answer_source_unavailable'})
+            diagnostics.append({'domain': 'answer' if material.material_type == 'model_answer_source' else 'rubric',
+                'id': draft.id, 'code': 'source_unavailable'})
             continue
+        latest_by_role.setdefault(material.material_type, (draft, material))
+
+    # Candidate storage is shared by the current editor, while projected Answer
+    # and Rubric domains are role-owned. Keep one latest source per role instead
+    # of allowing a globally latest import to replace the other role's context.
+    combined_entries, source_bindings = [], {}
+    answer_source = latest_by_role.get('model_answer_source')
+    rubric_source = latest_by_role.get('rubric_source')
+    primary_source = answer_source or rubric_source
+    for role_name, pair in (('model_answer_source', answer_source), ('rubric_source', rubric_source)):
+        if not pair:
+            continue
+        draft, material = pair
+        source_bindings[draft.id] = {'draft_id': draft.id, 'revision': draft.revision,
+            'material_id': draft.material_id, 'source_sha256': draft.source_sha256,
+            'artifact_ref': draft.artifact_ref, 'material_role': role_name,
+            'question_regions': deepcopy(draft.snapshot.get('question_regions', []))}
         entries = deepcopy(draft.snapshot.get('entries', []))
         for entry in entries:
             entry['authoring_question_key'] = formal_to_key.get(entry.get('question_id'))
+            entry['source_draft_id'] = draft.id
+            entry['material_role'] = role_name
+        combined_entries.extend(entries)
+        assigned = {entry['authoring_question_key'] for entry in entries if entry.get('authoring_question_key')}
+        for key in assigned:
+            current = [entry for entry in entries if entry.get('authoring_question_key') == key
+                       and entry.get('disposition', 'include') == 'include']
+            if role_name == 'model_answer_source':
+                primary = next((entry for entry in current if entry.get('answer_kind', 'primary') == 'primary'), None)
+                result['answers'][key] = {'primary': primary.get('answer_text', '') if primary else '',
+                    'alternatives': answer_alternatives(current),
+                    'diagram_records': deepcopy(primary.get('diagram_records', [])) if primary else []}
+            elif any(has_rubric_state(entry) for entry in current):
+                result['rubrics'][key] = [criterion for entry in current for criterion in rubric_projection(entry)]
+
+    if primary_source:
+        draft, _material = primary_source
         domains['answer'] = {'draft_id': draft.id, 'revision': draft.revision,
             'material_id': draft.material_id, 'source_sha256': draft.source_sha256,
             'artifact_ref': draft.artifact_ref, 'question_regions': deepcopy(draft.snapshot.get('question_regions', [])),
-            'entries': entries}
-        # Assigned draft entries are authoritative even when intentionally blank.
-        assigned = {e['authoring_question_key'] for e in entries if e['authoring_question_key']}
-        for key in assigned:
-            current = [e for e in entries if e['authoring_question_key'] == key and
-                e.get('disposition', 'include') == 'include']
-            primary = next((e for e in current if e.get('answer_kind', 'primary') == 'primary'), None)
-            result['answers'][key] = {'primary': primary.get('answer_text', '') if primary else '',
-                'alternatives': answer_alternatives(current),
-                'diagram_records': deepcopy(primary.get('diagram_records', [])) if primary else []}
-            if any(has_rubric_state(e) for e in current):
-                result['rubrics'][key] = [c for e in current for c in rubric_projection(e)]
-        break
+            'entries': combined_entries, 'sources': source_bindings}
     result['domains'] = domains
     result['source_provenance']['authoring_origins'] = {'tokens': tokens, 'identities': identities,
         'diagnostics': diagnostics}
@@ -277,7 +324,7 @@ def validate_domains(value, previous):
                         raise AuthoringError('AUTHORING_SOURCE_CHANGED', '分類と元segmentの対応を確認してください。') from exc
 
 
-def merge_answer_analysis(snapshot, draft, material_role=None):
+def merge_answer_analysis(snapshot, draft, material_role='model_answer_source'):
     """Merge source-bound candidates into the current tree, without inference."""
     from .authoring_answers import authoring_questions
     aliases, questions = authoring_questions(snapshot)
@@ -289,13 +336,15 @@ def merge_answer_analysis(snapshot, draft, material_role=None):
             entry['answer_text'] = ''
         entry['authoring_question_key'] = inverse.get(entry.get('question_id'))
         entry['source_draft_id'] = draft.id
+        entry['material_role'] = material_role
         if not entry['authoring_question_key']:
             entry.update(disposition='unassigned', mapping_state='needs_review')
     old = snapshot.get('domains', {}).get('answer') or {}
     sources = deepcopy(old.get('sources', {}))
     if old:
         sources[old['draft_id']] = {k: deepcopy(v) for k, v in old.items()
-                                  if k not in {'entries', 'sources', 'analysis_result'}}
+                                  if k not in {'entries', 'sources', 'analysis_result', 'analysis_results'}}
+        sources[old['draft_id']].setdefault('material_role', old.get('material_role', 'model_answer_source'))
     retained = []
     incoming_by_id = {entry['id']: entry for entry in entries}
     for entry in old.get('entries', []):
@@ -379,12 +428,17 @@ def merge_answer_analysis(snapshot, draft, material_role=None):
               'assigned_count': assigned, 'unresolved_count': candidate_count-assigned,
               'fallback_count': fallback_count,
               'candidate_count': candidate_count}
+    analysis_results = deepcopy(old.get('analysis_results', {}))
+    if old.get('analysis_result') and old.get('material_role'):
+        analysis_results.setdefault(old['material_role'], deepcopy(old['analysis_result']))
+    analysis_results[material_role] = result
     snapshot.setdefault('domains', {})['answer'] = {
         'draft_id': draft.id, 'revision': draft.revision, 'material_id': draft.material_id,
         'source_sha256': draft.source_sha256, 'artifact_ref': draft.artifact_ref,
         'question_regions': deepcopy(draft.snapshot.get('question_regions', [])),
         'material_role': material_role,
-        'entries': retained+entries, 'sources': sources, 'analysis_result': result}
+        'entries': retained+entries, 'sources': sources, 'analysis_result': result,
+        'analysis_results': analysis_results}
     for key in {e['authoring_question_key'] for e in retained+entries if e.get('authoring_question_key')}:
         current = [e for e in retained+entries if e.get('authoring_question_key') == key
                    and e.get('disposition', 'include') == 'include']
@@ -395,8 +449,12 @@ def merge_answer_analysis(snapshot, draft, material_role=None):
             snapshot['answers'][key] = {'primary': primary.get('answer_text', '') if primary else '',
                 'alternatives': answer_alternatives(answer_entries),
                 'diagram_records': deepcopy(primary.get('diagram_records', [])) if primary else []}
-        if any(has_rubric_state(e) for e in current) and (material_role != 'model_answer_source' or key not in snapshot['rubrics']):
-            rubric_current = entries if material_role == 'rubric_source' else current
+        # A source can contain text that looks like a rubric, but only an
+        # explicit Rubric-role analysis may update the Rubric projection.
+        # Answer-source rubric-like segments remain available as candidates
+        # for explicit teacher promotion in the workspace.
+        if material_role == 'rubric_source' and any(has_rubric_state(e) for e in current):
+            rubric_current = entries
             projected = [c for e in rubric_current if e.get('authoring_question_key') == key for c in rubric_projection(e)]
             # A fresh role analysis with only unresolved classifier segments is
             # not evidence that the teacher's existing criteria should be erased.

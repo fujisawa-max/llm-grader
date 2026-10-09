@@ -71,6 +71,10 @@ export default function TestAuthoringPage() {
   const [issues,setIssues]=useState<AuthoringIssue[]>([]);
   const [issuesOpen,setIssuesOpen]=useState(false);
   const [analysisRequest,setAnalysisRequest]=useState<{domain:"question"|"answer";materialId:string}|null>(null);
+  const [registrationPrompt,setRegistrationPrompt]=useState<{materialId:string;role:string}|null>(null);
+  const [registrationError,setRegistrationError]=useState("");
+  const [deleteMaterial,setDeleteMaterial]=useState<Material|null>(null);
+  const [materialRoleChanges,setMaterialRoleChanges]=useState<Record<string,string>>({});
   const [saving,setSaving]=useState(false);
   const [busy,setBusy]=useState(false),[error,setError]=useState("");
   const {notify,view:notificationView}=useAuthoringNotifications();
@@ -189,7 +193,7 @@ export default function TestAuthoringPage() {
       setRevision(row);setSnapshot(row.snapshot);setDirty(false);setDirtyDomains({});setExternalChange(false);setContinueExternal(false);
       setBuffers(authoringBuffers(row.snapshot));
       setSelected(current=>row.snapshot.nodes.some(n=>n.stable_key===current)?current:row.snapshot.nodes[0]?.stable_key||"all");
-      const outcome=row.snapshot.domains?.answer?.analysis_result;
+      const outcome=row.snapshot.domains?.answer?.analysis_results?.[materialRole||"model_answer_source"]||row.snapshot.domains?.answer?.analysis_result;
       const refreshed=await testAuthoring.review(id);setIssues(refreshed.issues);
       if(domain==="answer"&&outcome){
         setVisible(v=>({...v,answer:true,rubric:true}));
@@ -219,8 +223,9 @@ export default function TestAuthoringPage() {
       setSelected(current=>row.snapshot.nodes.some(n=>n.stable_key===current)?current:row.snapshot.nodes[0]?.stable_key||"all");setExternalChange(false);setContinueExternal(false);notify("success","保存済みレビューを取り込みました","現在の設問本文・分割・階層は保持されています。");
     }catch(e){const message=e instanceof Error?e.message:"取り込めませんでした。";setError(message);notify("error","レビューを取り込めませんでした",message);}finally{setBusy(false);}
   }
-  async function save(){
-    if(!snapshot||!revision||saveInFlight.current)return;
+  async function save():Promise<boolean>{
+    if(!snapshot||!revision||saveInFlight.current)return false;
+    if(!dirty){setSaveStatus("success");return true;}
     saveInFlight.current=true;const epoch=editEpoch.current;
     setBusy(true);setSaving(true);setSaveStatus("saving");setError("");
     try{
@@ -233,7 +238,8 @@ export default function TestAuthoringPage() {
         }).catch(()=>{/* Persisted response remains authoritative even if status refresh fails. */});
       }
       else {setRevision(row);setSnapshot(current=>current?{...current,source_provenance:row.snapshot.source_provenance}:current);notify("warning","送信した内容は保存しました","その後の変更は未保存です。もう一度保存してください。");}
-    }catch(e){setSaveStatus("error");const message=`保存できませんでした。編集内容は画面に保持されています。${e instanceof Error?` (${e.message})`:""}`;setError(message);notify("error","保存に失敗しました",message);}
+      return editEpoch.current===epoch;
+    }catch(e){setSaveStatus("error");const message=`保存できませんでした。編集内容は画面に保持されています。${e instanceof Error?` (${e.message})`:""}`;setError(message);notify("error","保存に失敗しました",message);return false;}
     finally{saveInFlight.current=false;setBusy(false);setSaving(false);}
   }
   async function finalReview(){
@@ -256,7 +262,8 @@ export default function TestAuthoringPage() {
     if(old&&uploaded[0].sha256===old.sha256)throw new Error("同じ内容の資料です。差し替えは行いませんでした。");
     setMaterials(current=>[...current,...uploaded.filter(m=>!current.some(old=>old.id===m.id))]);
     setSnapshot(current=>current?{...current,materials:[...current.materials.filter(ref=>!uploaded.some(m=>m.id===ref.id)),...uploaded.map(m=>({...current.materials.find(ref=>ref.id===m.id),id:m.id,sha256:m.sha256||null,role:m.material_type,...(old?{replaces_material_id:old.id}:{})}))]}:current);
-    markDirty();setMaterialId(uploaded[0].id);setSourceMode("pdf");notify("info",old?"資料を差し替えました":"資料を追加しました",old?"元資料と出典情報は保持されています。保存後に明示的に再解析してください。":"既存の資料と解析結果は保持されています。");setReplacement(null);
+    markDirty();setMaterialId(uploaded[0].id);setSourceMode("pdf");notify("info",old?"資料を差し替えました":"資料を追加しました",old?"元資料と出典情報は保持されています。保存後に明示的に再解析してください。":"既存の資料と解析結果は保持されています.");setReplacement(null);
+    if(!old)setRegistrationPrompt({materialId:uploaded[0].id,role:uploaded[0].material_type});
   }catch(e){const message=e instanceof Error?e.message:"資料を追加できませんでした。";setError(message);notify("error","資料を追加できませんでした",message);}finally{setBusy(false);if(fileInput.current)fileInput.current.value="";}}
   async function reuseMaterial(){
     if(!reuseMaterialId||!snapshot)return;
@@ -267,7 +274,35 @@ export default function TestAuthoringPage() {
       setSnapshot(current=>current&&!current.materials.some(m=>m.id===material.id)?{...current,materials:[...current.materials,{id:material.id,sha256:material.sha256||null,role:material.material_type}]}:current);
       markDirty();setMaterialId(material.id);setSourceMode("pdf");setReuseFiles(false);
       notify("info","資料を追加しました","既存ファイルを共有しています。解析は明示操作で開始してください。");
+      setRegistrationPrompt({materialId:material.id,role:material.material_type});
     }catch(e){const message=e instanceof Error?e.message:"資料を追加できませんでした。";setError(message);notify("error","資料を追加できませんでした",message);}finally{setBusy(false);}
+  }
+  async function removeMaterial(material:Material){
+    setBusy(true);setError("");try{
+      await apiFetch(`/tests/${id}/materials/${material.id}`,{method:"DELETE"});
+      setMaterials(current=>current.filter(item=>item.id!==material.id));
+      setSnapshot(current=>current?{...current,materials:current.materials.filter(ref=>ref.id!==material.id)}:current);
+      if(materialId===material.id){setMaterialId("");setSourceMode("manage");}
+      markDirty();setDeleteMaterial(null);notify("success","資料を削除しました","資料の登録だけを解除しました。保存済みの解答・採点基準本文は保持されています。");
+    }catch(e){const message=e instanceof Error?e.message:"資料を削除できませんでした。";setError(message);notify("error","資料を削除できませんでした",message);}finally{setBusy(false);}
+  }
+  async function changeMaterialRole(material:Material,nextRole:string){
+    if(nextRole===material.material_type)return;
+    setBusy(true);setError("");try{
+      const replacement=await apiFetch<Material>(`/tests/${id}/materials/${material.id}/role`,{...json({material_type:nextRole}),method:"PATCH"});
+      setMaterials(current=>[...current.filter(item=>item.id!==material.id),replacement]);
+      setSnapshot(current=>current?{...current,materials:[...current.materials.filter(ref=>ref.id!==material.id),{id:replacement.id,sha256:replacement.sha256||null,role:replacement.material_type}]}:current);
+      setMaterialId(replacement.id);setRole(replacement.material_type);setMaterialRoleChanges({});markDirty();notify("success","資料の種類を変更しました","元ファイルを共有し、新しい種類では未解析として登録しました。");
+    }catch(e){const message=e instanceof Error?e.message:"資料の種類を変更できませんでした。";setError(message);notify("error","資料の種類を変更できませんでした",message);}finally{setBusy(false);}
+  }
+  async function saveThenAnalyzeRegistered(){
+    if(!registrationPrompt)return;
+    setRegistrationError("");const pending=registrationPrompt;
+    const persisted=await save();
+    if(!persisted){setRegistrationError("保存できませんでした。編集内容を確認して、もう一度お試しください。");return;}
+    setRegistrationPrompt(null);
+    const domain=pending.role==="question_sheet"?"question":pending.role==="model_answer_source"||pending.role==="rubric_source"?"answer":null;
+    if(domain)setAnalysisRequest({domain,materialId:pending.materialId});
   }
   if(error&&!snapshot)return <ErrorState message={error}/>;
   if(!snapshot)return <LoadingState/>;
@@ -291,7 +326,7 @@ export default function TestAuthoringPage() {
   const supersededMaterialIds=new Set(snapshot.materials.map(m=>m.replaces_material_id).filter((id):id is string=>!!id));
   const questionStale=!!questionDomain&&snapshot.materials.some(m=>m.role==="question_sheet"&&m.sha256===questionDomain.document.source_pdf_sha256&&supersededMaterialIds.has(m.id));
   const answerSources=snapshot.domains?.answer?{[snapshot.domains.answer.draft_id]:snapshot.domains.answer,...snapshot.domains.answer.sources}:{};
-  const staleAnswerSourceDraftIds=Object.entries(answerSources).filter(([,source])=>supersededMaterialIds.has(source.material_id)).map(([draftId])=>draftId);
+  const staleAnswerSourceDraftIds=Object.entries(answerSources).filter(([,source])=>supersededMaterialIds.has(source.material_id)||materials.find(m=>m.id===source.material_id)?.material_type!=="model_answer_source").map(([draftId])=>draftId);
   const answerStale=staleAnswerSourceDraftIds.length>0;
   const viewed=materials.find(m=>m.id===materialId);
   const analysisDomain=viewed?.material_type==="question_sheet"?"question":
@@ -321,9 +356,9 @@ export default function TestAuthoringPage() {
     {error&&<p role="alert" className="error">{error}</p>}
     {sourceWarnings.length>0&&<section aria-label="保存済み内容の出典確認" className="authoring-source-notice" role="status"><p>⚠ 元資料との対応に確認が必要な設問があります。編集内容は保存されています。</p>{sourceWarnings.map((w,i)=><div key={i}><span>{w.message}</span>{w.question_key&&<button onClick={()=>navigate({question_key:w.question_key,section:"question",field:"source",message:w.message})}>確認する</button>}</div>)}</section>}
     {(sourceProblems.length>0||questionStale||answerStale)&&<p role="alert">元PDFとの対応が無効になっています。資料と保存済みレビューを確認し、必要なら明示的に再解析してください。</p>}
-    {readiness.state!=="unsaved_changes"&&analysisReason&&<p id="authoring-analysis-reason" role="status">選択資料の解析: {analysisReason}</p>}{analyzing&&<p className="authoring-analysis-progress" role="status" aria-live="polite"><span className="spinner" aria-hidden="true"/>{analysisProgress}を解析しています… <span className="muted">元資料を確認し、候補を更新しています。</span></p>}
     <ReviewWorkspaceLayout actions={<div className="review-toolbar" aria-busy={busy}>
-      {readonly?<button className="button" disabled={busy} onClick={begin}>修正版を作成</button>:<button className="button" disabled={busy||!dirty} onClick={save}>{saving?"保存中…":"保存"}</button>}
+      {readonly?<button className="button" disabled={busy} onClick={begin}>修正版を作成</button>:<button className={`button authoring-save-button${dirty?" is-dirty":" is-saved"}`} aria-describedby="authoring-save-state" disabled={busy} onClick={()=>void save()}>{saving?"保存中…":"保存"}</button>}
+      {!readonly&&<span id="authoring-save-state" className="visually-hidden" role="status">{dirty?"保存状態: 未保存の変更があります":"保存状態: 保存済み"}</span>}
       {!readonly&&<button disabled={busy} onClick={importSources}>保存済みレビューを取り込む</button>}
       <button className="button secondary" disabled={busy} onClick={finalReview}>最終確認へ</button><Link className="button secondary" href={`/tests/${id}`} onClick={event=>{if(saving||dirty&&!window.confirm("未保存の変更があります。保存せずにテスト詳細へ戻りますか？"))event.preventDefault();}}>戻る</Link>
       {dirty&&<><span role="status">未保存の変更があります</span><span className="muted">{Object.entries(dirtyDomains).filter(([,v])=>v).map(([k])=>({question:"問題",answer:"解答",rubric:"採点基準",diagram:"図"}[k])).filter(Boolean).join("・")}</span></>}
@@ -335,7 +370,7 @@ export default function TestAuthoringPage() {
     </div>} source={<>
       <div className="authoring-source-controls" role="group" aria-label="利用資料の操作">
         <select aria-label="利用資料" value={sourceMode==="pdf"?materialId:`action:${sourceMode}`} onChange={e=>{
-          const value=e.target.value;if(value==="action:add"||value==="action:manage"){setReplacement(null);setSourceMode(value==="action:add"?"add":"manage");}
+          const value=e.target.value;if(value==="action:add"||value==="action:manage"){setReplacement(null);setSourceMode(value==="action:add"?"add":"manage");if(value==="action:add"){const order=["question_sheet","model_answer_source","rubric_source"],present=new Set(materials.map(m=>m.material_type));const missing=order.find(item=>!present.has(item));setRole(missing||order[(order.indexOf(role)+1)%order.length]);}}
           else {setMaterialId(value);setSourceMode("pdf");setReplacement(null);}
         }}><option value="">資料を選択・追加・編集</option><optgroup label="資料">{materials.map(m=><option key={m.id} value={m.id}>{roles[m.material_type]||"資料"} — {m.original_filename}{snapshot.materials.some(ref=>ref.replaces_material_id===m.id)?"（差し替え済み）":""}</option>)}</optgroup>
           <optgroup label="資料管理"><option value="action:add">資料の追加</option><option value="action:manage">資料の編集</option></optgroup>
@@ -344,7 +379,7 @@ export default function TestAuthoringPage() {
           <button disabled={readonly||busy} onClick={()=>replaceMaterial(materialId)}>差換え</button>
         </div>}
       </div>
-      {sourceMode!=="pdf"&&(<section className="authoring-material-management" aria-label="資料管理"><h3>{sourceMode==="manage"?"資料の編集":replacement?"資料の差換え":"資料の追加"}</h3><p>資料を追加してから編集できます。差し替えは元資料を保持し、出典の再確認が必要です。解析は明示操作のみです。</p>{sourceMode==="manage"&&<><button disabled={readonly||busy} onClick={()=>{setReplacement(null);setSourceMode("add");}}>資料の追加</button><ul>{materials.map(m=><li key={m.id}>{roles[m.material_type]||"資料"} — {m.original_filename}<details><summary>出典情報</summary>SHA: {m.sha256||"なし"}<p>{snapshot.materials.some(ref=>ref.replaces_material_id===m.id)?"差し替え済み・元資料を保持":"利用中"}{materialId===m.id?"・選択中の資料":""}</p></details><button onClick={()=>{setMaterialId(m.id);setSourceMode("pdf");}}>選択</button><button disabled={readonly||busy} onClick={()=>replaceMaterial(m.id)}>差換え</button></li>)}</ul></>}{sourceMode==="add"&&<>{replacement&&<p role="alert">差し替え対象: {materials.find(m=>m.id===replacement)?.original_filename}。既存の出典確認は再確認が必要です。自動解析は行いません。</p>}
+      {sourceMode!=="pdf"&&(<section className="authoring-material-management" aria-label="資料管理"><h3>{sourceMode==="manage"?"資料の編集":replacement?"資料の差換え":"資料の追加"}</h3><p>資料を追加してから編集できます。差し替えは元資料を保持し、出典の再確認が必要です。解析は明示操作のみです。</p>{sourceMode==="manage"&&<><button disabled={readonly||busy} onClick={()=>{setReplacement(null);setSourceMode("add");}}>資料の追加</button><ul>{materials.map(m=><li key={m.id}>{roles[m.material_type]||"資料"} — {m.original_filename}<details><summary>出典情報</summary>SHA: {m.sha256||"なし"}<p>{snapshot.materials.some(ref=>ref.replaces_material_id===m.id)?"差し替え済み・元資料を保持":"利用中"}{materialId===m.id?"・選択中の資料":""}</p></details><button onClick={()=>{setMaterialId(m.id);setSourceMode("pdf");}}>選択</button><button disabled={readonly||busy} onClick={()=>replaceMaterial(m.id)}>差換え</button><label>資料の種類<select aria-label={`${m.original_filename}の資料の種類`} disabled={readonly||busy} value={materialRoleChanges[m.id]||m.material_type} onChange={event=>setMaterialRoleChanges(current=>({...current,[m.id]:event.target.value}))}>{Object.entries(roles).map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label><button disabled={readonly||busy||!(materialRoleChanges[m.id]&&materialRoleChanges[m.id]!==m.material_type)} onClick={()=>void changeMaterialRole(m,materialRoleChanges[m.id])}>種類を変更</button><button disabled={readonly||busy} onClick={()=>setDeleteMaterial(m)}>資料を削除</button></li>)}</ul></>}{sourceMode==="add"&&<>{replacement&&<p role="alert">差し替え対象: {materials.find(m=>m.id===replacement)?.original_filename}。既存の出典確認は再確認が必要です。自動解析は行いません。</p>}
         <label>資料の種類<select aria-label="資料の種類" disabled={!!replacement} value={role} onChange={e=>setRole(e.target.value)}>{Object.entries(roles).map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label>
         <input ref={fileInput} aria-label="資料を追加" type="file" accept="application/pdf,.pdf" multiple={!replacement} disabled={readonly||busy} onChange={e=>void upload(e.target.files)}/>
         {!replacement&&<><button disabled={readonly||busy} onClick={()=>setReuseFiles(value=>!value)}>既存ファイルを再利用</button>
@@ -357,12 +392,12 @@ export default function TestAuthoringPage() {
         <p><Link href={`/tests/${id}?section=questions`}>既存の資料解析・出典付きレビューを開く</Link></p>
       </>}</section>)}
       {sourceMode==="pdf"&&materialId&&<SourcePdfPreview key={materialId} testId={id} material={materials.find(m=>m.id===materialId)} label="利用資料PDF" inline paneZoom diagramSelection={diagramSelection?.record.material_id===materialId?diagramSelection:undefined} targetLocation={diagramSelection?.record.material_id===materialId?{id:diagramSelection.record.id,page:diagramSelection.record.page_index+1,bbox:diagramSelection.record.final_bbox||diagramSelection.record.automatic_bbox}:mappedLocation}/>}
-    </>} selector={<div className="review-toolbar authoring-target-controls">
+    </>} selector={<><div className="review-toolbar authoring-target-controls">
       <label>対象設問<select aria-label="対象設問" value={selected} onChange={e=>{if(e.target.value==="all")void finalReview();else {setSelected(e.target.value);setDiagramSelection(undefined);setRegionId("");}}}>
         {orderedNodes().map(n=><option key={n.stable_key} value={n.stable_key}>{pathFor(n.stable_key)}</option>)}{snapshot.domains?.answer?.entries.some(e=>!e.authoring_question_key)&&<option value="unassigned">設問未割当の候補</option>}<option value="all">テスト全体確認</option>
       </select></label><span>表示</span>{([['question','問題'],['answer','解答'],['rubric','採点基準']] as const).map(([key,label])=><label key={key}><input type="checkbox" checked={visible[key]} onChange={e=>{const next={...visible,[key]:e.target.checked};setVisible(next);localStorage.setItem("test-authoring-visible",JSON.stringify(next));}}/>{label}</label>)}
       <span className="authoring-add-question"><button disabled={readonly||saving||analyzing} onClick={()=>{const n=newNode(nodes.length);change({...snapshot,nodes:[...nodes,n]});setBuffers(current=>({...current,[n.stable_key]:""}));setSelected(n.stable_key);}}>設問を追加</button></span>
-    </div>}>
+    </div>{analyzing&&<p className="authoring-analysis-progress" role="status" aria-live="polite"><span className="spinner" aria-hidden="true"/><strong>{analysisProgress}を解析しています…</strong><span className="muted">元資料を確認し、候補を更新しています。</span></p>}</>}>
       {selected==="all"?<section aria-label="テスト全体確認"><h2>テスト全体確認</h2>
         <label>テスト名<input disabled={readonly||saving||analyzing} value={snapshot.metadata.name} onChange={e=>change({...snapshot,metadata:{...snapshot.metadata,name:e.target.value}})}/></label>
         <label>合計点<input type="number" disabled={readonly||saving||analyzing} value={snapshot.metadata.total_points} onChange={e=>change({...snapshot,metadata:{...snapshot.metadata,total_points:Number(e.target.value)}})}/></label>
@@ -447,13 +482,19 @@ export default function TestAuthoringPage() {
             disabled={readonly||saving||analyzing} questions={orderedNodes().map(n=>({key:n.stable_key,label:pathFor(n.stable_key),gradable:!nodes.some(c=>c.included&&c.parent_key===n.stable_key)}))}
             savedEntries={[]} entries={[{id:`formal-entry:${selected}`,mapping_state:"manual_mapped",question_id:null,authoring_question_key:selected,answer_text:"",source:{kind:"teacher_manual",material_id:null,source_sha256:null,segments:[]},
               rubric_edits:criteria,rubric_merge_history:snapshot.rubric_histories?.[selected]||[]}]}
-            onSelect={setDiagramSelection} onChange={entries=>change({...snapshot,rubrics:{...snapshot.rubrics,[selected]:entries[0].rubric_edits||[]},
+            onSelect={setDiagramSelection} onChange={entries=>change({...snapshot,rubrics:{...snapshot.rubrics,[selected]:entries.flatMap(entry=>entry.rubric_edits||[])},
               ...(snapshot.rubric_histories?{rubric_histories:{...snapshot.rubric_histories,[selected]:entries[0].rubric_merge_history||[]}}:{})})}/>
 
         </section>}
       </>}
 
     </ReviewWorkspaceLayout>
+    {registrationPrompt&&<AuthoringDialog title="保存して解析へ進みますか？" onCancel={()=>{if(!saving)setRegistrationPrompt(null);}} busy={saving} actions={<><button type="button" disabled={saving} onClick={()=>setRegistrationPrompt(null)}>いいえ</button><button type="button" disabled={saving} onClick={()=>void saveThenAnalyzeRegistered()}>{saving?"保存中…":"はい"}</button></>}>
+      <p>ファイルを読み込みました。</p><p>解析には保存が必要です。保存と解析確認へ進みますか？</p>{registrationError&&<p role="alert" className="error">{registrationError}</p>}
+    </AuthoringDialog>}
+    {deleteMaterial&&<AuthoringDialog title="この資料を削除しますか？" onCancel={()=>{if(!busy)setDeleteMaterial(null);}} busy={busy} actions={<><button type="button" disabled={busy} onClick={()=>setDeleteMaterial(null)}>キャンセル</button><button type="button" disabled={busy} onClick={()=>void removeMaterial(deleteMaterial)}>資料を削除</button></>}>
+      <p>削除するのはこの資料の種類の登録です。同じ元ファイルを使う別の資料や、保存済みの解答・採点基準本文は削除されません。</p><p>元資料との関連が解除される場合があります。</p>
+    </AuthoringDialog>}
     {analysisRequest&&analysisMaterial&&<AuthoringDialog title={`${roles[analysisMaterial.material_type]||"資料"}を${analyzed?"再解析":"解析"}しますか？`} onCancel={closeAnalysis} actions={<><button type="button" onClick={closeAnalysis}>キャンセル</button><button type="button" disabled={busy} onClick={()=>{const request=analysisRequest;closeAnalysis();if(request)void analyzeSource(request.domain,request.materialId);}}>{analyzed?"再解析":"解析"}</button></>}>
       <div id="authoring-analysis-description">
         {analysisMaterial.material_type==="question_sheet"?<><p>問題用紙を{analyzed?"再解析":"解析"}すると、問題文・小問構成など問題用紙から作成した内容が、新しい解析結果をもとに更新される可能性があります。</p><p>模範解答・採点基準の編集内容は保持されます。</p></>:

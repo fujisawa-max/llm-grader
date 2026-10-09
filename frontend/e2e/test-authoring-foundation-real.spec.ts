@@ -53,9 +53,11 @@ test("whole-test drafts preserve local caret, materials, section state and forma
   const bytes=await source.body();
   await page.getByLabel("利用資料",{exact:true}).selectOption("action:add");
   await page.getByLabel("資料を追加",{exact:true}).setInputFiles({name:"question.pdf",mimeType:"application/pdf",buffer:bytes});
+  await page.getByRole("button",{name:"いいえ",exact:true}).click();
   await expect(page.getByLabel("利用資料",{exact:true})).toContainText("問題用紙 — question.pdf");
   await page.getByLabel("利用資料",{exact:true}).selectOption("action:add");await page.getByLabel("資料の種類",{exact:true}).selectOption("model_answer_source");
   await page.getByLabel("資料を追加",{exact:true}).setInputFiles({name:"answer.pdf",mimeType:"application/pdf",buffer:bytes});
+  await page.getByRole("button",{name:"いいえ",exact:true}).click();
   await expect(page.getByLabel("利用資料",{exact:true})).toContainText("模範解答 — answer.pdf");
   const files=await (await page.request.get(base+"/materials")).json();
   const selected=await page.getByLabel("対象設問",{exact:true}).inputValue();
