@@ -2,6 +2,7 @@
 import {Fragment, useCallback, useEffect, useRef, useState} from "react";
 import {useParams} from "next/navigation";
 import Link from "next/link";
+import {AuthoringIssueCards, QuestionIssueOverlay} from "@/components/reviews/AuthoringIssues";
 import {AuthoringDialog} from "@/components/reviews/AuthoringDialog";
 import {ReviewWorkspaceLayout} from "@/components/reviews/ReviewWorkspaceLayout";
 import {AuthoringPreviewEditor, AcceptedDiagramPreview} from "@/components/reviews/AuthoringPreviewEditor";
@@ -70,6 +71,10 @@ export default function TestAuthoringPage() {
   const [visible,setVisible]=useState({question:true,answer:true,rubric:true});
   const [issues,setIssues]=useState<AuthoringIssue[]>([]);
   const [reviewData,setReviewData]=useState<AuthoringReview|null>(null);
+  const [finalReviewMode,setFinalReviewMode]=useState(false);
+  const editingTarget=useRef("");
+  const clearHighlight=useRef<(()=>void)|null>(null);
+  useEffect(()=>()=>{clearHighlight.current?.();},[]);
   const [confirmOpen,setConfirmOpen]=useState(false);
   const [issuesOpen,setIssuesOpen]=useState(false);
   const [analysisRequest,setAnalysisRequest]=useState<{domain:"question"|"answer";materialId:string}|null>(null);
@@ -98,7 +103,7 @@ export default function TestAuthoringPage() {
       setBuffers(authoringBuffers(value));
       setSelected(value.nodes[0]?.stable_key||"all");
       setMaterials(files.filter(m=>m.material_type!=="student_answer_source"));
-      void testAuthoring.review(id).then(result=>{if(active)setIssues(result.issues);}).catch(()=>{/* Review issues can be refreshed from the Test-wide review action. */});
+      void testAuthoring.review(id).then(result=>{if(active){setIssues(result.issues);setReviewData(result);}}).catch(()=>{/* Review issues can be refreshed from the Test-wide review action. */});
       const superseded=new Set(value.materials.map(m=>m.replaces_material_id));
       const activeFiles=files.filter(m=>m.material_type!=="student_answer_source"&&!superseded.has(m.id));
       setMaterialId(activeFiles.find(m=>m.material_type==="question_sheet")?.id||activeFiles[0]?.id||"");
@@ -122,13 +127,13 @@ export default function TestAuthoringPage() {
     const epoch=++issueEpoch.current;
     const timer=window.setTimeout(()=>{
       const request=dirty?testAuthoring.reviewLocal(id,prepareAuthoringSave(snapshot,buffers),currentEditVersion):testAuthoring.review(id);
-      void request.then(result=>{if(issueEpoch.current===epoch)setIssues(result.issues);}).catch(()=>{/* Keep the last known actionable issue list on transient review failures. */});
+      void request.then(result=>{if(issueEpoch.current===epoch){setIssues(result.issues);setReviewData({...result,can_confirm:!dirty&&result.can_confirm});}}).catch(()=>{/* Keep the last known actionable issue list on transient review failures. */});
     },350);
     return()=>window.clearTimeout(timer);
   },[snapshot,buffers,currentEditVersion,dirty,id]);
-  function markDirty(){editEpoch.current++;setDirty(true);setSaveStatus("idle");}
+  function markDirty(){setReviewData(null);editEpoch.current++;setDirty(true);setSaveStatus("idle");}
   function synchronize(row:AuthoringRevision){
-    setRevision(row);setSnapshot(row.snapshot);setBuffers(authoringBuffers(row.snapshot));
+    setReviewData(null);setRevision(row);setSnapshot(row.snapshot);setBuffers(authoringBuffers(row.snapshot));
     setDirty(false);setDirtyDomains({});
   }
   function change(value:AuthoringSnapshot,domain?:string){setSnapshot(value);markDirty();setDirtyDomains(d=>({...d,...(domain?{[domain]:true}:{question:value.nodes!==snapshot?.nodes||value.domains?.question!==snapshot?.domains?.question||d.question,answer:value.answers!==snapshot?.answers||d.answer,rubric:value.rubrics!==snapshot?.rubrics||d.rubric})}));}
@@ -146,16 +151,39 @@ export default function TestAuthoringPage() {
     const order=Math.max(-1,...nodes.filter(n=>n.parent_key===parent&&n.stable_key!==value.stable_key).map(n=>n.sort_order))+1;
     updateNode({...value,parent_key:parent,sort_order:order,node_type:parent?"subquestion":"major_question"});
   }
+  function highlight(target:HTMLElement){
+    clearHighlight.current?.();target.classList.add("authoring-correction-target");
+    const clear=()=>{target.classList.remove("authoring-correction-target");window.clearTimeout(timer);target.removeEventListener("input",clear);target.removeEventListener("change",clear);};
+    const timer=window.setTimeout(clear,8000);target.addEventListener("input",clear);target.addEventListener("change",clear);clearHighlight.current=clear;
+  }
   function navigate(issue:AuthoringIssue){
-    if(!issue.question_key&&issue.section!=="answer")return;
-    setSelected(issue.question_key||"unassigned");setDiagramSelection(undefined);setRegionId("");setVisible(v=>({...v,[issue.section]:true}));setEditing(v=>({...v,[issue.section]:issue.field!=="score"}));if(issue.section==="question")setQuestionSettings(issue.field==="score");
+    if(issue.section==="save"){void save();return;}
+    setFinalReviewMode(false);setIssuesOpen(false);setDiagramSelection(undefined);setRegionId("");
+    const section=issue.section==="source"?"source":issue.section;
+    if(section==="source"){setSourceMode("manage");}
+    else if(section==="metadata"||section==="publication"){setSelected("all");}
+    else {
+      setSelected(issue.question_key||"unassigned");
+      setVisible(v=>({...v,[section]:true}));setEditing(v=>({...v,[section]:issue.field!=="score"}));
+      if(section==="question")setQuestionSettings(issue.field==="score");
+    }
     requestAnimationFrame(()=>requestAnimationFrame(()=>{
-      const marker=document.getElementById(`authoring-${issue.section}`);
-      const container=marker?.tagName==="SPAN"?marker.parentElement:marker;
-      const target=issue.section==="rubric"?container?.querySelector<HTMLElement>('[aria-label="採点基準候補"]')||container:container;
-      target?.scrollIntoView({block:"center"});
-      const control=issue.field==="score"?target?.querySelector<HTMLElement>('input[type="number"]'):Array.from(target?.querySelectorAll<HTMLElement>('textarea,input,select,button')||[]).find(el=>el.getClientRects().length>0);
-      (control||marker)?.focus({preventScroll:true});
+      let target:HTMLElement|null=document.getElementById(`authoring-${section}`);
+      if(section==="source")target=document.querySelector<HTMLElement>('.authoring-material-management');
+      if(section==="metadata")target=document.querySelector<HTMLElement>('[aria-label="テスト全体確認"] input[type="number"]');
+      if(issue.field==="recovery"){
+        target=document.querySelector<HTMLElement>('.authoring-recovery-panel');if(target instanceof HTMLDetailsElement)target.open=true;
+      }else if(issue.criterion_id)target=document.getElementById(`authoring-rubric-${issue.criterion_id}`)||target;
+      else if(issue.entry_id){target=document.getElementById(`authoring-candidate-${issue.entry_id}`)||target;}
+      if(issue.field==="classification"){
+        const details=target?.querySelector<HTMLDetailsElement>('[data-authoring-classification]');if(details){details.open=true;target=details;}
+      }
+      if(issue.field==="score"||issue.field==="points")target=target?.querySelector<HTMLElement>('input[type="number"]')||target;
+      if(issue.field==="mapping")target=target?.querySelector<HTMLElement>('[aria-label="対応する設問"]')||target;
+      if(!target)return;
+      target.scrollIntoView({block:"center"});
+      const control=target.matches('textarea,input,select,button')?target:Array.from(target.querySelectorAll<HTMLElement>('textarea,input,select,button')).find(el=>el.getClientRects().length>0);
+      (control||target).focus({preventScroll:true});highlight(target);
     }));
   }
   async function suggestQuestionSplit(){
@@ -262,12 +290,13 @@ export default function TestAuthoringPage() {
     }catch(e){setSaveStatus("error");const message=`保存できませんでした。編集内容は画面に保持されています。${e instanceof Error?` (${e.message})`:""}`;setError(message);notify("error","保存に失敗しました",message);return false;}
     finally{saveInFlight.current=false;setBusy(false);setSaving(false);}
   }
-  async function finalReview(){
+  async function finalReview(confirmationMode=true){
     setBusy(true);try{
       const result=dirty&&snapshot&&revision?await testAuthoring.reviewLocal(id,prepareAuthoringSave(snapshot,buffers),revision.edit_version):await testAuthoring.review(id);
-      const finalResult=dirty?{...result,can_confirm:false,issues:[...result.issues,{question_key:null,section:"save",message:"未保存の変更があります。保存してから最終確認してください。"}]}:result;
+      const finalResult={...result,can_confirm:!dirty&&result.can_confirm};
       setReviewData(finalResult);setIssues(finalResult.issues);
-      setSelected("all");
+      if(selected!=="all")editingTarget.current=selected;
+      setFinalReviewMode(confirmationMode);setSelected("all");
     }
     catch(e){setError(e instanceof Error?e.message:"確認できませんでした。");}finally{setBusy(false);}}
   async function confirmAuthoring(){
@@ -276,7 +305,7 @@ export default function TestAuthoringPage() {
     try{
       await testAuthoring.confirm(id,revision.id,revision.edit_version,revision.snapshot_sha256);
       const data=await testAuthoring.get(id);
-      if(data.revision){synchronize(data.revision);setReviewData(null);setConfirmOpen(false);setIssues([]);notify("success","テスト内容を確定しました",`確定版 ${data.revision.revision} を採点基盤として登録しました。`);}
+      if(data.revision){synchronize(data.revision);setReviewData(null);setConfirmOpen(false);setIssues([]);notify("success","テスト内容を確定しました","確認した内容を採点基盤として登録しました。");}
     }catch(e){const message=e instanceof Error?e.message:"テスト内容を確定できませんでした。";setError(message);notify("error","確定できませんでした",message);}
     finally{setBusy(false);}
   }
@@ -422,7 +451,7 @@ export default function TestAuthoringPage() {
       {readonly?<button className="button" disabled={busy} onClick={begin}>修正版を作成</button>:<button className={`button authoring-save-button${dirty?" is-dirty":" is-saved"}`} aria-describedby="authoring-save-state" disabled={busy} onClick={()=>void save()}>{saving?"保存中…":"保存"}</button>}
       {!readonly&&<span id="authoring-save-state" className="visually-hidden" role="status">{dirty?"保存状態: 未保存の変更があります":"保存状態: 保存済み"}</span>}
       {!readonly&&<button disabled={busy} onClick={importSources}>保存済みレビューを取り込む</button>}
-      <button className="button secondary" disabled={busy} onClick={finalReview}>最終確認へ</button><Link className="button secondary" href={`/tests/${id}`} onClick={event=>{if(saving||dirty&&!window.confirm("未保存の変更があります。保存せずにテスト詳細へ戻りますか？"))event.preventDefault();}}>戻る</Link>
+      <button className="button secondary" disabled={busy} onClick={()=>void finalReview()}>最終確認へ</button><Link className="button secondary" href={`/tests/${id}`} onClick={event=>{if(saving||dirty&&!window.confirm("未保存の変更があります。保存せずにテスト詳細へ戻りますか？"))event.preventDefault();}}>戻る</Link>
       {dirty&&<><span role="status">未保存の変更があります</span><span className="muted">{Object.entries(dirtyDomains).filter(([,v])=>v).map(([k])=>({question:"問題",answer:"解答",rubric:"採点基準",diagram:"図"}[k])).filter(Boolean).join("・")}</span></>}
       <div className="authoring-utility-controls">{notificationView}
         <div className="authoring-issues-control"><button type="button" aria-label={`要修正事項、未解決${issues.length}件`} aria-expanded={issuesOpen} onClick={()=>setIssuesOpen(value=>!value)}>⚠ 要修正{issues.length>0&&<span className="authoring-count-badge">{issues.length}</span>}</button>
@@ -455,8 +484,8 @@ export default function TestAuthoringPage() {
       </>}</section>)}
       {sourceMode==="pdf"&&materialId&&<SourcePdfPreview key={materialId} testId={id} material={materials.find(m=>m.id===materialId)} label="利用資料PDF" inline paneZoom diagramSelection={diagramSelection?.record.material_id===materialId?diagramSelection:undefined} targetLocation={diagramSelection?.record.material_id===materialId?{id:diagramSelection.record.id,page:diagramSelection.record.page_index+1,bbox:diagramSelection.record.final_bbox||diagramSelection.record.automatic_bbox}:mappedLocation}/>}
     </>} selector={<><div className="review-toolbar authoring-target-controls">
-      <label>対象設問<select aria-label="対象設問" value={selected} onChange={e=>{if(e.target.value==="all")void finalReview();else {setSelected(e.target.value);setDiagramSelection(undefined);setRegionId("");}}}>
-        {orderedNodes().map(n=><option key={n.stable_key} value={n.stable_key}>{pathFor(n.stable_key)}</option>)}{snapshot.domains?.answer?.entries.some(e=>!e.authoring_question_key)&&<option value="unassigned">設問未割当の候補</option>}<option value="all">テスト全体確認</option>
+      <label>対象設問<select aria-label="対象設問" value={selected} onChange={e=>{if(e.target.value==="all")void finalReview(false);else {setFinalReviewMode(false);setSelected(e.target.value);setDiagramSelection(undefined);setRegionId("");}}}>
+        {orderedNodes().map(n=><option key={n.stable_key} value={n.stable_key}>{pathFor(n.stable_key)}</option>)}{(snapshot.domains?.answer?.entries.some(e=>!e.authoring_question_key)||snapshot.domains?.rubric?.entries.some(e=>!e.authoring_question_key))&&<option value="unassigned">設問未割当の候補</option>}<option value="all">テスト全体確認</option>
       </select></label><span>表示</span>{([['question','問題'],['answer','解答'],['rubric','採点基準']] as const).map(([key,label])=><label key={key}><input type="checkbox" checked={visible[key]} onChange={e=>{const next={...visible,[key]:e.target.checked};setVisible(next);localStorage.setItem("test-authoring-visible",JSON.stringify(next));}}/>{label}</label>)}
       <span className="authoring-add-question"><button disabled={readonly||saving||analyzing} onClick={()=>{const n=newNode(nodes.length);change({...snapshot,nodes:[...nodes,n]});setBuffers(current=>({...current,[n.stable_key]:""}));setSelected(n.stable_key);}}>設問を追加</button></span>
     </div>{analyzing&&<p className="authoring-analysis-progress" role="status" aria-live="polite"><span className="spinner" aria-hidden="true"/><strong>{analysisProgress}を解析しています…</strong><span className="muted">元資料を確認し、候補を更新しています。</span></p>}
@@ -467,11 +496,11 @@ export default function TestAuthoringPage() {
           <button type="button" disabled={readonly||saving||analyzing} onClick={()=>updateRecovery(candidate.id,{dismissed:true})}>無視</button>
         </article>)}
       </details>}
-    </>}>
-      {selected==="all"?<section aria-label="テスト全体確認"><h2>テスト全体確認</h2>
+    </>} overlay={node&&<QuestionIssueOverlay questionKey={selected} label={pathFor(selected)} issues={issues.filter(issue=>issue.question_key===selected)} pathFor={pathFor} onAction={navigate}/>}>
+      {selected==="all"?<section aria-label="テスト全体確認"><h2>{finalReviewMode?"最終確認":"テスト全体確認"}</h2>{finalReviewMode&&<p>テストを確定する前に、内容と要修正事項を確認してください。</p>}
         <label>テスト名<input disabled={readonly||saving||analyzing} value={snapshot.metadata.name} onChange={e=>change({...snapshot,metadata:{...snapshot.metadata,name:e.target.value}})}/></label>
         <label>合計点<input type="number" disabled={readonly||saving||analyzing} value={snapshot.metadata.total_points} onChange={e=>change({...snapshot,metadata:{...snapshot.metadata,total_points:Number(e.target.value)}})}/></label>
-        <table aria-label="テスト全体の設問と採点準備"><thead><tr><th>設問</th><th>配点</th><th>模範解答</th><th>採点基準</th><th>図</th><th>出典</th></tr></thead><tbody>{orderedNodes().filter(n=>n.included).map(n=>{
+        <table className="authoring-final-table" aria-label="テスト全体の設問と採点準備"><thead><tr><th>設問</th><th>配点</th><th>模範解答</th><th>採点基準</th><th>図</th><th>出典</th></tr></thead><tbody>{orderedNodes().filter(n=>n.included).map(n=>{
           const gradable=!nodes.some(child=>child.included&&child.parent_key===n.stable_key);
           const points=effectiveQuestionScore(n.stable_key,nodes).points;
           const answerValue=snapshot.answers[n.stable_key];
@@ -480,12 +509,18 @@ export default function TestAuthoringPage() {
           const rubricCriteria=snapshot.rubrics[n.stable_key]||[];
           const rubricReady=rubricCriteria.length>0&&points!==null&&rubricCriteria.reduce((sum,c)=>sum+c.points,0)===points;
           const hasSourceProblem=sourceWarnings.some(w=>w.question_key===n.stable_key)||sourceProblems.length>0&&sourceWarnings.length===0;
-          return <tr key={n.stable_key}><th scope="row">{pathFor(n.stable_key)}</th><td>{gradable?`${points??"未設定"}点`:"小問合計"}</td><td>{gradable?(answerReady?"準備完了":"未登録"):"—"}</td><td>{gradable?(rubricReady?`${rubricCriteria.length}基準・${rubricCriteria.reduce((sum,c)=>sum+c.points,0)}点`:"確認が必要"):"—"}</td><td>{accepted?"確認済み図あり":"なし"}</td><td>{hasSourceProblem?"確認が必要":"確認済み"}</td></tr>;
+          let depth=0,current=n;const seen=new Set<string>();while(current.parent_key&&!seen.has(current.stable_key)){seen.add(current.stable_key);const parent=nodes.find(item=>item.stable_key===current.parent_key);if(!parent)break;depth++;current=parent;}
+          return <tr key={n.stable_key}><th scope="row"><span className="authoring-hierarchy-label" style={{paddingLeft:depth*20}}>{n.label.raw}</span></th><td>{gradable?`${points??"未設定"}点`:"小問合計"}</td><td>{gradable?(answerReady?"準備完了":"未登録"):"—"}</td><td>{gradable?(rubricReady?`${rubricCriteria.length}基準・${rubricCriteria.reduce((sum,c)=>sum+c.points,0)}点`:"確認が必要"):"—"}</td><td>{accepted?"確認済み図あり":"なし"}</td><td>{hasSourceProblem?"確認が必要":"確認済み"}</td></tr>;
         })}</tbody></table>
-        <ul>{issues.map((issue,index)=><li key={index}>{issue.question_key||issue.section==="answer"?<button onClick={()=>navigate(issue)}>{issue.question_key?pathFor(issue.question_key):"設問未割当"} — {issue.message}</button>:issue.message}</li>)}</ul>
+        <h3>要修正事項 {issues.length}件</h3><AuthoringIssueCards issues={issues} pathFor={pathFor} onAction={navigate}/>
         {questionDomain&&questionDomain.document.warnings.length>0&&<WarningPanel targetLabel={w=>{const owner=warningQuestion(w);return owner?pathFor(owner.stable_key):"試験全体";}} warnings={questionDomain.document.warnings} states={questionDomain.snapshot.warning_states||{}} readonly={readonly||saving||analyzing}
             onChange={(key,resolution)=>change({...snapshot,domains:{...snapshot.domains,question:{...questionDomain,snapshot:{...questionDomain.snapshot,warning_states:{...questionDomain.snapshot.warning_states,[key]:resolution}}}}})}/>}
-        {revision?.state==="confirmed"?<p role="status">確定済み — revision {revision.revision} / edit {revision.edit_version}</p>:<><p>{dirty?"未保存の変更があります。確定するには先に保存してください。":`保存版 revision ${revision?.revision??"－"} / edit ${revision?.edit_version??"－"}`}</p><p>設問 {reviewData?.question_count??nodes.filter(n=>n.included).length}件・採点対象 {reviewData?.gradable_question_count??"－"}件・合計 {reviewData?.total_points??"－"}点</p><ul>{issues.map((issue,index)=><li key={index}>{issue.question_key?pathFor(issue.question_key):issue.section} — {issue.message}</li>)}</ul><button disabled={readonly||busy||dirty||!reviewData?.can_confirm} onClick={()=>setConfirmOpen(true)}>この内容でテストを確定</button></>}
+        {revision?.state==="confirmed"?<p role="status">テスト内容は確定済みです。</p>:<>
+          {dirty&&<div className="authoring-final-unsaved" role="alert"><p>未保存の変更があります。<br/>テストを確定するには先に保存してください。</p><button disabled={busy} onClick={()=>void save()}>保存する</button><button onClick={()=>{setFinalReviewMode(false);setSelected(editingTarget.current||nodes[0]?.stable_key||"all");}}>編集に戻る</button></div>}
+          <p>合計 {reviewData?.total_points??snapshot.metadata.total_points}点</p>
+          <button disabled={readonly||busy||dirty||!reviewData?.can_confirm} onClick={()=>setConfirmOpen(true)}>この内容でテストを確定</button>
+        </>}
+
       </section>:(node||selected==="unassigned")&&<>
         {visible.question&&node&&<section id="authoring-question" tabIndex={-1} aria-label="問題"><h2>問題</h2>
 
@@ -576,7 +611,7 @@ export default function TestAuthoringPage() {
       <p>ファイルを読み込みました。</p><p>解析には保存が必要です。保存と解析確認へ進みますか？</p>{registrationError&&<p role="alert" className="error">{registrationError}</p>}
     </AuthoringDialog>}
     {confirmOpen&&revision&&reviewData&&<AuthoringDialog title="この内容でテストを確定しますか？" onCancel={()=>{if(!busy)setConfirmOpen(false);}} busy={busy} actions={<><button type="button" disabled={busy} onClick={()=>setConfirmOpen(false)}>戻る</button><button type="button" disabled={busy||dirty||!reviewData.can_confirm} onClick={()=>void confirmAuthoring()}>{busy?"確定中…":"この内容でテストを確定"}</button></>}>
-      <p>{snapshot.metadata.name}</p><p>保存版 revision {revision.revision} / edit {revision.edit_version}</p><p>設問 {reviewData.question_count}件・合計 {reviewData.total_points}点</p><p>要修正事項 {reviewData.issues.length}件</p>{reviewData.issues.length>0&&<ul>{reviewData.issues.map((issue,index)=><li key={index}>{issue.message}</li>)}</ul>}
+      <p>{snapshot.metadata.name}</p><p>設問 {reviewData.question_count}件・合計 {reviewData.total_points}点</p><p>要修正事項 {reviewData.issues.length}件</p>{reviewData.issues.length>0&&<ul>{reviewData.issues.map((issue,index)=><li key={index}>{issue.message}</li>)}</ul>}
     </AuthoringDialog>}
     {deleteMaterial&&<AuthoringDialog title="この資料を削除しますか？" onCancel={()=>{if(!busy)setDeleteMaterial(null);}} busy={busy} actions={<><button type="button" disabled={busy} onClick={()=>setDeleteMaterial(null)}>キャンセル</button><button type="button" disabled={busy} onClick={()=>void removeMaterial(deleteMaterial)}>資料を削除</button></>}>
       <p>削除するのはこの資料の種類の登録です。同じ元ファイルを使う別の資料や、保存済みの解答・採点基準本文は削除されません。</p><p>元資料との関連が解除される場合があります。</p>

@@ -1,0 +1,37 @@
+import {test,expect} from "@playwright/test";
+test.setTimeout(90000);
+test.skip(!process.env.RUNTIME_MANAGER_E2E,"requires real disposable API/Chromium harness");
+test("Final Review issues show current values, overlay without reflow, and resolve through the exact editor",async({page})=>{
+  await page.goto('/login');await page.getByLabel('メールアドレス').fill(process.env.MODEL_ANSWER_CLASSIFICATION_EMAIL!);await page.getByLabel('パスワード').fill(process.env.MODEL_ANSWER_CLASSIFICATION_PASSWORD!);await page.getByRole('button',{name:'ログイン',exact:true}).click();await expect(page).not.toHaveURL(/login/);
+  const seed=await(await page.request.get(`/api/v1/tests/${process.env.MODEL_ANSWER_CLASSIFICATION_TEST_ID}`)).json();
+  const exam=await(await page.request.post(`/api/v1/offerings/${seed.course_offering_id}/tests`,{data:{name:'Final Review issue overlay',total_points:20}})).json();const base=`/api/v1/tests/${exam.id}/authoring`;
+  await page.goto(`/tests/${exam.id}/authoring`);
+  for(let i=0;i<3;i++)await page.getByRole('button',{name:'設問を追加',exact:true}).click();
+  const savedResponse=page.waitForResponse(r=>r.request().method()==='PUT'&&r.url().endsWith(base));await page.getByRole('button',{name:'保存',exact:true}).click();expect((await savedResponse).status()).toBe(200);
+  let row=(await(await page.request.get(base)).json()).revision;const [parent,child,other]=row.snapshot.nodes;
+  parent.body_text='親の問題文';parent.ordered_content=[{type:'text',order:0,text:parent.body_text}];parent.score_semantics='sum_children';parent.score_points=null;
+  child.parent_key=parent.stable_key;child.label={raw:'(1)',normalized:'(1)'};child.depth=1;child.node_type='subquestion';child.body_text='小問本文';child.ordered_content=[{type:'text',order:0,text:child.body_text}];child.score_points=10;
+  other.body_text='別の大問';other.ordered_content=[{type:'text',order:0,text:other.body_text}];other.score_points=10;
+  for(const n of [child,other]){row.snapshot.answers[n.stable_key]={primary:'教師の正答',alternatives:[],diagram_records:[]};row.snapshot.rubrics[n.stable_key]=[{id:`criterion-${n.stable_key}`,description:'正答の条件',points:n===child?8:10,segment_ids:[],grouping_confirmed:true,provenance:{source:'teacher_manual'}}];}
+  expect((await page.request.put(base,{data:{snapshot:row.snapshot,expected_edit_version:row.edit_version}})).status()).toBe(200);
+  await page.reload();const selector=page.getByLabel('対象設問',{exact:true});await selector.selectOption(child.stable_key);
+  const tab=page.getByRole('button',{name:'要修正 1件',exact:true});await expect(tab).toBeVisible();
+  const measure=()=>page.locator('.review-workspace-body').evaluate(el=>({width:el.getBoundingClientRect().width,height:el.getBoundingClientRect().height,scroll:window.scrollY,documentHeight:document.documentElement.scrollHeight}));
+  await tab.scrollIntoViewIfNeeded();const before=await measure();await tab.click();
+  const overlay=page.getByRole('region',{name:/の要修正$/});await expect(overlay).toBeVisible();expect(await measure()).toEqual(before);
+  const panelBox=(await overlay.boundingBox())!,tabBox=(await tab.boundingBox())!;expect(panelBox.x+panelBox.width).toBeLessThanOrEqual(tabBox.x);
+  await expect(overlay).toContainText('設問の配点: 10点 / 採点基準の合計: 8点');await expect(overlay).toContainText('採点基準の合計を10点にしてください。');
+  await page.keyboard.press('Escape');await expect(overlay).toHaveCount(0);await expect(tab).toBeFocused();expect(await measure()).toEqual(before);
+  await page.getByRole('button',{name:'最終確認へ',exact:true}).click();await expect(page.getByRole('heading',{name:'最終確認',exact:true})).toBeVisible();await expect(page.getByRole('button',{name:'この内容でテストを確定',exact:true})).toBeDisabled();
+  const table=page.getByRole('table',{name:'テスト全体の設問と採点準備'}),labels=table.locator('.authoring-hierarchy-label');const x=await labels.evaluateAll(elements=>elements.map(el=>({x:el.getBoundingClientRect().x+parseFloat(getComputedStyle(el).paddingLeft),align:getComputedStyle(el).textAlign})));
+  expect(x[1].x).toBeGreaterThan(x[0].x);expect(x[2].x).toEqual(x[0].x);expect(x.every(v=>v.align==='left')).toBe(true);
+  await page.getByRole('button',{name:'採点基準を修正',exact:true}).click();await expect(selector).toHaveValue(child.stable_key);
+  const points=page.getByLabel('基準1の配点',{exact:true});await expect(points).toBeVisible();await expect(points).toHaveClass(/authoring-correction-target/);await points.fill('10');
+  await expect(page.getByRole('button',{name:/^要修正 \d+件$/})).toHaveCount(0);
+  await page.getByRole('button',{name:'最終確認へ',exact:true}).click();await expect(page.getByRole('alert').filter({hasText:'テストを確定するには先に保存してください。'})).toBeVisible();await expect(page.getByRole('button',{name:'この内容でテストを確定',exact:true})).toBeDisabled();
+  const saved=page.waitForResponse(r=>r.request().method()==='PUT'&&r.url().endsWith(base));await page.getByRole('button',{name:'保存する',exact:true}).click();expect((await saved).status()).toBe(200);
+  await expect(page.locator('.authoring-final-unsaved')).toHaveCount(0);await expect(page.getByRole('heading',{name:'要修正事項 0件',exact:true})).toBeVisible();await expect(page.getByRole('button',{name:'この内容でテストを確定',exact:true})).toBeEnabled();
+  row=(await(await page.request.get(base)).json()).revision;const changed=structuredClone(row.snapshot);changed.metadata.description='Another tab save';expect((await page.request.put(base,{data:{snapshot:changed,expected_edit_version:row.edit_version}})).status()).toBe(200);
+  const stale=await page.request.post(`/api/v1/tests/${exam.id}/authoring/confirm`,{data:{revision_id:row.id,expected_edit_version:row.edit_version,expected_snapshot_sha256:row.snapshot_sha256}});expect(stale.status()).toBe(409);
+  expect((await(await page.request.get(`/api/v1/tests/${exam.id}/authoring/confirmed`)).json()).active).toBeNull();
+});

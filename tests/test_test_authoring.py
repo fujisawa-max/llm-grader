@@ -526,3 +526,29 @@ def test_backup_only_resume_fails_clearly_instead_of_using_formal_projection(wor
     restored = begin(w)
     assert restored['snapshot']['metadata']['name'] == 'Preserved backup'
     assert restored['revision'] == row['revision']+1
+
+
+def test_actionable_review_values_and_specific_targets_preserve_blockers(workspace):
+    from scoring.test_authoring import preflight
+    row = begin(workspace)
+    value = deepcopy(row['snapshot'])
+    value['rubrics'][workspace.question][0].update(points=8, grouping_confirmed=False)
+    value['domains']['answer'] = {'entries': [{'id': 'classification-entry',
+        'authoring_question_key': workspace.question, 'disposition': 'include',
+        'answer_text': 'Answer', 'semantic_classification': {'status': 'needs_teacher_review'}},
+        {'id': 'unassigned-entry', 'disposition': 'unassigned'}]}
+    before = deepcopy(value)
+    result = preflight(value)
+    by_code = {item.get('code'): item for item in result['issues']}
+    assert not result['can_confirm']
+    assert by_code['rubric_points']['current_state'] == '設問の配点: 10.0点 / 採点基準の合計: 8点'
+    assert '10.0点' in by_code['rubric_points']['expected_state']
+    assert by_code['rubric_review']['criterion_id'] == 'c1'
+    assert by_code['answer_classification']['entry_id'] == 'classification-entry'
+    assert by_code['answer_unassigned']['question_key'] is None
+    assert by_code['answer_unassigned']['entry_id'] == 'unassigned-entry'
+    assert value == before
+    value['rubrics'][workspace.question][0].update(points=10, grouping_confirmed=True)
+    after = preflight(value)
+    assert len(after['issues']) == len(result['issues']) - 2
+    assert any(item.get('code') == 'answer_classification' for item in after['issues'])

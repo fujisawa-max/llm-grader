@@ -2,7 +2,7 @@
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0017_confirmed_authoring_revision"
+revision = "0017_confirmed_revision"
 down_revision = "0016_merge_authoring_review"
 branch_labels = None
 depends_on = None

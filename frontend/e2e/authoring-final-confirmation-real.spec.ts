@@ -41,7 +41,7 @@ test("final review confirms one exact saved authoring revision atomically",async
   const dialog=page.getByRole("dialog",{name:"この内容でテストを確定しますか？"});
   const callsBeforeConfirm=await modelCalls(page);
   await confirmButton.click();await dialog.getByRole("button",{name:"この内容でテストを確定",exact:true}).click();
-  await expect(page.getByText(/確定済み — revision/)).toBeVisible();
+  await expect(page.getByText("テスト内容は確定済みです。",{exact:true})).toBeVisible();
   const active=(await (await page.request.get(base+"/authoring/confirmed")).json()).active;
   expect(active.snapshot_sha256).toBe(saved.snapshot_sha256);
   expect(active.snapshot).toEqual(saved.snapshot);
@@ -53,6 +53,6 @@ test("final review confirms one exact saved authoring revision atomically",async
   expect(await (await page.request.get(base+"/model-answers")).json()).toHaveLength(1);
   const rubric=await page.request.get(base+"/rubrics");expect(rubric.status()).toBe(200);
   await page.reload();await page.getByLabel("対象設問",{exact:true}).selectOption("all");
-  await expect(page.getByText(/確定済み — revision/)).toBeVisible();
+  await expect(page.getByText("テスト内容は確定済みです。",{exact:true})).toBeVisible();
   expect((await (await page.request.get(base+"/authoring/confirmed")).json()).active.id).toBe(active.id);
 });

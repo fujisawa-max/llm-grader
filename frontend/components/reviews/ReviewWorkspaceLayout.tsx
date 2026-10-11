@@ -2,9 +2,9 @@
 import {useEffect, useRef, type ReactNode} from "react";
 
 /** Layout only: selection, editing, provenance and persistence stay with each domain. */
-export function ReviewWorkspaceLayout({actions, source, selector, beforeWorkspace, children}: {
+export function ReviewWorkspaceLayout({actions, source, selector, beforeWorkspace, overlay, children}: {
   actions: ReactNode; source: ReactNode; selector: ReactNode;
-  beforeWorkspace?: ReactNode; children: ReactNode;
+  beforeWorkspace?: ReactNode; overlay?: ReactNode; children: ReactNode;
 }) {
   const root = useRef<HTMLDivElement>(null);
   const bar = useRef<HTMLDivElement>(null);
@@ -30,6 +30,7 @@ export function ReviewWorkspaceLayout({actions, source, selector, beforeWorkspac
       <aside className="review-workspace-source">{source}</aside>
       <div className="review-workspace-editor">
         <div className="review-workspace-selector">{selector}</div>
+        {overlay}
         <div className="review-workspace-body">{children}</div>
       </div>
     </div>

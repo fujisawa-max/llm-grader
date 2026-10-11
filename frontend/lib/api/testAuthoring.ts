@@ -25,7 +25,7 @@ export interface RubricRecoveryCandidate {id:string;origin_role:string;source_dr
 export interface AnalysisReadiness {state:"ready"|"unsaved_changes"|"missing_material"|"unsupported"|"stale_source"|"busy"|"readonly";reason:string;analyzed?:boolean}
 export interface SourceWarning {question_key:string|null;code:string;message:string}
 export interface AuthoringRevision {analysis_readiness?:Record<string,AnalysisReadiness>;source_warnings?:SourceWarning[];id: string; test_id: string; revision: number; edit_version: number; state: string; snapshot: AuthoringSnapshot; snapshot_sha256: string; baseline_sha256: string}
-export interface AuthoringIssue {question_key: string | null; section: string; message: string; field?: string}
+export interface AuthoringIssue {question_key: string | null; section: string; message: string; field?: string; code?:string; entry_id?:string; criterion_id?:string; current_state?:string; expected_state?:string; action_label?:string}
 export interface AuthoringReview {issues:AuthoringIssue[];notifications?:AuthoringIssue[];total_points:number;question_count:number;gradable_question_count:number;can_confirm:boolean}
 export interface ConfirmedAuthoringRevision {id:string;revision:number;edit_version:number;snapshot_sha256:string;confirmed_at:string;confirmed_by:string|null;snapshot:AuthoringSnapshot}
 export interface ArchiveImpact {test_id: string; name: string; questions: number; model_answers: number; rubrics: number; submissions: number; grading_jobs: number; results: number; impact_sha256: string}

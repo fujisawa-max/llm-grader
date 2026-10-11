@@ -273,3 +273,13 @@ dialog.authoring-proposal-dialog::backdrop{background:#0006}
 .diagram-crop-editor .diagram-bounds label{display:grid;gap:4px}
 .diagram-crop-editor button{margin:4px 4px 0 0}
 @container(max-width:480px){.diagram-edit-unit.is-editing{grid-template-columns:1fr}}
+
+/* Question issues overlay the editor; their zero-height anchor never changes wrapping. */
+.authoring-question-issues{position:sticky;top:calc(var(--review-pane-top) + 100px);height:0;z-index:70;pointer-events:none}
+.authoring-question-issues-tab{position:absolute;right:0;top:0;pointer-events:auto;border:1px solid #b57418;border-radius:7px 0 0 7px;background:#fff4de;color:#6c460a;padding:10px 7px;line-height:1.45;font-weight:700}
+.authoring-question-issues-panel{position:absolute;right:42px;top:0;pointer-events:auto;width:min(360px,calc(100vw - 76px));max-height:calc(100dvh - var(--review-pane-top) - 125px);overflow:auto;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 26px #172b3b30;padding:12px}
+.authoring-question-issues-panel>header{display:flex;align-items:center;justify-content:space-between;gap:10px;position:sticky;top:-12px;background:#fff;padding:8px 0;z-index:1}
+.authoring-issue-cards{display:grid;gap:10px}.authoring-issue-cards>article{border:1px solid var(--line);border-radius:6px;padding:12px;text-align:left}.authoring-issue-cards h3{font-size:15px;margin:0 0 8px}.authoring-issue-cards p{margin:6px 0}.authoring-issue-current{font-weight:600}
+.authoring-final-unsaved{border:1px solid #b57418;background:#fff4de;border-radius:6px;padding:12px}.authoring-final-unsaved p{margin:0 0 8px}.authoring-final-unsaved button{margin-right:8px}
+.authoring-final-table th,.authoring-final-table td{text-align:left}.authoring-final-table .authoring-hierarchy-label{display:block;white-space:nowrap;text-align:left}
+.authoring-correction-target{outline:3px solid #c48a25;outline-offset:3px;box-shadow:0 0 0 6px #fff2c9;border-radius:4px}

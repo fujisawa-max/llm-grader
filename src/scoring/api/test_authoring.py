@@ -798,6 +798,8 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
         if formal_questions and (submissions or jobs):
             result['issues'].append({'question_key': None, 'section': 'publication',
                 'message': '過去の採点履歴があるため、正式内容を安全に更新できません。'})
+        from ..authoring_issue_guidance import issue_guidance
+        result['issues'] = [issue_guidance(snapshot, item, result['total_points']) for item in result['issues']]
         result['can_confirm'] = bool(row and row.state in {'draft', 'final_review'}) and not result['issues']
         return result
 

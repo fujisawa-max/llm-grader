@@ -271,8 +271,9 @@ def save_draft(session, test, value, expected, actor=None):
 
 def preflight(snapshot):
     issues = []
-    def issue(key, section, message, field=None):
-        issues.append({'question_key': key, 'section': section, 'message': message, **({'field': field} if field else {})})
+    def issue(key, section, message, field=None, code=None, entry_id=None, criterion_id=None):
+        issues.append({'question_key': key, 'section': section, 'message': message, **({'field': field} if field else {}), **({'code': code} if code else {}),
+            **({'entry_id': entry_id} if entry_id else {}), **({'criterion_id': criterion_id} if criterion_id else {})})
     nodes = [n for n in snapshot['nodes'] if n.get('included', True)]
     if not nodes:
         issue(None, 'question', '設問がありません。')
@@ -285,7 +286,7 @@ def preflight(snapshot):
         if not children:
             points = n.get('score_points')
             if not points or not math.isfinite(points):
-                issue(key, 'question', '配点を確認してください。', 'score')
+                issue(key, 'question', '配点を確認してください。', 'score', 'question_score')
             else:
                 total += points
             a = snapshot['answers'].get(key, {})
@@ -293,13 +294,14 @@ def preflight(snapshot):
                 and (r.get('trust_state', 'trusted') == 'trusted' or r.get('teacher_confirmed'))
                 for r in a.get('diagram_records', []) if isinstance(r, dict))
             if not str(a.get('primary', '')).strip() and not accepted:
-                issue(key, 'answer', '模範解答本文または検証済みの図を確認してください。')
+                issue(key, 'answer', '模範解答本文または検証済みの図を確認してください。', code='answer_missing')
             criteria = snapshot['rubrics'].get(key, [])
             if any((c.get('points_conflict') and not c.get('points_confirmed')) or
                     c.get('grouping_confirmed') is False for c in criteria):
-                issue(key, 'rubric', '採点基準の統合結果と配点を確認してください。')
+                pending = next(c for c in criteria if (c.get('points_conflict') and not c.get('points_confirmed')) or c.get('grouping_confirmed') is False)
+                issue(key, 'rubric', '採点基準の統合結果と配点を確認してください。', code='rubric_review', criterion_id=pending.get('id'))
             if not criteria or sum(c['points'] for c in criteria) != points:
-                issue(key, 'rubric', '採点基準の配点合計を確認してください。')
+                issue(key, 'rubric', '採点基準の配点合計を確認してください。', 'points', 'rubric_points')
         if n.get('review_flags') and not snapshot.get('domains', {}).get('question'):
             issue(key, 'question', '出典の未確認項目があります。')
     question = snapshot.get('domains', {}).get('question')
@@ -324,7 +326,7 @@ def preflight(snapshot):
         issue(None, 'source', '保存済みレビューの元資料を確認できません。出典付きレビューを確認してください。')
     for entry in snapshot.get('domains', {}).get('answer', {}).get('entries', []):
         if entry.get('disposition') not in {'ignored', 'excluded'} and not entry.get('authoring_question_key'):
-            issue(None, 'answer', '設問未割当の模範解答候補があります。対応先を確認してください。')
+            issue(None, 'answer', '設問未割当の模範解答候補があります。対応先を確認してください。', 'mapping', 'answer_unassigned', entry_id=entry['id'])
     entries = snapshot.get('domains', {}).get('answer', {}).get('entries', [])
     for key in {e.get('authoring_question_key') for e in entries} - {None}:
         current = [e for e in entries if e.get('authoring_question_key') == key and
@@ -335,15 +337,17 @@ def preflight(snapshot):
     for entry in entries:
         classification = entry.get('semantic_classification') or {}
         if entry.get('disposition', 'include') == 'include' and classification.get('status') == 'needs_teacher_review':
-            issue(entry.get('authoring_question_key'), 'answer', '解答候補の分類を確認してください。')
+            issue(entry.get('authoring_question_key'), 'answer', '解答候補の分類を確認してください。', 'classification', 'answer_classification', entry_id=entry['id'])
     for entry in snapshot.get('domains', {}).get('rubric', {}).get('entries', []):
         if entry.get('disposition') not in {'ignored', 'excluded'} and not entry.get('authoring_question_key'):
-            issue(None, 'rubric', '設問未割当の採点基準候補があります。対応先を確認してください。')
+            issue(None, 'rubric', '設問未割当の採点基準候補があります。対応先を確認してください。', 'mapping', 'rubric_unassigned', entry_id=entry['id'])
     for candidate in snapshot.get('domains', {}).get('recovery', {}).get('rubric_candidates', []):
         if not candidate.get('dismissed') and candidate.get('origin_role') == 'rubric_source':
-            issue(candidate.get('question_key'), 'rubric', '未割当の採点基準候補を確認してください。')
+            issue(candidate.get('question_key'), 'rubric', '未割当の採点基準候補を確認してください。', 'recovery', 'rubric_recovery', entry_id=candidate['id'])
     if total != snapshot['metadata'].get('total_points'):
-        issue(None, 'metadata', '設問の合計点とテストの合計点が一致していません。')
+        issue(None, 'metadata', '設問の合計点とテストの合計点が一致していません。', 'total', 'test_total')
+    from .authoring_issue_guidance import issue_guidance
+    issues = [issue_guidance(snapshot, item, total) for item in issues]
     return {'issues': issues, 'notifications': [], 'total_points': total,
         'question_count': len(nodes), 'gradable_question_count': sum(1 for n in nodes if not any(
             c.get('included', True) and c.get('parent_key') == n['stable_key'] for c in nodes)),
