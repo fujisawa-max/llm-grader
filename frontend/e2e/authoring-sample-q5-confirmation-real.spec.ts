@@ -73,5 +73,65 @@ test("real Sample Q5 confirmation preserves automatic, manual and reused diagram
  expect(hash(confirmedRaw,"active")).toBe(active.snapshot_sha256);expect(hash(savedRaw,"revision")).toBe(active.snapshot_sha256);
  expect((await(await page.request.get(authoring)).json()).revision.snapshot).toEqual(saved.snapshot);
  expect(await calls(page)).toEqual(beforeConfirm);
+ await expect(page.getByRole("button",{name:"要修正事項、未解決0件",exact:true})).toBeVisible();
+ expect((await(await page.request.get(authoring+"/review")).json()).issues).toEqual([]);
+ const body={revision_id:saved.id,expected_edit_version:saved.edit_version,expected_snapshot_sha256:saved.snapshot_sha256};
+ const duplicate=await page.request.post(authoring+"/confirm",{data:body});expect(duplicate.status()).toBe(200);expect((await duplicate.json()).id).toBe(active.id);
+ await page.reload();await page.getByLabel("対象設問",{exact:true}).selectOption("all");
+ await expect(page.getByRole("button",{name:"要修正事項、未解決0件",exact:true})).toBeVisible();
+ await expect(page.getByText("確認状態を保存しても、元の警告は残ります。",{exact:true})).toHaveCount(0);
+ await expect(page.getByLabel("対象設問",{exact:true}).locator('option').filter({hasText:/ \*/})).toHaveCount(0);
+ await page.getByRole("link",{name:"戻る",exact:true}).click();await page.getByRole("link",{name:"テスト内容を見る",exact:true}).click();
+ await expect(page.getByRole("button",{name:"要修正事項、未解決0件",exact:true})).toBeVisible();
+ expect((await(await page.request.get(authoring+"/review")).json()).issues).toEqual([]);
+
+ // Read-only compatibility for an already-confirmed pre-fix baseline, with
+ // the real source-backed automatic/manual/reused diagram payload intact.
+ execFileSync("python",["-c",`import os,sys
+from sqlalchemy import update
+from scoring.db import create_session_factory
+from scoring.db.models import TestAuthoringRevision
+url=os.environ['LLM_GRADER_DATABASE_URL']
+assert os.environ.get('RUNTIME_MANAGER_E2E')=='1' and url.startswith('sqlite:///') and 'llm-grader-runtime-e2e-' in url
+engine,factory=create_session_factory(url)
+with factory() as session:
+    session.execute(update(TestAuthoringRevision).where(TestAuthoringRevision.id==sys.argv[1],TestAuthoringRevision.test_id==sys.argv[2]).values(baseline_sha256=sys.argv[3]))
+    session.commit()
+engine.dispose()`,saved.id,tid,saved.baseline_sha256]);
+ expect((await(await page.request.get(authoring+"/review")).json()).issues).toEqual([]);
+ expect((await(await page.request.get(authoring)).json()).revision.baseline_sha256).toBe(saved.baseline_sha256);
+
+ // Controlled direct-SQL seam is restricted to this disposable SQLite DB.
+ // Production APIs must continue to reject confirmed formal edits.
+ const driftScript=`import os,sys
+from sqlalchemy import select,update
+from scoring.db import create_session_factory
+from scoring.db.models import TestQuestion
+url=os.environ['LLM_GRADER_DATABASE_URL']
+assert os.environ.get('RUNTIME_MANAGER_E2E')=='1' and url.startswith('sqlite:///') and 'llm-grader-runtime-e2e-' in url
+engine,factory=create_session_factory(url)
+with factory() as session:
+    question=session.scalar(select(TestQuestion).where(TestQuestion.test_id==sys.argv[1],TestQuestion.is_gradable.is_(True)))
+    assert question is not None
+    session.execute(update(TestQuestion).where(TestQuestion.id==question.id).values(question_text=sys.argv[2]))
+    session.commit()
+engine.dispose()`;
+ execFileSync("python",["-c",driftScript,tid,'Controlled external formal drift']);
+ const stale=(await(await page.request.get(authoring+"/review")).json()).issues;
+ expect(stale).toHaveLength(1);expect(stale[0].code).toBe('formal_review_stale');expect(stale[0].action_label).toBe('修正版を作成');expect(stale[0].expected_state).toContain('修正版を作成');
+ await page.reload();await page.getByRole("button",{name:"最終確認へ",exact:true}).click();
+ await expect(page.getByRole("button",{name:"要修正事項、未解決1件",exact:true})).toBeVisible();
+ const issue=page.locator('.authoring-issue-cards article').filter({hasText:'確定後に正式内容・出典との対応に差異'});
+ await expect(issue).toContainText('確定済みの内容は変更できません。');await issue.getByRole('button',{name:'修正版を作成',exact:true}).click();
+ await expect(page.locator('.authoring-save-button')).toBeVisible();
+ expect((await(await page.request.get(authoring+"/confirmed")).json()).active.snapshot).toEqual(saved.snapshot);
+ execFileSync("python",["-c",driftScript,tid,'Controlled draft external drift']);
+ const editableStale=(await(await page.request.get(authoring+"/review")).json()).issues;
+ expect(editableStale).toHaveLength(1);expect(editableStale[0].action_label).toBe('出典を確認');expect(editableStale[0].expected_state).toContain('保存済みレビューを取り込む');
+ await page.reload();await page.getByRole('button',{name:'最終確認へ',exact:true}).click();
+ const editableIssue=page.locator('.authoring-issue-cards article').filter({hasText:'下書きの作成後に正式内容が変更されています'});
+ await expect(editableIssue).toContainText('保存済みレビューを取り込む');await expect(editableIssue.getByRole('button',{name:'出典を確認',exact:true})).toBeVisible();
+ await expect(page.getByRole('button',{name:'この内容でテストを確定',exact:true})).toBeDisabled();
+ expect(await calls(page)).toEqual(beforeConfirm);
  expect((await(await page.request.get(base+"/archive-impact")).json()).grading_jobs).toBe(0);
 });

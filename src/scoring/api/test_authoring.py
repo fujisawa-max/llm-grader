@@ -790,8 +790,23 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
         result = preflight(snapshot)
         for problem in source_problems(row, s):
             result['issues'].append({'question_key': None, 'section': 'source', 'message': '元PDFとの対応が無効になっています。資料と保存済みレビューを確認してください。', 'code': problem['code']})
-        if row and row.baseline_sha256 != baseline_hash(projection(s, test)):
+        formal = projection(s, test)
+        formal_changed = bool(row and row.baseline_sha256 != baseline_hash(formal))
+        if formal_changed and row.state == 'confirmed' and test.active_confirmed_revision_id:
+            from ..authoring_confirmation import confirmed_projection_matches
+            from ..pdf_native import canonical_hash
+            attestation = s.get(ConfirmedAuthoringRevision, test.active_confirmed_revision_id)
+            # Older confirmations kept their pre-publication baseline. Only
+            # a matching active immutable snapshot and its exact deterministic
+            # formal realization can satisfy that legacy freshness check.
+            if (attestation and attestation.authoring_revision_id == row.id
+                    and canonical_hash(attestation.snapshot) == attestation.snapshot_sha256
+                    and attestation.snapshot == row.snapshot
+                    and confirmed_projection_matches(formal, attestation.snapshot)):
+                formal_changed = False
+        if formal_changed:
             result['issues'].append({'question_key': None, 'section': 'source',
+                'code': 'formal_review_stale',
                 'message': '元の正式内容が変更されています。出典付きレビューを確認してください。'})
         formal_questions = s.scalar(select(func.count()).select_from(__import__('scoring.db.models', fromlist=['TestQuestion']).TestQuestion).where(
             __import__('scoring.db.models', fromlist=['TestQuestion']).TestQuestion.test_id == test_id)) or 0
@@ -802,6 +817,12 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
                 'message': '過去の採点履歴があるため、正式内容を安全に更新できません。'})
         from ..authoring_issue_guidance import issue_guidance
         result['issues'] = [issue_guidance(snapshot, item, result['total_points']) for item in result['issues']]
+        if row and row.state == 'confirmed':
+            for item in result['issues']:
+                if item['section'] == 'source':
+                    item.update(message='確定後に正式内容・出典との対応に差異が検出されました。',
+                        current_state='確定済みの内容は変更できません。', action_label='修正版を作成',
+                        expected_state='「修正版を作成」して、正式内容と元PDF・本文・図の対応を確認してください。')
         result['can_confirm'] = bool(row and row.state in {'draft', 'final_review'}) and not result['issues']
         return result
 
@@ -865,6 +886,10 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
             from ..authoring_confirmation import project_confirmed_snapshot
             s.info['authoring_confirmation_projection'] = True
             project_confirmed_snapshot(s, test, deepcopy(saved_snapshot), s.info['auth_user'].id)
+            # Formal rows now realize the attested snapshot. Reconcile only
+            # mutable freshness metadata, from flushed DB-normalized values;
+            # the saved/confirmed payload and edit version remain untouched.
+            formal_basis_hash = baseline_hash(projection(s, test, refresh=True))
             confirmed_payload = deepcopy(saved_snapshot)
             confirmed_hash = canonical_hash(confirmed_payload)
             if confirmed_hash != saved_hash or canonical_hash(normalize_authoring_snapshot(row.snapshot)) != saved_hash:
@@ -879,7 +904,7 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
             changed = s.execute(update(TestAuthoringRevision).where(TestAuthoringRevision.id == row.id,
                 TestAuthoringRevision.edit_version == v.expected_edit_version,
                 TestAuthoringRevision.state.in_(['draft', 'final_review']))
-                .values(state='confirmed', updated_at=now()))
+                .values(state='confirmed', baseline_sha256=formal_basis_hash, updated_at=now()))
             if changed.rowcount != 1:
                 raise HTTPException(409, {'error': {'code': 'AUTHORING_CONFIRM_CONFLICT', 'message': '保存版が更新されています。再読み込みしてください。'}})
             test.active_confirmed_revision_id = confirmed.id

@@ -6,6 +6,61 @@ from .db.models import (TestQuestion, ModelAnswer, RubricVersion,
     StudentSubmission, GradingJob)
 
 
+def confirmed_projection_matches(formal, snapshot):
+    """Read-only compatibility attestation for confirmations with old baselines.
+
+    Accept only the deterministic projected content and provenance, never
+    merely a confirmed state flag or an accepted source-review decision.
+    """
+    try:
+        if (formal['metadata'] != snapshot['metadata']
+                or formal['source_provenance']['assets'] != snapshot['source_provenance'].get('assets', [])):
+            return False
+        nodes = [node for node in snapshot['nodes'] if node.get('included', True)]
+        keys = {node['stable_key'] for node in nodes}
+        parent_keys = {node.get('parent_key') for node in nodes if node.get('parent_key')}
+        sources = {item['id']: item for item in formal['source_provenance']['questions']}
+        ids = {item['stable_question_key']: item['id'] for item in sources.values()}
+        if set(ids) != keys or len(sources) != len(nodes):
+            return False
+        original = {item['id']: item for item in snapshot['source_provenance'].get('questions', [])}
+        by_id = {node['stable_key']: node for node in formal['nodes']}
+        answer_sources = formal['source_provenance']['model_answers']
+        answers = {item['question_id']: item for item in answer_sources}
+        answer_domain = snapshot.get('domains', {}).get('answer') or {}
+        if len(answers) != len(keys - parent_keys) or len(answer_sources) != len(answers):
+            return False
+        for node in nodes:
+            key, identifier = node['stable_key'], ids[node['stable_key']]
+            actual, evidence = by_id[identifier], sources[identifier]
+            expected_provenance = {**(original.get(identifier, {}).get('provenance') or {}),
+                'authoring_stable_key': key, 'authoring_revision_snapshot': True}
+            if (actual['body_text'] != node.get('body_text', '') or actual['label']['raw'] != node['label']['raw'][:200]
+                    or actual['parent_key'] != ids.get(node.get('parent_key')) or actual['sort_order'] != node['sort_order']
+                    or actual['score_semantics'] != ('sum_children' if key in parent_keys else 'direct')
+                    or actual['score_points'] != (None if key in parent_keys else node.get('score_points'))
+                    or evidence['content'] != {'items': node.get('ordered_content', [])}
+                    or evidence['provenance'] != expected_provenance
+                    or evidence['content_sha256'] != original.get(identifier, {}).get('content_sha256')):
+                return False
+            if key in parent_keys:
+                continue
+            value = snapshot.get('answers', {}).get(key, {})
+            expected_answer = {'authoring_stable_key': key, 'source_draft_id': answer_domain.get('draft_id'),
+                'source_sha256': answer_domain.get('source_sha256'), 'source_material_id': answer_domain.get('material_id'),
+                'entries': [entry for entry in answer_domain.get('entries', [])
+                            if entry.get('authoring_question_key') == key and entry.get('disposition', 'include') == 'include'],
+                'diagrams': [record for record in value.get('diagram_records', []) if record.get('state') == 'accepted']}
+            if (formal['answers'][identifier]['primary'] != value.get('primary', '')
+                    or answers[identifier]['provenance_json'] != expected_answer
+                    or answers[identifier]['material_id'] != answer_domain.get('material_id')
+                    or formal['rubrics'][identifier] != snapshot.get('rubrics', {}).get(key, [])):
+                return False
+        return set(formal['source_provenance']['rubric']['generation_metadata']['authoring_stable_keys']) == keys
+    except (KeyError, TypeError, AttributeError):
+        return False
+
+
 @event.listens_for(Session, "before_flush")
 def prevent_mutating_confirmed_formal_state(session, _flush_context, _instances):
     """Keep the mutable legacy grading projection aligned with its active pin."""

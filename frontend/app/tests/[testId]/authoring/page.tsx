@@ -159,6 +159,7 @@ export default function TestAuthoringPage() {
     const timer=window.setTimeout(clear,8000);target.addEventListener("input",clear);target.addEventListener("change",clear);clearHighlight.current=clear;
   }
   function navigate(issue:AuthoringIssue){
+    if(readonly&&issue.section==="source"){void begin();return;}
     if(issue.section==="save"){void save();return;}
     setFinalReviewMode(false);setIssuesOpen(false);setDiagramSelection(undefined);setRegionId("");
     const section=issue.section==="source"?"source":issue.section;
@@ -451,7 +452,7 @@ export default function TestAuthoringPage() {
       <button disabled={busy} onClick={importSources}>最新レビューを取り込む</button></section>}
     {error&&!splitProposal&&<p role="alert" className="error">{error}</p>}
     {sourceWarnings.length>0&&<section aria-label="保存済み内容の出典確認" className="authoring-source-notice" role="status"><p>⚠ 元資料との対応に確認が必要な設問があります。編集内容は保存されています。</p>{sourceWarnings.map((w,i)=><div key={i}><span>{w.message}</span>{w.question_key&&<button onClick={()=>navigate({question_key:w.question_key,section:"question",field:"source",message:w.message})}>確認する</button>}</div>)}</section>}
-    {(sourceProblems.length>0||questionStale||answerStale)&&<p role="alert">元PDFとの対応が無効になっています。資料と保存済みレビューを確認し、必要なら明示的に再解析してください。</p>}
+    {(sourceProblems.length>0||questionStale||answerStale)&&<p role="alert">{readonly?'確定済みの内容は変更できません。「修正版を作成」して元PDFと本文・図の対応を確認してください。':'元PDFとの対応が無効になっています。資料と保存済みレビューを確認し、必要なら明示的に再解析してください。'}</p>}
     <ReviewWorkspaceLayout actions={<div className="review-toolbar" aria-busy={busy}>
       {readonly?<button className="button" disabled={busy} onClick={begin}>修正版を作成</button>:<button className={`button authoring-save-button${dirty?" is-dirty":" is-saved"}`} aria-describedby="authoring-save-state" disabled={busy} onClick={()=>void save()}>{saving?"保存中…":"保存"}</button>}
       {!readonly&&<span id="authoring-save-state" className="visually-hidden" role="status">{dirty?"保存状態: 未保存の変更があります":"保存状態: 保存済み"}</span>}
@@ -557,7 +558,7 @@ export default function TestAuthoringPage() {
           {questionDomain&&revision&&<DiagramReview path={`/tests/${id}/authoring/nodes/${selected}/diagrams`} revision={revision.edit_version}
             records={node.diagram_records} sourceStale={questionStale} disabled={readonly||saving||analyzing} label="図の確認" onSelect={setDiagramSelection}
             onChange={records=>{markDirty();setDirtyDomains(d=>({...d,diagram:true}));setSnapshot(current=>current?{...current,nodes:current.nodes.map(n=>{if(n.stable_key!==node.stable_key)return n;const decisions={...n.figure_decisions};for(const record of records)for(const rid of record.legacy_region_ids||(record.legacy_region_id?[record.legacy_region_id]:[]))decisions[rid]={decision:record.state==="accepted"?"accepted_as_evidence":record.state==="excluded"?"excluded":"unreviewed"};return {...n,diagram_records:records,figure_decisions:decisions};})}:current);}}/>}
-          {questionDomain&&questionWarnings.length>0&&<WarningPanel warnings={questionWarnings} targetLabel={()=>pathFor(selected)} states={questionDomain.snapshot.warning_states||{}} readonly={readonly||saving||analyzing}
+          {questionDomain&&questionWarnings.length>0&&<WarningPanel warnings={questionWarnings} targetLabel={()=>pathFor(selected)} states={questionDomain.snapshot.warning_states||{}} readonly={readonly||saving||analyzing} confirmed={readonly}
             onChange={(key,resolution)=>change({...snapshot,domains:{...snapshot.domains,question:{...questionDomain,snapshot:{...questionDomain.snapshot,warning_states:{...questionDomain.snapshot.warning_states,[key]:resolution}}}}})}/>}
           </div>
         </AuthoringPreviewEditor></section>}

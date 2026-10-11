@@ -42,12 +42,15 @@ test("final review confirms one exact saved authoring revision atomically",async
   const callsBeforeConfirm=await modelCalls(page);
   await confirmButton.click();await dialog.getByRole("button",{name:"この内容でテストを確定",exact:true}).click();
   await expect(page.getByText("テスト内容は確定済みです。",{exact:true})).toBeVisible();
+  await expect(page.getByRole("button",{name:"要修正事項、未解決0件",exact:true})).toBeVisible();
+  expect((await(await page.request.get(base+"/authoring/review")).json()).issues).toEqual([]);
   const active=(await (await page.request.get(base+"/authoring/confirmed")).json()).active;
   expect(active.snapshot_sha256).toBe(saved.snapshot_sha256);
   expect(active.snapshot).toEqual(saved.snapshot);
   const duplicate=await page.request.post(base+"/authoring/confirm",{data:{revision_id:saved.id,
     expected_edit_version:saved.edit_version,expected_snapshot_sha256:saved.snapshot_sha256}});
   expect(duplicate.status()).toBe(200);expect((await duplicate.json()).id).toBe(active.id);
+  expect((await(await page.request.get(base+"/authoring/review")).json()).issues).toEqual([]);
   expect(await modelCalls(page)).toEqual(callsBeforeConfirm);
   expect(await (await page.request.get(base+"/questions")).json()).toHaveLength(1);
   expect(await (await page.request.get(base+"/model-answers")).json()).toHaveLength(1);
@@ -55,4 +58,10 @@ test("final review confirms one exact saved authoring revision atomically",async
   await page.reload();await page.getByLabel("対象設問",{exact:true}).selectOption("all");
   await expect(page.getByText("テスト内容は確定済みです。",{exact:true})).toBeVisible();
   expect((await (await page.request.get(base+"/authoring/confirmed")).json()).active.id).toBe(active.id);
+  await expect(page.getByRole("button",{name:"要修正事項、未解決0件",exact:true})).toBeVisible();
+  await expect(page.getByText("元の正式内容が変更されています。出典付きレビューを確認してください。",{exact:true})).toHaveCount(0);
+  await page.getByRole("link",{name:"戻る",exact:true}).click();
+  await page.getByRole("link",{name:"テスト内容を見る",exact:true}).click();
+  await expect(page.getByRole("button",{name:"要修正事項、未解決0件",exact:true})).toBeVisible();
+  expect((await(await page.request.get(base+"/authoring/review")).json()).issues).toEqual([]);
 });

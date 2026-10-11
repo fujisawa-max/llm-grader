@@ -175,6 +175,90 @@ def test_publication_boundary_never_partially_registers(workspace):
         assert s.scalar(select(func.count()).select_from(ConfirmedAuthoringRevision))==1
 
 
+def test_confirmed_projection_keeps_review_clean_without_snapshot_mutation(workspace):
+    from scoring.test_authoring import baseline_hash, projection
+    w = workspace
+    row = begin(w)
+    assert w.client.get(base(w)+'/authoring/review').json()['issues'] == []
+    body = {'revision_id': row['id'], 'expected_edit_version': row['edit_version'],
+            'expected_snapshot_sha256': row['snapshot_sha256']}
+    confirmed = w.client.post(base(w)+'/authoring/confirm', json=body)
+    assert confirmed.status_code == 200, confirmed.text
+    with w.sf() as session:
+        working = session.get(Revision, row['id'])
+        assert working.baseline_sha256 == baseline_hash(projection(session, session.get(Exam, w.legacy)))
+        assert working.snapshot == row['snapshot']
+        assert working.edit_version == row['edit_version']
+    for method in ('get', 'post'):
+        kwargs = {'json': {'snapshot': row['snapshot'], 'expected_edit_version': row['edit_version']}} if method == 'post' else {}
+        review = getattr(w.client, method)(base(w)+'/authoring/review', **kwargs)
+        assert review.status_code == 200, review.text
+        assert review.json()['issues'] == []
+        assert review.json()['can_confirm'] is False
+    duplicate = w.client.post(base(w)+'/authoring/confirm', json=body)
+    assert duplicate.json()['id'] == confirmed.json()['id']
+    assert w.client.get(base(w)+'/authoring/review').json()['issues'] == []
+    with w.sf() as session:
+        from scoring.db.models import DomainEvent
+        assert session.get(Revision, row['id']).baseline_sha256 == baseline_hash(projection(session, session.get(Exam, w.legacy)))
+        assert session.scalar(select(func.count()).select_from(DomainEvent).where(
+            DomainEvent.entity_id == w.legacy, DomainEvent.event_type == 'authoring_revision_confirmed')) == 1
+
+
+def test_legacy_confirmed_baseline_is_attested_read_only(workspace):
+    w = workspace
+    row = begin(w)
+    body = {'revision_id': row['id'], 'expected_edit_version': row['edit_version'],
+            'expected_snapshot_sha256': row['snapshot_sha256']}
+    assert w.client.post(base(w)+'/authoring/confirm', json=body).status_code == 200
+    with w.sf() as session:
+        session.get(Revision, row['id']).baseline_sha256 = row['baseline_sha256']
+        session.commit()
+    assert w.client.get(base(w)+'/authoring/review').json()['issues'] == []
+    assert w.client.post(base(w)+'/authoring/confirm', json=body).status_code == 200
+    with w.sf() as session:
+        assert session.get(Revision, row['id']).baseline_sha256 == row['baseline_sha256']
+        assert session.get(Revision, row['id']).snapshot == row['snapshot']
+
+
+@pytest.mark.parametrize('legacy_basis', [False, True])
+@pytest.mark.parametrize('domain', ['question', 'answer', 'rubric', 'asset'])
+def test_confirmed_genuine_formal_drift_requires_revision(workspace, domain, legacy_basis):
+    from sqlalchemy import update
+    w = workspace
+    row = begin(w)
+    body = {'revision_id': row['id'], 'expected_edit_version': row['edit_version'],
+            'expected_snapshot_sha256': row['snapshot_sha256']}
+    assert w.client.post(base(w)+'/authoring/confirm', json=body).status_code == 200
+    with w.sf() as session:
+        if legacy_basis:
+            session.get(Revision, row['id']).baseline_sha256 = row['baseline_sha256']
+        # Direct SQL is a controlled test seam, not a production edit path.
+        if domain == 'question':
+            session.execute(update(Question).where(Question.id == w.question).values(question_text='External drift'))
+        elif domain == 'answer':
+            session.execute(update(ModelAnswer).where(ModelAnswer.test_id == w.legacy, ModelAnswer.is_current.is_(True)).values(answer_text='External drift'))
+        elif domain == 'rubric':
+            session.execute(update(RubricVersion).where(RubricVersion.test_id == w.legacy, RubricVersion.status == 'approved').values(
+                rubric_json={'questions': [{'question_id': w.question, 'criteria': [{'id': 'changed', 'description': 'External drift', 'points': 10}]}]}))
+        else:
+            from sqlalchemy import insert
+            from uuid import uuid4
+            from scoring.db.models import TestQuestionAsset
+            session.execute(insert(TestQuestionAsset).values(id=str(uuid4()), question_id=w.question,
+                asset_type='diagram', artifact_ref='controlled-test-only-drift.png', sha256='a'*64,
+                provenance={'source': 'controlled_external_change'}))
+        session.commit()
+    review = w.client.get(base(w)+'/authoring/review').json()
+    stale = next(issue for issue in review['issues'] if issue.get('code') == 'formal_review_stale')
+    assert stale['action_label'] == '修正版を作成'
+    assert '確定済みの内容は変更できません' in stale['current_state']
+    assert '修正版を作成' in stale['expected_state']
+    assert '保存' not in stale['expected_state']
+    assert not review['can_confirm']
+    assert w.client.get(base(w)+'/authoring').json()['confirmed_revision']['snapshot'] == row['snapshot']
+
+
 def test_confirmation_stale_review_is_rejected(workspace):
     w=workspace
     row=begin(w)
@@ -359,6 +443,9 @@ def test_changed_formal_baseline_is_actionable_and_not_overwritten(workspace):
         s.commit()
     issues = w.client.get(base(w)+'/authoring/review').json()['issues']
     assert any(i['section'] == 'source' for i in issues)
+    stale = next(i for i in issues if i.get('code') == 'formal_review_stale')
+    assert stale['action_label'] == '出典を確認'
+    assert '保存済みレビューを取り込む' in stale['expected_state']
     assert w.client.get(base(w)+'/authoring').json()['revision']['snapshot']['nodes'][0]['body_text'] == 'Original\nsecond line'
 
 

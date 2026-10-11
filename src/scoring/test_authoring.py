@@ -23,13 +23,15 @@ class AuthoringError(ValueError):
         self.code = code
 
 
-def projection(session, test):
+def projection(session, test, *, refresh=False):
+    if refresh:
+        session.refresh(test)
     questions = list(session.scalars(select(TestQuestion).where(TestQuestion.test_id == test.id)
-        .order_by(TestQuestion.sort_order, TestQuestion.id)))
+        .order_by(TestQuestion.sort_order, TestQuestion.id).execution_options(populate_existing=refresh)))
     answers = list(session.scalars(select(ModelAnswer).where(ModelAnswer.test_id == test.id,
-        ModelAnswer.is_current.is_(True))))
+        ModelAnswer.is_current.is_(True)).execution_options(populate_existing=refresh)))
     rubric = session.scalar(select(RubricVersion).where(RubricVersion.test_id == test.id,
-        RubricVersion.status == 'approved').order_by(RubricVersion.version.desc()))
+        RubricVersion.status == 'approved').order_by(RubricVersion.version.desc()).execution_options(populate_existing=refresh))
     assets = list(session.scalars(select(TestQuestionAsset).join(TestQuestion)
         .where(TestQuestion.test_id == test.id)))
     nodes, answer_map, rubric_map = [], {}, {}

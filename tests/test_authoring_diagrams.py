@@ -790,5 +790,11 @@ def test_confirmation_preserves_saved_diagrams_and_exact_hash(workspace, diagram
     assert duplicate.json()['id'] == confirmed.json()['id']
     assert duplicate.json()['snapshot'] == expected
     assert duplicate.json()['snapshot_sha256'] == canonical_hash(expected)
+    assert w.client.get(path+'/review').json()['issues'] == []
     with w.sf() as session:
         assert len(list(session.scalars(select(ConfirmedAuthoringRevision)))) == 1
+    if diagram_kind == 'automatic' and not inject_failure:
+        pdf = w.root / 'answer.pdf'
+        pdf.write_bytes(pdf.read_bytes()+b'changed source')
+        stale = w.client.get(path+'/review').json()['issues']
+        assert any(item['section'] == 'source' and item['action_label'] == '修正版を作成' for item in stale)

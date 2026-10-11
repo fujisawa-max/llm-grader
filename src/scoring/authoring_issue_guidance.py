@@ -34,6 +34,9 @@ def issue_guidance(snapshot, issue, total):
     elif code == 'test_total':
         result.update(current_state=f"テストの合計点: {snapshot['metadata']['total_points']}点 / 採点対象の配点合計: {total}点",
                       expected_state='設問の配点とテストの合計点を確認して一致させてください。')
+    elif code == 'formal_review_stale':
+        result.update(current_state='下書きの作成後に正式内容が変更されています。',
+                      expected_state='変更された正式内容と元PDF・本文・図の対応を確認し、「保存済みレビューを取り込む」で出典付きレビューを更新してください。')
     elif issue['section'] == 'source' or issue.get('field') == 'source':
         result.update(current_state='元資料との対応が未確認または無効', expected_state='使用しているPDFと本文・図の対応箇所を確認してください。必要なら資料を明示的に再解析してください。')
     return result
