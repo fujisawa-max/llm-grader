@@ -2,7 +2,7 @@
 
 ## Result
 
-**fix2: LOCAL_COMPLETE / READY_FOR_PRODUCTION_VALIDATION. Overall 12c: production acceptance pending.** Local fix2 integrity/selector implementation and full automated validation pass; operator deployment and fresh production revalidation are required. No production changes were made in fix2.
+**J.UI.12c / fix2: COMPLETE — fresh dedicated Sample Q5 production acceptance passed on 2026-10-11 after operator deployment.** Exact saved/confirmed snapshot equality, canonical/stored hash equality, unchanged diagram revisions, selector issue markers, correction/Save updates, unsaved protection, CAS, idempotency and reload/resume passed. Earlier local-only and failed fix1 acceptance findings below are historical; the latest fix2 production subsection supersedes them. J.UI.12d was not started.
 
 **Historical production fix1 finding (2026-10-11):** Final Review UX, blocker correction, unsaved protection, CAS, and a diagram-free confirmation passed on dedicated production records. Real Sample Q5 was built, reviewed and confirmed, but its confirmed snapshot differs from the saved snapshot in diagram revision metadata and its stored hash does not match the confirmed payload. This is a data-integrity blocker; 12c is not COMPLETE and 12d was not started. Earlier local implementation/deployment findings below are historical; the latest acceptance subsection supersedes them.
 
@@ -223,3 +223,81 @@ Exact final git status:
  M tests/test_test_authoring.py
 ?? frontend/e2e/authoring-sample-q5-confirmation-real.spec.ts
 ```
+
+## J.UI.12c-fix2 — Production acceptance after operator deployment (2026-10-11)
+
+### Result and isolation
+
+**J.UI.12c / fix2 COMPLETE.** The operator reported fix2 deployed; the running frontend marker behavior and backend diagram-confirmation invariants were verified directly, rather than assuming local files were deployed. Starting HEAD: `38c9c0300f212968289e8cf8315ba610d55fa752`; starting worktree clean.
+
+A NEW dedicated Test was created in the existing dedicated validation offering:
+
+- **Codex Validation - J.UI.12c-fix2 Sample Q5 2026-10-11T15-09-31-265Z**
+
+Only that new Test, its uploaded materials, and its authoring/formal confirmation data were mutated. No existing Test, affected immutable validation record, original production Q5, student submission, user, runtime configuration, or grade was changed. No deployment or migration was run by this acceptance session. The Test is retained for inspection. No J.UI.12d work was performed.
+
+### Actual Sample Q5 workflow
+
+Authenticated through the real Chromium login form using the configured environment variables. Uploaded the original `testData/SampleQ/sampleQ5.pdf`, analyzed Questions, split Q3 into three child Questions and saved. Uploaded/analyzed `testData/SampleQ/modelAnswer/sampleQ5_modelAnswer.pdf`. Q3(1) accepted an automatic parent-scope diagram; Q3(2) accepted a teacher-selected manual PDF crop. Before Save, reuse did not include the pending diagram and guidance was visible. After Save, Q3(3) received two server-attested saved reuse candidates and successfully reused both. Save/reload/Back/resume retained both origins. The same answer PDF was also registered/analyzed for Rubric.
+
+Real readiness blockers were 24 after Rubric analysis. Teacher corrections set the actual six gradable Question scores to 30/10/30/10/8/12, confirmed PDF-based grading criteria, reviewed classification, explicitly ignored unused unassigned candidates, and acknowledged source-reading warnings with teacher notes. Remaining blockers reached zero without weakening product rules.
+
+### Snapshot/hash integrity
+
+Captured the saved revision immediately before Confirm; confirmed through the real Final Review dialog. Assertions recursively compared the ENTIRE saved and confirmed snapshots, including duplicated answer projections, provenance and diagram records. The working snapshot and edit version were also unchanged by Confirm.
+
+```text
+saved_working.snapshot == confirmed.snapshot: true
+canonical_hash(saved_working.snapshot): 7350438b4ceed4ca40176eb71aec2cab5ddc0c680839b41f7e873e38d9354265
+canonical_hash(confirmed.snapshot):     7350438b4ceed4ca40176eb71aec2cab5ddc0c680839b41f7e873e38d9354265
+confirmed.snapshot_sha256:             7350438b4ceed4ca40176eb71aec2cab5ddc0c680839b41f7e873e38d9354265
+```
+
+Canonical hashes were recomputed from raw API JSON using the backend canonicalizer, avoiding loss of numeric representation through JavaScript serialization. The persisted confirmed payload/hash agreed after reload/resume as well.
+
+Four accepted diagram records in `domains.answer.entries[*].diagram_records` were compared before/after:
+
+| Diagram record | Scope | Revision before | Revision after |
+| --- | --- | --- | --- |
+| Automatic accepted origin | parent | 18 | 18 |
+| Manual PDF crop origin | manual | 18 | 18 |
+| Reused automatic diagram | reuse | 18 | 18 |
+| Reused manual PDF crop | reuse | 18 | 18 |
+
+Full snapshot equality additionally proves source identity, SHA, artifact, page/bbox, acceptance and reuse/manual provenance did not change. The old inconsistent immutable production record was NOT rewritten.
+
+### Selector markers and fix1 UX
+
+On Q3(1), a controlled reversible Rubric mismatch (10-point Question / 9-point criterion) produced exactly one direct-owned issue. Verified:
+
+- Visible option and selected-option text ended in ` *`; accessible option label conveyed `要修正あり`.
+- The same Question displayed `要修正 1件`.
+- Its structural parent did not acquire a marker; `テスト全体確認` was unmarked.
+- Save with the mismatch retained the marker and server issue count 1.
+- Correcting to 10 and saving removed the asterisk, accessible warning and floating tab without a full reload; readiness returned to zero issues.
+- Opening/closing the leftward issue overlay preserved workspace width/height, document height and window scroll; current/expected score guidance remained visible.
+- Unsaved Final Review showed the warning and disabled Confirm. Restoring the score and Save cleared the condition.
+- Final Review hierarchy labels remained left-aligned.
+
+### CAS, idempotency and resume
+
+Before final confirmation, a controlled second-tab API Save changed only the dedicated Test description. Confirm using the prior identity returned 409; active confirmed basis was still absent. Reload/review selected the new saved identity and Confirm succeeded.
+
+Repeating the exact Confirm request returned the SAME confirmed ID. Questions, ModelAnswers and Rubrics fetched before/after the duplicate request were identical, proving no duplicate formal projection. Reload and Back/return to Authoring retained confirmed state, ID and exact contents.
+
+### Safety and validation
+
+- Dedicated Test grading jobs: **0**; submissions: **0**.
+- During Confirm/idempotency/resume: no browser-initiated analysis, OCR, discovery/split or grading request (delta **0**). The local backend/call-count regression also establishes no inference in the confirmation path; no privileged production runtime-log access was required.
+- Prior full local fix2 validation: backend **979 passed / 2 skipped / 23 warnings**, full Chromium **69 passed**, focused Chromium **5 passed**, TypeScript/ESLint/Ruff/Next build/diff check passed.
+- Production acceptance: actual-PDF setup, automatic/manual/reuse persistence, selector correction/live update, unsaved/no-reflow protection, stale CAS, exact/hash/revision confirmation, duplicate/formal stability and reload/resume all passed.
+- Environment values were never printed or written into scripts/reports. No trace/HAR/cookie/token storage or credential screenshot was produced. Changed-file and acceptance-artifact credential-literal checks passed.
+- Only this report changed in the repository; no commit or push.
+
+Exact git status:
+
+```text
+ M docs/reports/j-ui-12c.md
+```
+
+No outstanding fix2 acceptance defect remains. The previous invalid immutable validation record is retained as historical evidence, not silently repaired. J.UI.12d remains deferred as instructed.
