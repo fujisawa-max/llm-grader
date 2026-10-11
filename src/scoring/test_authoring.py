@@ -114,8 +114,21 @@ def validate_snapshot(value, previous):
     from .authoring_sources import normalize_authoring_snapshot
     submitted_rubrics = deepcopy(value.get('rubrics', {})) if isinstance(value, dict) else {}
     submitted_rubric_domain = deepcopy(value.get('domains', {}).get('rubric')) if isinstance(value, dict) else None
-    value = normalize_authoring_snapshot(value)
+    saved_recovery_ids = {candidate.get('id') for candidate in previous.get('domains', {}).get(
+        'recovery', {}).get('rubric_candidates', [])}
     previous = normalize_authoring_snapshot(previous)
+    # Legacy recovery rows are derived on read. Seed them from the saved
+    # automatic evidence before adapting a teacher's new routing decision;
+    # otherwise that edit changes their immutable status/target provenance.
+    value = deepcopy(value)
+    if isinstance(value, dict):
+        recovery = value.setdefault('domains', {}).setdefault('recovery', {})
+        candidates = recovery.setdefault('rubric_candidates', [])
+        if isinstance(candidates, list):
+            submitted_ids = {candidate.get('id') for candidate in candidates if isinstance(candidate, dict)}
+            candidates.extend(deepcopy(candidate) for candidate in previous['domains']['recovery']['rubric_candidates']
+                              if candidate['id'] not in saved_recovery_ids | submitted_ids)
+    value = normalize_authoring_snapshot(value)
     # Older clients edited the flattened `rubrics` map. Translate such a
     # write into RubricDraft when the role-specific domain itself is unchanged.
     # This preserves the API's legacy round-trip while keeping the separated

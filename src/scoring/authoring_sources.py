@@ -137,6 +137,7 @@ def normalize_authoring_snapshot(snapshot):
     rubric.setdefault('sources', {})
     rubric.setdefault('analysis_result', None)
     rubric.setdefault('analysis_results', {})
+    legacy_recovery = 'recovery' not in domains
     recovery = domains.setdefault('recovery', {})
     recovery.setdefault('rubric_candidates', [])
 
@@ -220,7 +221,10 @@ def normalize_authoring_snapshot(snapshot):
             classification = entry.get('semantic_classification') or {}
             existing_recovery = {(candidate.get('source_draft_id'), candidate.get('segment_id'))
                                  for candidate in recovery['rubric_candidates']}
-            for segment in recoverable_rubric_segments(entry):
+            # In separated drafts recovery is an authoritative extraction
+            # collection, not a projection of the current teacher decision.
+            # Only legacy mixed snapshots need it synthesized on read.
+            for segment in recoverable_rubric_segments(entry) if legacy_recovery or legacy_criteria is not None else []:
                 identity = (entry.get('source_draft_id'), segment.get('id'))
                 if identity in existing_recovery:
                     continue

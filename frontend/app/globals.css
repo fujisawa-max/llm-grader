@@ -283,3 +283,8 @@ dialog.authoring-proposal-dialog::backdrop{background:#0006}
 .authoring-final-unsaved{border:1px solid #b57418;background:#fff4de;border-radius:6px;padding:12px}.authoring-final-unsaved p{margin:0 0 8px}.authoring-final-unsaved button{margin-right:8px}
 .authoring-final-table th,.authoring-final-table td{text-align:left}.authoring-final-table .authoring-hierarchy-label{display:block;white-space:nowrap;text-align:left}
 .authoring-correction-target{outline:3px solid #c48a25;outline-offset:3px;box-shadow:0 0 0 6px #fff2c9;border-radius:4px}
+.authoring-candidate-resolution{padding:12px;margin:12px 0;border:1px solid #aebfcd;border-radius:6px;background:#f3f8fb}
+.authoring-candidate-resolution p{margin:0 0 10px}
+.authoring-candidate-resolution-text{max-height:132px;overflow:auto;line-height:1.6;margin-bottom:12px}
+.authoring-candidate-resolution label{display:grid;gap:5px;margin-bottom:10px}
+.authoring-candidate-resolution select{width:100%;font:inherit;padding:8px;border:1px solid #bac7d1;border-radius:4px}

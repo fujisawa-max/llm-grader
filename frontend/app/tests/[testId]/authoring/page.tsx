@@ -16,6 +16,7 @@ import {authoringBuffers,prepareAuthoringSave,analysisReadiness} from "@/lib/aut
 import {testData} from "@/lib/api/domain";
 import {apiFetch, json} from "@/lib/api/client";
 import {canonicalQuestionPath} from "@/lib/canonicalQuestionPath";
+import {scrollReviewContent} from "@/lib/reviewIssues";
 import {localId} from "@/lib/localId";
 import {editQuestionContent, questionContent} from "@/lib/questionContent";
 import {DiagramReview, type DiagramSelection} from "@/components/reviews/DiagramReview";
@@ -173,18 +174,21 @@ export default function TestAuthoringPage() {
       if(section==="source")target=document.querySelector<HTMLElement>('.authoring-material-management');
       if(section==="metadata")target=document.querySelector<HTMLElement>('[aria-label="テスト全体確認"] input[type="number"]');
       if(issue.field==="recovery"){
-        target=document.querySelector<HTMLElement>('.authoring-recovery-panel');if(target instanceof HTMLDetailsElement)target.open=true;
+        const panel=document.querySelector<HTMLDetailsElement>('.authoring-recovery-panel');if(panel)panel.open=true;
+        target=document.getElementById(`authoring-recovery-${issue.entry_id}`)||panel;
       }else if(issue.criterion_id)target=document.getElementById(`authoring-rubric-${issue.criterion_id}`)||target;
       else if(issue.entry_id){target=document.getElementById(`authoring-candidate-${issue.entry_id}`)||target;}
       if(issue.field==="classification"){
         const details=target?.querySelector<HTMLDetailsElement>('[data-authoring-classification]');if(details){details.open=true;target=details;}
       }
+      let content=target;
       if(issue.field==="score"||issue.field==="points")target=target?.querySelector<HTMLElement>('input[type="number"]')||target;
       if(issue.field==="mapping")target=target?.querySelector<HTMLElement>('[aria-label="対応する設問"]')||target;
       if(!target)return;
-      target.scrollIntoView({block:"center"});
+      if(issue.field==="points")content=target.closest<HTMLElement>('[id^="authoring-rubric-"]')||content;
+      scrollReviewContent(content||target);
       const control=target.matches('textarea,input,select,button')?target:Array.from(target.querySelectorAll<HTMLElement>('textarea,input,select,button')).find(el=>el.getClientRects().length>0);
-      (control||target).focus({preventScroll:true});highlight(target);
+      (control||target).focus({preventScroll:true});highlight(issue.field==="mapping"?content||target:target);
     }));
   }
   async function suggestQuestionSplit(){
@@ -384,7 +388,7 @@ export default function TestAuthoringPage() {
   const rubricDomain=snapshot.domains?.rubric;
   const rubricRecovery=(snapshot.domains?.recovery?.rubric_candidates||[]).filter(candidate=>!candidate.dismissed&&!candidate.promoted);
   const rubricEntries:AuthoringEntry[]=(rubricDomain?.entries||[]).map(entry=>({id:entry.id,
-    question_id:entry.question_id||null,authoring_question_key:entry.authoring_question_key||null,mapping_state:"manual_mapped",
+    question_id:entry.question_id||null,authoring_question_key:entry.authoring_question_key||null,mapping_state:entry.mapping_state||(entry.authoring_question_key?"manual_mapped":"needs_review"),teacher_correction:entry.teacher_correction,
     answer_text:"",answer_kind:"alternative",source:entry.source,source_draft_id:entry.source_draft_id||undefined,
     material_role:entry.material_role,disposition:entry.disposition||"include",
     semantic_classification:entry.semantic_classification,rubric_edits:entry.criteria,
@@ -456,7 +460,7 @@ export default function TestAuthoringPage() {
       {dirty&&<><span role="status">未保存の変更があります</span><span className="muted">{Object.entries(dirtyDomains).filter(([,v])=>v).map(([k])=>({question:"問題",answer:"解答",rubric:"採点基準",diagram:"図"}[k])).filter(Boolean).join("・")}</span></>}
       <div className="authoring-utility-controls">{notificationView}
         <div className="authoring-issues-control"><button type="button" aria-label={`要修正事項、未解決${issues.length}件`} aria-expanded={issuesOpen} onClick={()=>setIssuesOpen(value=>!value)}>⚠ 要修正{issues.length>0&&<span className="authoring-count-badge">{issues.length}</span>}</button>
-          {issuesOpen&&<section className="authoring-issues-panel" aria-label="要修正事項"><header><strong>要修正事項 {issues.length}件</strong><button type="button" onClick={()=>setIssuesOpen(false)}>閉じる</button></header>{issues.length===0?<p>現在、確認が必要な項目はありません。</p>:<ul>{issues.map((issue,index)=><li key={`${issue.question_key||issue.section}-${issue.field||""}-${index}`}>{issue.question_key||issue.section==="answer"?<button type="button" onClick={()=>{navigate(issue);setIssuesOpen(false);}}>{issue.question_key?pathFor(issue.question_key):"設問未割当"} — {issue.message}</button>:<span>{issue.message}</span>}</li>)}</ul>}</section>}
+          {issuesOpen&&<section className="authoring-issues-panel" aria-label="要修正事項"><header><strong>要修正事項 {issues.length}件</strong><button type="button" onClick={()=>setIssuesOpen(false)}>閉じる</button></header>{issues.length===0?<p>現在、確認が必要な項目はありません。</p>:<ul>{issues.map((issue,index)=><li key={`${issue.question_key||issue.section}-${issue.field||""}-${index}`}>{issue.question_key||["answer","rubric"].includes(issue.section)?<button type="button" onClick={()=>{navigate(issue);setIssuesOpen(false);}}>{issue.question_key?pathFor(issue.question_key):"設問未割当"} — {issue.message}</button>:<span>{issue.message}</span>}</li>)}</ul>}</section>}
         </div>
       </div>
     </div>} source={<>
@@ -491,7 +495,7 @@ export default function TestAuthoringPage() {
       <span className="authoring-add-question"><button disabled={readonly||saving||analyzing} onClick={()=>{const n=newNode(nodes.length);change({...snapshot,nodes:[...nodes,n]});setBuffers(current=>({...current,[n.stable_key]:""}));setSelected(n.stable_key);}}>設問を追加</button></span>
     </div>{analyzing&&<p className="authoring-analysis-progress" role="status" aria-live="polite"><span className="spinner" aria-hidden="true"/><strong>{analysisProgress}を解析しています…</strong><span className="muted">元資料を確認し、候補を更新しています。</span></p>}
       {rubricRecovery.length>0&&<details className="authoring-recovery-panel"><summary>未割当の採点基準候補を確認（{rubricRecovery.length}件）</summary><p>候補は採点基準へ自動登録されていません。内容と対応先を確認してください。</p>
-        {rubricRecovery.map(candidate=><article className="panel" key={candidate.id}><MarkdownMathText source={candidate.text}/><p>{candidate.origin_role==="model_answer_source"?"模範解答資料内で見つかった採点基準候補":"採点基準資料からの候補"}</p>
+        {rubricRecovery.map(candidate=><article className="panel" key={candidate.id} id={`authoring-recovery-${candidate.id}`}><MarkdownMathText source={candidate.text}/><p>{candidate.origin_role==="model_answer_source"?"模範解答資料内で見つかった採点基準候補":"採点基準資料からの候補"}</p>
           <label>対象設問<select aria-label="未割当候補の対象設問" value={recoveryTargets[candidate.id]||candidate.question_key||""} onChange={event=>setRecoveryTargets(current=>({...current,[candidate.id]:event.target.value}))}><option value="">設問を選択</option>{orderedNodes().filter(item=>!nodes.some(child=>child.included&&child.parent_key===item.stable_key)).map(item=><option key={item.stable_key} value={item.stable_key}>{pathFor(item.stable_key)}</option>)}</select></label>
           <button type="button" disabled={readonly||saving||analyzing||!(recoveryTargets[candidate.id]||candidate.question_key)} onClick={()=>promoteRecovery(candidate.id)}>採点基準として追加</button>
           <button type="button" disabled={readonly||saving||analyzing} onClick={()=>updateRecovery(candidate.id,{dismissed:true})}>無視</button>
@@ -586,7 +590,7 @@ export default function TestAuthoringPage() {
               const oldById=new Map((rubricDomain?.entries||[]).map(entry=>[entry.id,entry]));
               const entries=updated.map(entry=>{
                 const old=oldById.get(entry.id);
-                return old?{...old,criteria:entry.rubric_edits||old.criteria,operation_history:entry.rubric_merge_history||old.operation_history,authoring_question_key:entry.authoring_question_key,question_id:entry.question_id,disposition:entry.disposition,semantic_classification:entry.semantic_classification}:
+                return old?{...old,criteria:entry.rubric_edits||old.criteria,operation_history:entry.rubric_merge_history||old.operation_history,authoring_question_key:entry.authoring_question_key,question_id:entry.question_id,disposition:entry.disposition,mapping_state:entry.mapping_state,teacher_correction:entry.teacher_correction,semantic_classification:entry.semantic_classification}:
                   {id:entry.id,authoring_question_key:entry.authoring_question_key,question_id:entry.question_id,material_role:"teacher_manual",source_draft_id:null,material_id:null,source_sha256:null,source:entry.source,candidate_text:"",disposition:"include" as const,criteria:entry.rubric_edits||[],operation_history:entry.rubric_merge_history||[]};
               });
               const domain={...(rubricDomain||{entries:[],sources:{},analysis_result:null,analysis_results:{}}),entries};

@@ -555,6 +555,57 @@ def test_actionable_review_values_and_specific_targets_preserve_blockers(workspa
     assert any(item.get('code') == 'answer_classification' for item in after['issues'])
 
 
+def test_manual_assignment_preserves_lazy_recovery_evidence_and_rejects_tampering(workspace):
+    from scoring.authoring_sources import normalize_authoring_snapshot
+    previous = deepcopy(begin(workspace)['snapshot'])
+    previous['domains']['answer'] = {'draft_id': 'answer-import', 'entries': [{
+        'id': 'unassigned-answer', 'source_draft_id': 'answer-import',
+        'authoring_question_key': None, 'disposition': 'unassigned',
+        'answer_text': 'Source answer', 'source': {'segments': []},
+        'semantic_classification': {'status': 'classified', 'candidate_text': 'Source answer',
+            'segments': [{'id': 'uncertain-source', 'category': 'uncertain', 'text': 'Source answer'}]}}]}
+    previous['domains'].pop('recovery', None)
+    original = deepcopy(previous)
+    submitted = deepcopy(previous)
+    entry = submitted['domains']['answer']['entries'][0]
+    entry.update(authoring_question_key=workspace.question, disposition='include', mapping_state='manual_mapped',
+                 teacher_correction={'confirmation_origin': 'manual_edit', 'teacher_confirmed': True})
+    entry['semantic_classification']['status'] = 'teacher_reviewed'
+    saved = validate_snapshot(submitted, previous)
+    evidence = normalize_authoring_snapshot(previous)['domains']['recovery']['rubric_candidates']
+    assert saved['domains']['recovery']['rubric_candidates'] == evidence
+    assert evidence[0]['question_key'] is None
+    assert evidence[0]['classification_status'] == 'classified'
+    assert saved['domains']['answer']['entries'][0]['semantic_classification']['status'] == 'teacher_reviewed'
+    assert previous == original
+    tampered = deepcopy(saved)
+    tampered['domains']['recovery']['rubric_candidates'][0]['text'] = 'Forged source'
+    with pytest.raises(AuthoringError, match='未割当候補の出典情報'):
+        validate_snapshot(tampered, saved)
+    removed = deepcopy(saved)
+    removed['domains']['recovery']['rubric_candidates'] = []
+    with pytest.raises(AuthoringError, match='未割当候補の出典情報'):
+        validate_snapshot(removed, saved)
+
+
+def test_manual_routing_confirmation_does_not_create_recovery_from_fallback(workspace):
+    previous = deepcopy(begin(workspace)['snapshot'])
+    previous['domains']['answer'] = {'draft_id': 'answer-import', 'entries': [{
+        'id': 'unassigned-answer', 'source_draft_id': 'answer-import',
+        'authoring_question_key': None, 'disposition': 'unassigned',
+        'answer_text': 'Source answer', 'source': {'segments': []},
+        'semantic_classification': {'status': 'fallback', 'candidate_text': 'Source answer',
+            'segments': [{'id': 'uncertain-source', 'category': 'uncertain', 'text': 'Source answer'}]}}]}
+    previous['domains']['recovery'] = {'rubric_candidates': []}
+    submitted = deepcopy(previous)
+    entry = submitted['domains']['answer']['entries'][0]
+    entry.update(authoring_question_key=workspace.question, disposition='include', mapping_state='manual_mapped')
+    entry['semantic_classification']['status'] = 'teacher_reviewed'
+    saved = validate_snapshot(submitted, previous)
+    assert saved['domains']['recovery']['rubric_candidates'] == []
+    assert saved['domains']['answer']['entries'][0]['semantic_classification']['status'] == 'teacher_reviewed'
+
+
 def test_duplicate_confirmation_rejects_corrupt_prior_payload_without_repair(workspace):
     from sqlalchemy import update
 

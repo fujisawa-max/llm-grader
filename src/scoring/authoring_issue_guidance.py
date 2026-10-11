@@ -27,9 +27,10 @@ def issue_guidance(snapshot, issue, total):
     elif code == 'answer_missing':
         result.update(current_state='模範解答本文・確認済みの図が未登録', expected_state='模範解答本文を入力するか、正答となる図を確認して使用してください。')
     elif code == 'answer_classification':
-        result.update(current_state='候補の分類が未確認', expected_state='「候補の分類を確認」を開き、各部分の扱いを確認して「この分類を確認」を押してください。')
+        result.update(current_state='候補の分類が未確認', expected_state='候補の扱い・対応する設問・解答の種類を修正するか、「候補の分類を確認」で分類を確認してください。分類に関する変更は教師の確認として記録されます。')
     elif code in {'answer_unassigned', 'rubric_unassigned', 'rubric_recovery'}:
-        result.update(current_state='候補の対応先が未設定', expected_state='使用する設問を選んで割り当ててください。使用しない候補は内容を確認して「無視」を選んでください。')
+        exclude = '無視' if code == 'rubric_recovery' else '不要として除外'
+        result.update(current_state='候補の対応先が未設定', expected_state=f'この候補を対応する設問へ割り当てるか、内容を確認して「{exclude}」を選んでください。')
     elif code == 'test_total':
         result.update(current_state=f"テストの合計点: {snapshot['metadata']['total_points']}点 / 採点対象の配点合計: {total}点",
                       expected_state='設問の配点とテストの合計点を確認して一致させてください。')

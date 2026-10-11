@@ -401,6 +401,79 @@ def seed(root):
         session.add(issue_draft)
         geometry_env.update(ANSWER_CONTINUATION_TEST_ID=issue_test.id, ANSWER_CONTINUATION_DRAFT_ID=issue_draft.id,
                             ANSWER_CONTINUATION_QUESTION_IDS=json.dumps([q.id for q in issue_questions]))
+        # Independent, source-backed authoring queues: no API response mocks.
+        for mode in ('classification', 'queue'):
+            correction_test = domain.test(teacher_offering.id, name=f'Authoring correction {mode}', total_points=20)
+            correction_questions = [domain.question(correction_test.id, question_number=str(n),
+                display_label=f'問題{n}', sort_order=n, max_points=10, is_gradable=True,
+                question_text=f'Explain condition {n}.') for n in (1, 2)]
+            correction_material = domain.material(correction_test.id, material_type='model_answer_source',
+                storage_ref=str(split_source), original_filename='correction-answer.pdf',
+                mime_type='application/pdf', sha256=split_digest)
+            artifact = f'correction-{mode}-answer/document-ir.json'
+            PyMuPdfNativeExtractor().extract(split_source, source_sha256=split_digest,
+                material_id=correction_material.id, output_dir=root / f'correction-{mode}-answer')
+            answer_entries = []
+            for index, question in enumerate(correction_questions):
+                semantic = fallback_classification('A source answer.', source_segments=[{
+                    'id': f'correction-{mode}-{index}', 'text': 'A source answer.', 'start': 0, 'end': 16}])
+                semantic['status'] = 'needs_teacher_review' if mode == 'classification' and index == 0 else 'classified'
+                answer_entries.append({'id': str(uuid4()), 'question_id': question.id, 'mapping_state': 'automatic',
+                    'answer_kind': 'primary', 'disposition': 'include', 'answer_text': 'A source answer.',
+                    'candidate_text': 'A source answer.', 'semantic_classification': semantic,
+                    'source': {'kind': 'native_pdf', 'material_id': correction_material.id,
+                               'source_sha256': split_digest, 'segments': []}})
+            if mode == 'queue':
+                for _ in range(2):
+                    answer_entries.append({'id': str(uuid4()), 'question_id': None, 'mapping_state': 'needs_review',
+                        'answer_kind': 'alternative', 'disposition': 'unassigned', 'answer_text': 'An alternative source answer.',
+                        'source': {'kind': 'native_pdf', 'material_id': correction_material.id,
+                                   'source_sha256': split_digest, 'segments': []}})
+            correction_answer_draft = ModelAnswerImportDraft(id=str(uuid4()), test_id=correction_test.id,
+                material_id=correction_material.id, source_sha256=split_digest, artifact_ref=artifact,
+                state='editing', revision=1, snapshot={'schema': 'model-answer-review.v1', 'page_count': 1,
+                                                     'entries': answer_entries, 'question_regions': []})
+            session.add(correction_answer_draft)
+            rubric_material = domain.material(correction_test.id, material_type='rubric_source',
+                storage_ref=str(split_source), original_filename='correction-rubric.pdf',
+                mime_type='application/pdf', sha256=split_digest)
+            rubric_artifact = f'correction-{mode}-rubric/document-ir.json'
+            PyMuPdfNativeExtractor().extract(split_source, source_sha256=split_digest,
+                material_id=rubric_material.id, output_dir=root / f'correction-{mode}-rubric')
+            rubric_entries = []
+            for index, question in enumerate(correction_questions):
+                rubric_entries.append({'id': str(uuid4()), 'question_id': None if mode == 'queue' and index == 0 else question.id,
+                    'mapping_state': 'needs_review' if mode == 'queue' and index == 0 else 'automatic',
+                    'disposition': 'unassigned' if mode == 'queue' and index == 0 else 'include', 'answer_text': '',
+                    'rubric_edits': [{'id': str(uuid4()), 'description': 'Explain the source condition.', 'points': 10,
+                                     'segment_ids': [], 'grouping_confirmed': True}],
+                    'source': {'kind': 'native_pdf', 'material_id': rubric_material.id,
+                               'source_sha256': split_digest, 'segments': []}})
+            if mode == 'queue':
+                rubric_entries.append({'id': str(uuid4()), 'question_id': None, 'mapping_state': 'needs_review',
+                    'disposition': 'unassigned', 'answer_text': '',
+                    'rubric_edits': [{'id': str(uuid4()), 'description': 'Unused source condition.', 'points': 10,
+                                     'segment_ids': [], 'grouping_confirmed': True}],
+                    'source': {'kind': 'native_pdf', 'material_id': rubric_material.id,
+                               'source_sha256': split_digest, 'segments': []}})
+            correction_rubric_draft = ModelAnswerImportDraft(id=str(uuid4()), test_id=correction_test.id,
+                material_id=rubric_material.id, source_sha256=split_digest, artifact_ref=rubric_artifact,
+                state='editing', revision=1, snapshot={'schema': 'model-answer-review.v1', 'page_count': 1,
+                                                     'entries': rubric_entries, 'question_regions': []})
+            session.add(correction_rubric_draft)
+            session.flush()
+            # Read DB-native numeric types before computing the baseline hash.
+            session.expire_all()
+            from scoring.test_authoring import create_draft
+            from scoring.authoring_sources import merge_answer_analysis
+            from scoring.pdf_native import canonical_hash
+            from copy import deepcopy
+            correction_revision = create_draft(session, correction_test, teacher.id, source_roots=(root, root))
+            working = deepcopy(correction_revision.snapshot)
+            merge_answer_analysis(working, correction_answer_draft)
+            correction_revision.snapshot = working
+            correction_revision.snapshot_sha256 = canonical_hash(working)
+            geometry_env[f'AUTHORING_CORRECTION_{mode.upper()}_TEST_ID'] = correction_test.id
         completion_tests = [domain.test(teacher_offering.id, name=f"Question completion fixture {n}",
                                         total_points=20) for n in range(2)]
         completion_material = domain.material(completion_tests[1].id, material_type="model_answer_source",
@@ -539,6 +612,7 @@ def main():
                         "e2e/test-authoring-foundation-real.spec.ts",
                         "e2e/authoring-final-confirmation-real.spec.ts",
                         "e2e/authoring-final-review-issues-real.spec.ts",
+                        "e2e/authoring-correction-ux-real.spec.ts",
                         "e2e/authoring-source-backed-real.spec.ts", "e2e/authoring-rubric-reliability-real.spec.ts",
                         "e2e/authoring-entry-layout-real.spec.ts",
                         "e2e/authoring-preview-materials-real.spec.ts",
