@@ -1,4 +1,6 @@
 """Domain-authorized whole-test drafts and reversible Test management."""
+from copy import deepcopy
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select, delete, func, case
@@ -817,6 +819,8 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
                 ConfirmedAuthoringRevision.test_id == test_id,
                 ConfirmedAuthoringRevision.authoring_revision_id == v.revision_id))
             if prior:
+                if canonical_hash(prior.snapshot) != prior.snapshot_sha256:
+                    raise HTTPException(409, {'error': {'code': 'AUTHORING_CONFIRMED_INTEGRITY_FAILED', 'message': '確定済み内容の整合性を確認できません。管理者に確認してください。'}})
                 if prior.snapshot_sha256 != v.expected_snapshot_sha256 or prior.edit_version != v.expected_edit_version:
                     raise HTTPException(409, {'error': {'code': 'AUTHORING_CONFIRM_CONFLICT', 'message': '確認対象が更新されています。再読み込みしてください。'}})
                 return _confirmed_view(s, prior)
@@ -825,35 +829,53 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
                     or row.state not in {'draft', 'final_review'}
                     or canonical_hash(normalize_authoring_snapshot(row.snapshot)) != v.expected_snapshot_sha256):
                 raise HTTPException(409, {'error': {'code': 'AUTHORING_CONFIRM_CONFLICT', 'message': '保存済み内容が更新されています。再読み込みして最終確認をやり直してください。'}})
-            validate_materials(row.snapshot, s, test_id)
-            if row.snapshot.get('domains', {}).get('answer'):
+            # Freeze the saved payload before calling Save-oriented validators.
+            # They attest diagram revisions and rebuild projections on their
+            # input; confirmation validates detached copies and discards edits.
+            saved_snapshot = normalize_authoring_snapshot(row.snapshot)
+            saved_hash = canonical_hash(saved_snapshot)
+            if saved_hash != v.expected_snapshot_sha256:
+                raise ValueError('AUTHORING_CONFIRM_SNAPSHOT_CHANGED')
+            validate_materials(saved_snapshot, s, test_id)
+            answer_validation = deepcopy(saved_snapshot)
+            if saved_snapshot.get('domains', {}).get('answer'):
                 from ..authoring_answers import AuthoringAnswers
-                AuthoringAnswers(s, answer_root, row, row.snapshot).validate()
-            if row.snapshot.get('domains', {}).get('question'):
+                AuthoringAnswers(s, answer_root, row, answer_validation).validate()
+            if saved_snapshot.get('domains', {}).get('question'):
                 from ..authoring_question import AuthoringQuestionReview
                 from ..review_document import ReviewError
                 try:
-                    AuthoringQuestionReview(s, question_root, row, row.snapshot).validate_working(row.snapshot)
+                    question_validation = deepcopy(saved_snapshot)
+                    AuthoringQuestionReview(s, question_root, row, question_validation).validate_working(question_validation)
                 except (ReviewError, ValueError) as exc:
                     raise ValueError('AUTHORING_INVALID_HIERARCHY') from exc
             if source_problems(row, s):
                 raise HTTPException(409, {'error': {'code': 'AUTHORING_SOURCE_INVALID', 'message': '資料の出典状態を確認してから確定してください。'}})
             if row.baseline_sha256 != baseline_hash(projection(s, test)):
                 raise HTTPException(409, {'error': {'code': 'AUTHORING_BASELINE_CHANGED', 'message': '正式内容が確認時から変更されています。再読み込みしてください。'}})
-            readiness = preflight(row.snapshot)
+            readiness = preflight(saved_snapshot)
+            validated_readiness = preflight(answer_validation)
+            if not readiness['issues']:
+                readiness = validated_readiness
             if readiness['issues']:
                 raise HTTPException(409, {'error': {'code': 'AUTHORING_BLOCKED', 'message': '最終確認の要修正項目を解消してください。', 'issues': readiness['issues']}})
             from ..test_authoring import source_warnings
-            if source_warnings(row.snapshot):
+            if source_warnings(saved_snapshot):
                 raise HTTPException(409, {'error': {'code': 'AUTHORING_SOURCE_WARNING', 'message': '問題文と元資料の対応を確認してください。'}})
             from ..authoring_confirmation import project_confirmed_snapshot
             s.info['authoring_confirmation_projection'] = True
-            project_confirmed_snapshot(s, test, row.snapshot, s.info['auth_user'].id)
+            project_confirmed_snapshot(s, test, deepcopy(saved_snapshot), s.info['auth_user'].id)
+            confirmed_payload = deepcopy(saved_snapshot)
+            confirmed_hash = canonical_hash(confirmed_payload)
+            if confirmed_hash != saved_hash or canonical_hash(normalize_authoring_snapshot(row.snapshot)) != saved_hash:
+                raise ValueError('AUTHORING_CONFIRM_SNAPSHOT_CHANGED')
             confirmed = ConfirmedAuthoringRevision(test_id=test_id, authoring_revision_id=row.id,
-                revision=row.revision, edit_version=row.edit_version, snapshot_sha256=v.expected_snapshot_sha256,
-                snapshot=normalize_authoring_snapshot(row.snapshot), confirmed_by=s.info['auth_user'].id, confirmed_at=now())
+                revision=row.revision, edit_version=row.edit_version, snapshot_sha256=confirmed_hash,
+                snapshot=confirmed_payload, confirmed_by=s.info['auth_user'].id, confirmed_at=now())
             s.add(confirmed)
             s.flush()
+            if canonical_hash(confirmed.snapshot) != confirmed.snapshot_sha256:
+                raise ValueError('AUTHORING_CONFIRM_SNAPSHOT_CHANGED')
             changed = s.execute(update(TestAuthoringRevision).where(TestAuthoringRevision.id == row.id,
                 TestAuthoringRevision.edit_version == v.expected_edit_version,
                 TestAuthoringRevision.state.in_(['draft', 'final_review']))

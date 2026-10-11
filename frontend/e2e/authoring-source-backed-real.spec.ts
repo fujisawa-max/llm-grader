@@ -70,7 +70,7 @@ test("saved source reviews integrate Question, answer diagrams and advanced Rubr
   await page.getByRole("checkbox",{name:"解答",exact:true}).uncheck();await page.getByRole("checkbox",{name:"解答",exact:true}).check();await expect(diagrams.getByText("使用中",{exact:true})).toBeVisible();
   const beforeReview=await (await page.request.get(base+"/authoring")).json();
   await page.getByRole("button",{name:"最終確認へ",exact:true}).click();
-  await page.getByRole("button",{name:/問題4.*採点基準の配点合計/}).click();await expect(selector).toHaveValue("q2");
+  await page.locator(".authoring-issue-cards article").filter({hasText:"問題4"}).filter({hasText:"採点基準の配点合計"}).getByRole("button",{name:"採点基準を修正",exact:true}).click();await expect(selector).toHaveValue("q2");
   await expect.poll(()=>page.evaluate(()=>!!document.activeElement?.closest('[aria-label="採点基準候補"]'))).toBe(true);
   expect((await (await page.request.get(base+"/authoring")).json()).revision.edit_version).toBe(beforeReview.revision.edit_version);
   await selector.selectOption("q1");await expect(editor).toHaveValue(initial+"\n教師が編集した問題文");

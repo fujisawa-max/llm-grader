@@ -116,6 +116,7 @@ export default function TestAuthoringPage() {
     .filter(n=>n.parent_key===parent).sort((a,b)=>a.sort_order-b.sort_order||a.stable_key.localeCompare(b.stable_key))
     .flatMap(n=>[n,...orderedNodes(n.stable_key,depth+1)]);
   const node=nodes.find(n=>n.stable_key===selected);
+  const issuesForQuestion=(key:string)=>issues.filter(issue=>issue.question_key===key);
   const pathFor=(key:string)=>canonicalQuestionPath(key,nodes.map(n=>({key:n.stable_key,parentKey:n.parent_key,label:n.label.raw})));
   useEffect(()=>{
     if(!dirty&&!saving)return;
@@ -485,7 +486,7 @@ export default function TestAuthoringPage() {
       {sourceMode==="pdf"&&materialId&&<SourcePdfPreview key={materialId} testId={id} material={materials.find(m=>m.id===materialId)} label="利用資料PDF" inline paneZoom diagramSelection={diagramSelection?.record.material_id===materialId?diagramSelection:undefined} targetLocation={diagramSelection?.record.material_id===materialId?{id:diagramSelection.record.id,page:diagramSelection.record.page_index+1,bbox:diagramSelection.record.final_bbox||diagramSelection.record.automatic_bbox}:mappedLocation}/>}
     </>} selector={<><div className="review-toolbar authoring-target-controls">
       <label>対象設問<select aria-label="対象設問" value={selected} onChange={e=>{if(e.target.value==="all")void finalReview(false);else {setFinalReviewMode(false);setSelected(e.target.value);setDiagramSelection(undefined);setRegionId("");}}}>
-        {orderedNodes().map(n=><option key={n.stable_key} value={n.stable_key}>{pathFor(n.stable_key)}</option>)}{(snapshot.domains?.answer?.entries.some(e=>!e.authoring_question_key)||snapshot.domains?.rubric?.entries.some(e=>!e.authoring_question_key))&&<option value="unassigned">設問未割当の候補</option>}<option value="all">テスト全体確認</option>
+        {orderedNodes().map(n=>{const needsCorrection=issuesForQuestion(n.stable_key).length>0;const label=pathFor(n.stable_key);return <option key={n.stable_key} value={n.stable_key} aria-label={needsCorrection?`${label}、要修正あり`:label}>{label}{needsCorrection?" *":""}</option>;})}{(snapshot.domains?.answer?.entries.some(e=>!e.authoring_question_key)||snapshot.domains?.rubric?.entries.some(e=>!e.authoring_question_key))&&<option value="unassigned">設問未割当の候補</option>}<option value="all">テスト全体確認</option>
       </select></label><span>表示</span>{([['question','問題'],['answer','解答'],['rubric','採点基準']] as const).map(([key,label])=><label key={key}><input type="checkbox" checked={visible[key]} onChange={e=>{const next={...visible,[key]:e.target.checked};setVisible(next);localStorage.setItem("test-authoring-visible",JSON.stringify(next));}}/>{label}</label>)}
       <span className="authoring-add-question"><button disabled={readonly||saving||analyzing} onClick={()=>{const n=newNode(nodes.length);change({...snapshot,nodes:[...nodes,n]});setBuffers(current=>({...current,[n.stable_key]:""}));setSelected(n.stable_key);}}>設問を追加</button></span>
     </div>{analyzing&&<p className="authoring-analysis-progress" role="status" aria-live="polite"><span className="spinner" aria-hidden="true"/><strong>{analysisProgress}を解析しています…</strong><span className="muted">元資料を確認し、候補を更新しています。</span></p>}
@@ -496,7 +497,7 @@ export default function TestAuthoringPage() {
           <button type="button" disabled={readonly||saving||analyzing} onClick={()=>updateRecovery(candidate.id,{dismissed:true})}>無視</button>
         </article>)}
       </details>}
-    </>} overlay={node&&<QuestionIssueOverlay questionKey={selected} label={pathFor(selected)} issues={issues.filter(issue=>issue.question_key===selected)} pathFor={pathFor} onAction={navigate}/>}>
+    </>} overlay={node&&<QuestionIssueOverlay questionKey={selected} label={pathFor(selected)} issues={issuesForQuestion(selected)} pathFor={pathFor} onAction={navigate}/>}>
       {selected==="all"?<section aria-label="テスト全体確認"><h2>{finalReviewMode?"最終確認":"テスト全体確認"}</h2>{finalReviewMode&&<p>テストを確定する前に、内容と要修正事項を確認してください。</p>}
         <label>テスト名<input disabled={readonly||saving||analyzing} value={snapshot.metadata.name} onChange={e=>change({...snapshot,metadata:{...snapshot.metadata,name:e.target.value}})}/></label>
         <label>合計点<input type="number" disabled={readonly||saving||analyzing} value={snapshot.metadata.total_points} onChange={e=>change({...snapshot,metadata:{...snapshot.metadata,total_points:Number(e.target.value)}})}/></label>

@@ -151,7 +151,8 @@ def test_publication_boundary_never_partially_registers(workspace):
         assert s.scalar(select(func.count()).select_from(RubricVersion))==2
         assert s.scalar(select(Revision.state))=='confirmed'
         basis=s.scalar(select(ConfirmedAuthoringRevision))
-        assert basis.snapshot_sha256==row['snapshot_sha256']
+        from scoring.pdf_native import canonical_hash
+        assert canonical_hash(basis.snapshot)==basis.snapshot_sha256==row['snapshot_sha256']
         assert basis.snapshot==row['snapshot']
         formal_question=s.get(Question,w.question)
         assert formal_question.question_text==basis.snapshot['nodes'][0]['body_text']
@@ -552,3 +553,31 @@ def test_actionable_review_values_and_specific_targets_preserve_blockers(workspa
     after = preflight(value)
     assert len(after['issues']) == len(result['issues']) - 2
     assert any(item.get('code') == 'answer_classification' for item in after['issues'])
+
+
+def test_duplicate_confirmation_rejects_corrupt_prior_payload_without_repair(workspace):
+    from sqlalchemy import update
+
+    w = workspace
+    row = begin(w)
+    body = {'revision_id': row['id'], 'expected_edit_version': row['edit_version'],
+            'expected_snapshot_sha256': row['snapshot_sha256']}
+    result = w.client.post(base(w)+'/authoring/confirm', json=body)
+    assert result.status_code == 200, result.text
+    identifier = result.json()['id']
+    corrupted = deepcopy(row['snapshot'])
+    corrupted['metadata']['description'] = 'Controlled historical corruption fixture'
+    # Model a pre-fix persisted mismatch without disabling the ORM immutability
+    # guard or introducing a production repair/migration path.
+    with w.engine.begin() as connection:
+        connection.execute(update(ConfirmedAuthoringRevision).where(
+            ConfirmedAuthoringRevision.id == identifier).values(snapshot=corrupted))
+    retry = w.client.post(base(w)+'/authoring/confirm', json=body)
+    assert retry.status_code == 409, retry.text
+    assert retry.json()['error']['code'] == 'AUTHORING_CONFIRMED_INTEGRITY_FAILED'
+    with w.sf() as session:
+        prior = session.get(ConfirmedAuthoringRevision, identifier)
+        assert prior.snapshot == corrupted
+        assert prior.snapshot_sha256 == row['snapshot_sha256']
+        assert session.get(Exam, w.legacy).active_confirmed_revision_id == identifier
+        assert session.scalar(select(func.count()).select_from(ConfirmedAuthoringRevision)) == 1

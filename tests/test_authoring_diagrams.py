@@ -685,3 +685,110 @@ def test_answer_analysis_never_projects_rubric_segments_into_rubric_domain():
     assert snapshot['rubrics'] == {}
     retained = snapshot['domains']['answer']['entries'][0]
     assert any(segment['category'] == 'rubric' for segment in retained['semantic_classification']['segments'])
+
+
+@pytest.mark.parametrize('diagram_kind', ['automatic', 'manual', 'reuse', 'multiple'])
+@pytest.mark.parametrize('inject_failure', [False, True])
+def test_confirmation_preserves_saved_diagrams_and_exact_hash(workspace, diagram_kind, inject_failure, monkeypatch):
+    from sqlalchemy import select
+    from scoring.db.models import ConfirmedAuthoringRevision, TestAuthoringRevision
+    from scoring.pdf_native import canonical_hash
+
+    w = workspace
+    path, row = begin(w, w.answer['test_id'])
+    snapshot = deepcopy(row['snapshot'])
+    parent = snapshot['nodes'][0]
+    parent.update(score_semantics='sum_children', score_points=None)
+    children = []
+    for index in range(2):
+        child = deepcopy(parent)
+        child.update(stable_key=f'teacher-{uuid4()}', review_node_id=str(uuid4()),
+                     parent_key=parent['stable_key'], node_type='subquestion', depth=1,
+                     sort_order=index, score_semantics='direct', score_points=5,
+                     label={'raw': f'({index+1})', 'normalized': f'({index+1})'})
+        children.append(child)
+    snapshot['nodes'].extend(children)
+    for entry in snapshot['domains']['answer']['entries']:
+        entry['disposition'] = 'ignored'
+    entries = [manual(n['stable_key']) for n in children]
+    other = snapshot['nodes'][1]
+    extra = manual(other['stable_key'])
+    extra['answer_text'] = 'Teacher answer'
+    snapshot['domains']['answer']['entries'].extend([*entries, extra])
+    for n in [*children, other]:
+        snapshot['rubrics'][n['stable_key']] = [{'id': str(uuid4()), 'description': 'Teacher criterion',
+            'points': n['score_points'], 'segment_ids': [], 'grouping_confirmed': True,
+            'provenance': {'source': 'teacher_manual'}}]
+    row = save(w, path, row, snapshot)
+    first_path = path+f'/entries/{entries[0]["id"]}/diagrams?question_id={children[0]["stable_key"]}'
+    response = w.client.post(first_path+'&scope=parent', json={'expected_revision': row['edit_version']})
+    assert response.status_code == 200, response.text
+    automatic = {**clean(response.json()['diagrams'][0]), 'state': 'accepted', 'teacher_confirmed': True}
+    snapshot = deepcopy(row['snapshot'])
+    for entry in snapshot['domains']['answer']['entries']:
+        if entry['id'] == entries[0]['id']:
+            entry['diagram_records'] = [automatic]
+    row = save(w, path, row, snapshot)
+    second_path = path+f'/entries/{entries[1]["id"]}/diagrams?question_id={children[1]["stable_key"]}'
+    records = []
+    if diagram_kind in {'manual', 'multiple'}:
+        response = w.client.post(second_path.replace('/diagrams?', '/manual-crop?'),
+            json={'expected_revision': row['edit_version'], 'page_index': 0, 'bbox': [65, 75, 240, 245]})
+        assert response.status_code == 200, response.text
+        records.append({**clean(response.json()), 'state': 'accepted', 'teacher_confirmed': True})
+    if diagram_kind in {'reuse', 'multiple'}:
+        response = w.client.get(second_path+'&scope=reuse')
+        assert response.status_code == 200, response.text
+        records.append({**clean(response.json()['reusable_diagrams'][0]), 'state': 'accepted'})
+    snapshot = deepcopy(row['snapshot'])
+    for entry in snapshot['domains']['answer']['entries']:
+        if entry['id'] == entries[1]['id']:
+            entry['diagram_records'] = records
+            entry['answer_text'] = 'Teacher answer' if not records else ''
+    for entry in snapshot['domains']['answer']['entries']:
+        if not entry.get('authoring_question_key'):
+            entry['disposition'] = 'ignored'
+    saved = save(w, path, row, snapshot)
+    review = w.client.get(path+'/review').json()
+    assert review['can_confirm'], review
+    expected = deepcopy(saved['snapshot'])
+    assert canonical_hash(expected) == saved['snapshot_sha256']
+    body = {'revision_id': saved['id'], 'expected_edit_version': saved['edit_version'],
+            'expected_snapshot_sha256': saved['snapshot_sha256']}
+    if inject_failure:
+        from scoring import authoring_confirmation
+        from scoring.db.models import Test as Exam
+        project = authoring_confirmation.project_confirmed_snapshot
+
+        def fail_after_projection(*args, **kwargs):
+            project(*args, **kwargs)
+            raise RuntimeError('diagram confirmation rollback fixture')
+
+        with monkeypatch.context() as patcher:
+            patcher.setattr(authoring_confirmation, 'project_confirmed_snapshot', fail_after_projection)
+            with pytest.raises(RuntimeError, match='diagram confirmation rollback fixture'):
+                w.client.post(path+'/confirm', json=body)
+        with w.sf() as session:
+            assert session.scalar(select(ConfirmedAuthoringRevision)) is None
+            assert session.get(Exam, w.answer['test_id']).active_confirmed_revision_id is None
+            working = session.get(TestAuthoringRevision, saved['id'])
+            assert working.state == 'draft'
+            assert working.snapshot == expected
+            assert working.edit_version == saved['edit_version']
+        assert len(w.client.get(f'/api/v1/tests/{w.answer["test_id"]}/questions').json()) == 2
+    confirmed = w.client.post(path+'/confirm', json=body)
+    assert confirmed.status_code == 200, confirmed.text
+    with w.sf() as session:
+        basis = session.scalar(select(ConfirmedAuthoringRevision))
+        working = session.get(TestAuthoringRevision, saved['id'])
+        assert basis.snapshot == working.snapshot == expected
+        assert basis.snapshot_sha256 == canonical_hash(basis.snapshot) == canonical_hash(expected)
+        assert working.edit_version == saved['edit_version']
+        assert working.revision == saved['revision']
+    duplicate = w.client.post(path+'/confirm', json=body)
+    assert duplicate.status_code == 200, duplicate.text
+    assert duplicate.json()['id'] == confirmed.json()['id']
+    assert duplicate.json()['snapshot'] == expected
+    assert duplicate.json()['snapshot_sha256'] == canonical_hash(expected)
+    with w.sf() as session:
+        assert len(list(session.scalars(select(ConfirmedAuthoringRevision)))) == 1
