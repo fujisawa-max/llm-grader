@@ -2,7 +2,7 @@
 
 ## Result
 
-**READY_FOR_PRODUCTION_VALIDATION** — local implementation and final regression passed. Operator deployment and deployed UX acceptance remain. No deployment or production mutation is performed by this phase. J.UI.12c remains COMPLETE; J.UI.12d and Undo/Redo are not started.
+**COMPLETE** — local regression passed and production correction-UX acceptance passed on 2026-10-11 after operator deployment. Dedicated validation records only were modified. J.UI.12c remains COMPLETE; J.UI.12d and Undo/Redo are not started.
 
 ## Baseline
 
@@ -68,7 +68,41 @@ Two backend regressions prove successful confirmation/assignment without new fal
 
 Focused browser call-count assertions show no model-call increase from routing changes, assignment/exclusion, Save, readiness refresh or reload. The browser harness asserts grading jobs = 0. Confirmation transaction, snapshot/hash integrity, CAS/idempotency and immutable-revision architecture are unchanged and included in broader regression.
 
-No production connection, deployment, credentials, migration or existing production data modification is required/performed in this phase. After operator deployment, verify content-visible correction navigation, routing edits resolving classification issues, and assignment/exclusion resolving unassigned blockers on an isolated draft. J.UI.12c remains COMPLETE.
+The local implementation stopped before deployment. The operator subsequently deployed 12e and explicitly requested production acceptance. Its results are recorded below; J.UI.12c remains COMPLETE.
+
+## Production acceptance — 2026-10-11
+
+- Acceptance checkout HEAD: `336b3f0dc998a88831c01c30330b7fe777ad23f3`; working tree was clean at acceptance start.
+- Teacher browser login and authenticated API access passed. Deployed 12e was demonstrated by its new issue guidance, processing controls, manual-edit confirmation metadata and content-first navigation, rather than assumed from the local checkout.
+- Dedicated Course/Offering: `Codex Validation - J.UI.12e 2026-10-11T17-07-51-561Z`.
+- Dedicated Test: `Codex Validation - J.UI.12e 2026-10-11T17-07-51-561Z - Source candidates`. It remains as an editable validation draft for inspection; no Confirm/publication was performed.
+- Uploaded the actual `testData/SampleQ/modelAnswer/sampleQ5_modelAnswer.pdf` as Answer and Rubric sources and ran explicit source analysis. Native Answer extraction produced one unassigned source-backed candidate with classification `fallback`. Native Rubric extraction produced no useful candidates and no recovery rows. No extracted Rubric data was fabricated.
+
+### Correction navigation and confirmation
+
+- Final Review's native unassigned-Answer action selected the unassigned queue, highlighted the exact candidate, focused `対応する設問`, and displayed the concrete assignment/exclusion guidance. The candidate text was visible below the sticky selector.
+- A controlled classification-review state was then exercised on the same dedicated source candidate using its permitted teacher-editable segment categories and normal authenticated authoring Save. Server canonicalization produced `needs_teacher_review`. This was a controlled teacher-edit case, not a claim that native inference produced that status; the original native automatic `fallback` classification remained in teacher history.
+- The selected Question showed `*` and `要修正 1件`. Opening the issue overlay preserved editor width and window scroll position. Its correction action opened/highlighted classification content in the visible viewport.
+- Editing answer prose and saving left `needs_teacher_review` and its issue intact. Changing answer kind and returning it to the intended primary kind changed status to `teacher_reviewed`, recorded `confirmation_origin: manual_edit`, and retained the original automatic classification exactly.
+- The issue tab and selected dropdown `*` disappeared immediately while Save remained dirty. Final Review showed the unsaved warning and disabled Confirm. Save then cleared the unsaved state without analysis.
+- A five-criterion teacher-authored Rubric exercised a low-page criterion's `修正箇所へ` and `この採点基準を確認`. The criterion textarea, not only its button, was visible below sticky controls both before and after confirmation. Highlight remained functional, and its issue disappeared after the explicit confirmation.
+- Chromium viewport: 1600×900. Sticky selector bottom: y=232px; classification content began at y=280.78px, unassigned candidate text at y=298.88px, and the Rubric textarea at y=309.72px with height=132px. The meaningful content was inside the viewport below the sticky controls.
+
+### Unassigned processing and persistence
+
+- Native PDF-derived Answer candidate: assignment set included/manual-mapped state and teacher-reviewed classification; its unassigned blocker disappeared. Its source, source draft and original automatic classification were unchanged. Returning it to the unassigned queue and choosing `不要として除外` set ignored disposition, retained the source-backed candidate, and removed its blocker.
+- Since native Rubric extraction returned zero candidates, two clearly teacher-authored non-scoring Rubric candidates were created in this dedicated draft through normal authoring Save to exercise the same unassigned UI. One was assigned and the other explicitly excluded. Both retained their teacher-manual source/history and manual confirmation metadata; their corresponding blockers disappeared. This production case does not assert native source-derived Rubric extraction; that path remains covered by the local source-backed browser regressions.
+- A teacher-created primary answer kept the final dedicated draft valid after the native candidate's deliberate exclusion. Five 20-point criteria plus the non-scoring assigned candidate retained the Test's 100-point total.
+- Final server readiness blockers: **0**. Reload, Back and resume preserved assignment/exclusion decisions, confirmed criterion handling, source/provenance and clear issue markers.
+
+### Safety and verification limits
+
+- Dedicated Test grading jobs: **0**; observed grading-start requests: **0**.
+- Correction/Save/navigation phases issued **0** analysis/OCR/split/normalization requests. Initial explicit Answer/Rubric analysis was separate and expected. Runtime-wide inference logs were not accessed with the Teacher account; exact no-inference call counts remain proven by local RuntimeManager regressions.
+- No JavaScript page exceptions or unexpected HTTP errors occurred in the completed final UI acceptance segment. Earlier automation setup attempts needed the selected target/edit state synchronized; an API-only Rubric fixture update initially omitted its matching flattened projection and was rejected with 409. The setup was corrected to submit matching normal authoring representations; no product change, retry delay or safety relaxation was needed.
+- No existing Tests, confirmed revisions, grades, submissions, users or runtime configuration were modified. No deployment, migration, DB reset or unrelated cleanup was performed by the agent. Validation records were left for inspection.
+- Credentials were read only from environment variables. No screenshots, HAR, browser traces, cookies or authentication tokens were saved. The changed report and local acceptance scripts/results/logs were checked for literal credential values without printing those values.
+- Production correction UX acceptance passed; there is no remaining 12e acceptance blocker. Parent/child marker ownership, diagrams, role isolation, CAS/idempotency and confirmed snapshot integrity remain backed by the already-passing 72-case full local browser and 981-case backend regression; this phase did not reconfirm or rewrite an existing production revision.
 
 ## Future Undo/Redo note
 
@@ -92,7 +126,7 @@ Future J.UI.12d/revision-management design should consider undo of unsaved opera
 - `docs/reports/j-ui-12e.md`: standalone phase report.
 - `docs/reports/j-ui-12c.md`: inherited baseline change only; not changed by 12e.
 
-## Final git status
+## Local implementation final git status (historical)
 
 ```text
  M docs/reports/j-ui-12c.md
@@ -113,3 +147,13 @@ Future J.UI.12d/revision-management design should consider undo of unsaved opera
 ```
 
 The 12c report change is inherited from the initial baseline. No files staged, committed or pushed.
+
+## Production acceptance final git status
+
+Only this standalone phase report changed during production acceptance:
+
+```text
+ M docs/reports/j-ui-12e.md
+```
+
+No parent report or J.UI.12c report was edited. No commit or push was performed.
