@@ -2,7 +2,7 @@
 
 ## Result
 
-**READY_FOR_PRODUCTION_VALIDATION** — focused implementation and local regression passed. Operator deployment and real-server acceptance remain. J.UI.12e remains COMPLETE and J.UI.12c is not reopened. No deployment or production mutation is performed. J.UI.12d and Undo/Redo are not started.
+**COMPLETE** — local regression and production acceptance passed on 2026-10-11 after operator deployment. A fresh dedicated source-backed Sample Q5 Test stays at zero issues after Confirm, duplicate Confirm, reload and Back/resume. Genuine attestation mismatch still produces revision-oriented guidance. J.UI.12e remains COMPLETE and J.UI.12c is not reopened. J.UI.12d and Undo/Redo are not started.
 
 ## Baseline and reproduction
 
@@ -73,9 +73,57 @@ This is not a suppression based only on `state=confirmed`, a review checkbox, or
 
 ## Remaining acceptance
 
-Operator deployment is required before real-server revalidation. On a dedicated confirmed source-backed Test, verify normal Confirm stays at issue count zero, reload/Back/resume remains clean, and any genuine drift directs the teacher to a revised draft. Do not alter existing production confirmed content for this validation.
+Production acceptance is complete. No remaining fix1 blocker was found. Dedicated validation records remain for inspection.
 
-## Git status
+## Production acceptance — 2026-10-11
+
+- Acceptance checkout HEAD: `e65173410d44d610c230046c99fa77faab9bb5da`; initial working tree clean.
+- Operator deployed fix1. Its execution was verified by the reconciled persisted baseline hash and the deployed genuine-mismatch guidance, not assumed from the local checkout.
+- Fresh Test: **`Codex Validation - J.UI.12e-fix1 Sample Q5 2026-10-11T22-31-35-454Z`**, created inside the existing dedicated 12e validation Course/Offering. No unrelated Course/Offering/Test was changed.
+- Used actual `testData/SampleQ/sampleQ5.pdf` and `testData/SampleQ/modelAnswer/sampleQ5_modelAnswer.pdf`; Question analysis, Q3 three-child split, saved Answer analysis, native/corrected automatic diagram, manual PDF crop, and same-major saved reuse were exercised in Chromium.
+- The two saved origin diagrams were reused for the third child; four accepted diagram records were retained. Actual PDF content was reviewed, including the confusion matrix/formulas and decision-boundary plot. Teacher-authored scores/criteria follow the Sample Q5 100-point scheme. Unassigned non-answer candidates were explicitly excluded, classification confirmations performed, and three source-review warnings explicitly acknowledged after checking the PDFs. No blocker was suppressed.
+- Answer analysis exceeded an initial 30-second automation response wait but completed successfully on the server. Persisted completion was inspected and reused; it was not blindly reanalysed. An attempted resume expecting `解析` found the correctly updated `再解析` control and made no additional inference request.
+
+### Normal confirmation/readiness
+
+| Stage | Server actionable issues | Browser state |
+| --- | --- | --- |
+| Saved Final Review before Confirm | 0 | Confirm enabled; source review satisfied |
+| Immediately after successful Confirm | 0 | Confirmed/read-only; `要修正事項、未解決0件` |
+| Duplicate Confirm | 0 | Same confirmed revision; formal projection and baseline unchanged |
+| Reload/reopen Final Review | 0 | Confirmed state retained |
+| Back → `テスト内容を見る` → Final Review | 0 | Confirmed state retained; no Question `*` markers |
+
+The false `元の正式内容が変更されています。出典付きレビューを確認してください。` issue and the old `確認状態を保存しても、元の警告は残ります。` text were absent. Server issues, badge and dropdown markers agreed.
+
+### Persisted reconciliation and integrity
+
+- Pre-confirm mutable baseline: `11238a3a9f895558a76ee05629a16d920de635a0538353451d34fc8a64840ae1`.
+- Post-confirm mutable baseline and recomputed formal projection hash both: `f83a3d49b4137bfab881a67c07572124fc907ee19b8adbb34698b24226d13b15`.
+- Saved working snapshot, confirmed snapshot and stored confirmed SHA all: `ac39d0699ad05b885b13b77809573d07e1d509622913bad0615bb375ea4fc1e0`.
+- Complete recursive saved/confirmed snapshot equality passed. Working edit version and all four diagram record revisions were unchanged by Confirm. Canonical hashes were recomputed from raw API JSON with Python to preserve numeric representations.
+- Duplicate Confirm returned the same confirmed revision, preserved the baseline, and did not change the formal Question/Answer/Rubric projection. Reload/resume preserved snapshot and confirmed identity.
+
+### Genuine-mismatch negative, without unsafe production mutation
+
+Teacher APIs correctly prevent arbitrary confirmed formal/material edits. No SQL, filesystem tampering, guard bypass or artificial response injection was used in production.
+
+Instead, the known protected historical validation record **`Codex Validation - J.UI.12c Sample Q5 2026-10-11T14-02-08-019Z`** was inspected read-only. This is the pre-fix confirmation-integrity evidence already preserved from the earlier 12c acceptance: its actual confirmed payload hash disagrees with its stored attestation, so it is a genuine review-basis inconsistency rather than a normal successful projection.
+
+- Production readiness retained one `formal_review_stale` source issue.
+- Browser displayed `確定後に正式内容・出典との対応に差異が検出されました。` and `確定済みの内容は変更できません。`.
+- The affected issue card provided an enabled **`修正版を作成`** action and explicit revision guidance. It did not direct the teacher into an impossible Save loop; the old lower message was absent.
+- Before/after authenticated authoring responses were identical. The action was not executed on this protected evidence record; no immutable content or old grading basis was rewritten.
+- Thus the production negative is a real existing attestation mismatch, not a newly injected external edit. Controlled post-confirm Question/Answer/Rubric/asset mutations and actual revised-draft action execution remain separately proven by the local backend/Chromium negatives above.
+
+### Production safety
+
+- Dedicated Test grading jobs: **0**; submissions: **0**; grading-start requests: **0**.
+- Confirm/idempotency/navigation observation window: **0** explicit analysis/OCR/discovery/normalization requests, **0** browser page exceptions and **0** unexpected HTTP errors. Initial explicitly requested analysis/discovery was separate. Runtime-wide model logs were not accessed with the Teacher account; local RuntimeManager regressions provide direct inference-call assertions.
+- No agent deployment, migration, DB reset, user administration, runtime configuration change or unrelated-data mutation occurred. New dedicated authoring/confirmed rows were created only for this acceptance; the negative evidence record was read-only. No J.UI.12d or Undo/Redo work occurred.
+- Environment credentials were never printed or embedded in files. No screenshots, HAR, authentication tokens/cookies or browser traces were saved. Changed report and local acceptance scripts/results/logs passed a literal credential audit without displaying credential values.
+
+## Local implementation git status (historical)
 
 ```text
  M frontend/app/tests/[testId]/authoring/page.tsx
@@ -92,3 +140,11 @@ Operator deployment is required before real-server revalidation. On a dedicated 
 ```
 
 No migration, DB reset, commit or push. Parent 12e/12c reports are unchanged.
+
+## Production acceptance final git status
+
+```text
+ M docs/reports/j-ui-12e-fix1.md
+```
+
+Only this standalone fix report changed. Parent reports, application code and tests were not edited during production acceptance. No commit or push.
