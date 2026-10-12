@@ -17,7 +17,8 @@ def source_snapshot():
                 for code in ('ambiguous_geometric_order', 'reasoning_output_requires_review')]
     return {'nodes': [node], 'metadata': {'total_points': 10},
             'answers': {'accuracy': {'primary': 'answer'}},
-            'rubrics': {'accuracy': [{'points': 10, 'description': 'criterion'}]},
+            'rubrics': {'accuracy': [{'id': 'criterion', 'points': 10, 'description': 'criterion',
+                'levels': [{'score': 0, 'condition': 'No credit'}, {'score': 10, 'condition': 'Complete response'}]}]},
             'source_provenance': {}, 'domains': {'question': {
                 'document': {'id': 'review', 'material_id': 'material',
                              'source_pdf_sha256': 'a'*64, 'warnings': warnings, 'regions': []},

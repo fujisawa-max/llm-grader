@@ -188,7 +188,9 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
             'parent_confirmed_revision_id': working.parent_confirmed_revision_id if working else None,
             'edit_version': row.edit_version,
             'snapshot_sha256': row.snapshot_sha256, 'confirmed_at': row.confirmed_at.isoformat(),
-            'confirmed_by': actor.display_name if actor else None, 'snapshot': row.snapshot}
+            'confirmed_by': actor.display_name if actor else None,
+            'grading_definition_complete': row.snapshot.get('domains', {}).get('grading_definition', {}).get('complete', False),
+            'snapshot': row.snapshot}
 
     @r.get('/tests/{test_id}/authoring/confirmed')
     def confirmed_authoring(test_id: str, s=Depends(db)):
@@ -326,6 +328,8 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
                 if saved_origin.get('tokens') != tokens:
                     saved_origin['kept_authoring_after_external_change'] = tokens
                     saved_origin['tokens'] = tokens
+                    from ..grading_definition import freeze_definition
+                    freeze_definition(acknowledged)
                     row.snapshot = acknowledged
                     row.snapshot_sha256 = canonical_hash(acknowledged)
             s.commit()
@@ -354,6 +358,11 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
         if previous_analyses and 'analysis_materials' not in snapshot['source_provenance']:
             from copy import deepcopy
             snapshot['source_provenance']['analysis_materials'] = deepcopy(previous_analyses)
+        from ..grading_definition import freeze_definition, capture_evidence, snapshot_evidence
+        evidence = row.snapshot.get('domains', {}).get('grading_definition', {}).get('evidence')
+        if evidence is None:
+            evidence = snapshot_evidence(row.snapshot, row.test_id) if row.parent_confirmed_revision_id else capture_evidence(session, snapshot, row.test_id)
+        freeze_definition(snapshot, evidence)
         values = {'state': 'analysis_backup'} if preserve else {
             'snapshot': snapshot, 'snapshot_sha256': canonical_hash(snapshot),
             'baseline_sha256': baseline or row.baseline_sha256,
@@ -871,6 +880,15 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
                 raise HTTPException(422, {'error': {'code': getattr(exc, 'code', 'AUTHORING_SOURCE_INVALID'),
                     'message': '編集内容と出典の対応を確認してください。変更は保存されていません。'}}) from exc
         result = preflight(snapshot)
+        if row and row.state == 'confirmed' and 'grading_definition' not in snapshot.get('domains', {}):
+            # Historical revisions remain readable, never silently upgraded.
+            result['issues'] = [i for i in result['issues'] if i.get('origin') != 'grading_definition']
+        from ..grading_definition import compile_definition
+        definition, _ = compile_definition(snapshot)
+        result['grading_definition_complete'] = definition['complete']
+        if not body and row and row.state != 'confirmed' and definition['complete'] and snapshot.get('domains', {}).get('grading_definition') != definition:
+            result['issues'].append({'question_key': None, 'section': 'save', 'code': 'grading_definition_save_required',
+                'message': '採点定義を保存してから最終確認してください。', 'action_label': '保存する'})
         for problem in source_problems(row, s):
             result['issues'].append({'question_key': None, 'section': 'source', 'message': '元PDFとの対応が無効になっています。資料と保存済みレビューを確認してください。', 'code': problem['code']})
         formal = projection(s, test)
@@ -940,19 +958,26 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
             saved_hash = canonical_hash(saved_snapshot)
             if saved_hash != v.expected_snapshot_sha256:
                 raise ValueError('AUTHORING_CONFIRM_SNAPSHOT_CHANGED')
+            from ..grading_definition import executable_definition
+            try:
+                executable_definition(saved_snapshot)
+            except ValueError as exc:
+                raise HTTPException(409, {'error': {'code': str(exc), 'message': '採点基準の得点段階と採点定義を確認して保存してください。'}}) from exc
             validate_materials(saved_snapshot, s, test_id)
             answer_validation = deepcopy(saved_snapshot)
-            if saved_snapshot.get('domains', {}).get('answer'):
-                from ..authoring_answers import AuthoringAnswers
-                AuthoringAnswers(s, answer_root, row, answer_validation).validate()
-            if saved_snapshot.get('domains', {}).get('question'):
-                from ..authoring_question import AuthoringQuestionReview
-                from ..review_document import ReviewError
-                try:
-                    question_validation = deepcopy(saved_snapshot)
-                    AuthoringQuestionReview(s, question_root, row, question_validation).validate_working(question_validation)
-                except (ReviewError, ValueError) as exc:
-                    raise ValueError('AUTHORING_INVALID_HIERARCHY') from exc
+            from ..diagram_regions import read_only_diagram_crops
+            with read_only_diagram_crops():
+                if saved_snapshot.get('domains', {}).get('answer'):
+                    from ..authoring_answers import AuthoringAnswers
+                    AuthoringAnswers(s, answer_root, row, answer_validation).validate()
+                if saved_snapshot.get('domains', {}).get('question'):
+                    from ..authoring_question import AuthoringQuestionReview
+                    from ..review_document import ReviewError
+                    try:
+                        question_validation = deepcopy(saved_snapshot)
+                        AuthoringQuestionReview(s, question_root, row, question_validation).validate_working(question_validation)
+                    except (ReviewError, ValueError) as exc:
+                        raise ValueError('AUTHORING_INVALID_HIERARCHY') from exc
             if source_problems(row, s):
                 raise HTTPException(409, {'error': {'code': 'AUTHORING_SOURCE_INVALID', 'message': '資料の出典状態を確認してから確定してください。'}})
             if row.baseline_sha256 != baseline_hash(projection(s, test)):
@@ -966,6 +991,8 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
             from ..test_authoring import source_warnings
             if source_warnings(saved_snapshot):
                 raise HTTPException(409, {'error': {'code': 'AUTHORING_SOURCE_WARNING', 'message': '問題文と元資料の対応を確認してください。'}})
+            from ..grading_definition import verify_artifacts
+            verify_artifacts(s, saved_snapshot, test_id, question_root, answer_root)
             from ..authoring_confirmation import project_confirmed_snapshot
             s.info['authoring_confirmation_projection'] = True
             project_confirmed_snapshot(s, test, deepcopy(saved_snapshot), s.info['auth_user'].id)
@@ -1001,8 +1028,11 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
             raise
         except ValueError as exc:
             s.rollback()
-            code = str(exc) if str(exc).startswith(('AUTHORING_', 'TEST_', 'CONFIRMED_')) else 'AUTHORING_CONFIRMATION_FAILED'
-            raise HTTPException(409, {'error': {'code': code, 'message': '確定できませんでした。内容を再確認してください。'}}) from exc
+            code = str(exc) if str(exc).startswith(('AUTHORING_', 'TEST_', 'CONFIRMED_', 'GRADING_')) else 'AUTHORING_CONFIRMATION_FAILED'
+            message = '確定できませんでした。内容を再確認してください。'
+            if str(exc) == 'diagram_artifact_missing':
+                code, message = 'GRADING_DEFINITION_ARTIFACT_UNAVAILABLE', '採点に使う図の保存済み参照がありません。編集画面で図を確認・保存してから確定してください。'
+            raise HTTPException(409, {'error': {'code': code, 'message': message}}) from exc
         except IntegrityError as exc:
             s.rollback()
             raise HTTPException(409, {'error': {'code': 'AUTHORING_CONFIRM_CONFLICT', 'message': '確認対象が同時に更新されました。再読み込みしてください。'}}) from exc

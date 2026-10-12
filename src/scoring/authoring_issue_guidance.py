@@ -9,7 +9,12 @@ def issue_guidance(snapshot, issue, total):
               'rubric': '採点基準を修正', 'source': '出典を確認', 'metadata': '合計点を修正'}
     result = {**issue, 'action_label': labels.get(issue['section'], '内容を確認'),
               'expected_state': '該当する編集欄で内容を確認・修正し、保存してください。'}
-    if code == 'question_source_warning':
+    if str(code).startswith('grading_'):
+        result.update({k: issue[k] for k in ('action_label', 'expected_state') if k in issue})
+        if issue.get('criterion_id'):
+            criterion = next((c for c in criteria if c.get('id') == issue['criterion_id']), {})
+            result['current_state'] = f"配点: {criterion.get('points', '未設定')}点 / 得点段階: {len(criterion.get('levels') or [])}件"
+    elif code == 'question_source_warning':
         result.update(action_label='出典確認へ',
                       current_state=f"確認事項 {issue.get('source_review_index', '')}: {issue.get('source_review_label', '自動解析の確認事項')} / 未確認",
                       expected_state='元PDFと該当項目を照合し、正しければ確認状態を「確認済み」にしてください。内容が違う場合は修正して「対応済み」にしてください。')

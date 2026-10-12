@@ -78,6 +78,7 @@ export interface ModelAnswerSemanticClassification {
 }
 
 export interface RubricCandidateEdit {
+  levels?: Array<{score:number|null;condition:string}>;
   id: string; description: string; points: number; segment_ids?: string[];
   confidence?: number | null; points_conflict?: boolean; points_confirmed?: boolean;
   grouping_confirmed?: boolean; grouping_method?: string; source_text?: string | null;

@@ -34,6 +34,23 @@ test("final review confirms one exact saved authoring revision atomically",async
   await page.getByRole("button",{name:"保存",exact:true}).first().click();
   await expect(page.getByText("未保存の変更があります",{exact:true})).not.toBeVisible();
   await review.click();
+  await expect(page.getByRole("button",{name:"この内容でテストを確定",exact:true})).toBeDisabled();
+  const policyIssue=page.locator(".authoring-issue-cards article").filter({hasText:"採点基準の得点段階が未設定"});
+  await policyIssue.getByRole("button",{name:"得点段階を設定",exact:true}).click();
+  const levels=page.getByRole("region",{name:"得点段階と部分点の条件"});
+  await expect(levels).toContainText("未設定です");
+  await expect(levels).toHaveClass(/authoring-correction-target/);
+  await expect(levels).toBeInViewport();
+  const bounds=(await levels.boundingBox())!;expect(bounds.y).toBeGreaterThanOrEqual(await page.locator(".review-workspace-selector").evaluate(el=>el.getBoundingClientRect().bottom));
+  await expect(levels.getByRole("button",{name:"得点段階を追加",exact:true})).toBeFocused();
+  await levels.getByRole("button",{name:"得点段階を追加",exact:true}).click();
+  await expect(levels.getByLabel("得点段階1の得点",{exact:true})).toHaveValue("");
+  await levels.getByLabel("得点段階1の得点",{exact:true}).fill("0");await levels.getByLabel("得点段階1の条件",{exact:true}).fill("正答を示していない");
+  await levels.getByRole("button",{name:"得点段階を追加",exact:true}).click();
+  await levels.getByLabel("得点段階2の得点",{exact:true}).fill("10");await levels.getByLabel("得点段階2の条件",{exact:true}).fill("x=1を示している");
+  await page.getByRole("button",{name:"保存",exact:true}).click();
+  await expect(page.getByText("未保存の変更があります",{exact:true})).not.toBeVisible();
+  await review.click();
   const confirmButton=page.getByRole("button",{name:"この内容でテストを確定",exact:true});
   await expect(confirmButton).toBeEnabled();
   await expect(page.getByRole("table",{name:"テスト全体の設問と採点準備"})).toContainText("準備完了");
@@ -47,6 +64,7 @@ test("final review confirms one exact saved authoring revision atomically",async
   const active=(await (await page.request.get(base+"/authoring/confirmed")).json()).active;
   expect(active.snapshot_sha256).toBe(saved.snapshot_sha256);
   expect(active.snapshot).toEqual(saved.snapshot);
+  const definition=active.snapshot.domains.grading_definition;expect(definition.complete).toBe(true);expect(definition.authority).toBe("web_authoring");expect(definition.questions[0].rubric.criteria[0].levels.map((level:{score:number})=>level.score)).toEqual([0,10]);
   const duplicate=await page.request.post(base+"/authoring/confirm",{data:{revision_id:saved.id,
     expected_edit_version:saved.edit_version,expected_snapshot_sha256:saved.snapshot_sha256}});
   expect(duplicate.status()).toBe(200);expect((await duplicate.json()).id).toBe(active.id);

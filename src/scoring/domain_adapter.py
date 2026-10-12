@@ -5,6 +5,8 @@ from uuid import uuid4
 class DomainGradingJobAdapter:
     def __init__(self, session, *, artifact_root=None): self.session = session; self.artifact_root = artifact_root
     def create_legacy_job(self, test, rubric, questions, policy, submissions, *, model_answers=(), assignment_path, run_path, config_path, execution_mode="phased_auto"):
+        from .grading_definition import reject_web_legacy_policy
+        reject_web_legacy_policy(self.session, test.id)
         from .grading_inputs import prepare_inputs
         from .grading_mapping import prepare_submission_bundles
         bundles = prepare_submission_bundles(self.session, test.id, submissions, assignment_path,

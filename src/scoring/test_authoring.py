@@ -106,6 +106,11 @@ def create_draft(session, test, actor=None, *, source_roots=None, confirmed_revi
     if not prior and source_roots:
         from .authoring_sources import source_projection
         snapshot = source_projection(session, test, baseline, *source_roots)
+    if not parent:
+        from .authoring_sources import normalize_authoring_snapshot
+        from .grading_definition import freeze_definition, capture_evidence
+        snapshot = normalize_authoring_snapshot(snapshot)
+        freeze_definition(snapshot, capture_evidence(session, snapshot, test.id))
     row = TestAuthoringRevision(id=str(uuid4()), test_id=test.id,
         revision=highest.revision+1 if highest else 1,
         edit_version=(session.scalar(select(func.max(TestAuthoringRevision.edit_version)).where(
@@ -142,6 +147,12 @@ def validate_snapshot(value, previous):
             candidates.extend(deepcopy(candidate) for candidate in previous['domains']['recovery']['rubric_candidates']
                               if candidate['id'] not in saved_recovery_ids | submitted_ids)
     value = normalize_authoring_snapshot(value)
+    # The executable projection/evidence is server-owned, never client policy.
+    saved_definition = previous.get('domains', {}).get('grading_definition')
+    if saved_definition is not None:
+        value['domains']['grading_definition'] = deepcopy(saved_definition)
+    else:
+        value['domains'].pop('grading_definition', None)
     # Older clients edited the flattened `rubrics` map. Translate such a
     # write into RubricDraft when the role-specific domain itself is unchanged.
     # This preserves the API's legacy round-trip while keeping the separated
@@ -172,7 +183,7 @@ def validate_snapshot(value, previous):
                     # Legacy projection writes can edit teacher-facing fields,
                     # but may not rewrite criterion provenance or stable IDs.
                     allowed = {field: replacement[field] for field in
-                        ('description', 'points', 'excluded', 'points_confirmed', 'grouping_confirmed')
+                        ('description', 'points', 'excluded', 'points_confirmed', 'grouping_confirmed', 'levels')
                         if field in replacement}
                     current.append({**criterion, **allowed})
                 entry['criteria'] = current
@@ -282,6 +293,11 @@ def save_draft(session, test, value, expected, actor=None):
         if not material or material.test_id != test.id or material.sha256 != m.get('sha256') or material.material_type != m.get('role'):
             raise AuthoringError('AUTHORING_SOURCE_CHANGED', '資料の出典が変わっています。')
     validate_material_replacements(snapshot)
+    from .grading_definition import freeze_definition, capture_evidence, snapshot_evidence
+    evidence = snapshot.get('domains', {}).get('grading_definition', {}).get('evidence')
+    if evidence is None:
+        evidence = snapshot_evidence(snapshot, test.id) if row.parent_confirmed_revision_id else capture_evidence(session, snapshot, test.id)
+    freeze_definition(snapshot, evidence)
     result = session.execute(update(TestAuthoringRevision).where(TestAuthoringRevision.id == row.id,
         TestAuthoringRevision.edit_version == expected, TestAuthoringRevision.state.in_(['draft', 'final_review']))
         .values(snapshot=snapshot, snapshot_sha256=canonical_hash(snapshot), edit_version=expected+1,
@@ -296,8 +312,11 @@ def save_draft(session, test, value, expected, actor=None):
 
 
 def preflight(snapshot):
-    issues = []
+    from .grading_definition import compile_definition
+    issues = compile_definition(snapshot)[1]
     def issue(key, section, message, field=None, code=None, entry_id=None, criterion_id=None, **target):
+        if code == 'question_body' and any(item.get('code') == code and item.get('question_key') == key for item in issues):
+            return
         issues.append({'question_key': key, 'section': section, 'message': message, **({'field': field} if field else {}), **({'code': code} if code else {}),
             **({'entry_id': entry_id} if entry_id else {}), **({'criterion_id': criterion_id} if criterion_id else {}), **target})
     nodes = [n for n in snapshot['nodes'] if n.get('included', True)]

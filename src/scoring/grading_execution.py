@@ -154,6 +154,8 @@ def create_execution_job(session, test_id, submission_id, question_id, *, run_pa
                          reference_root=None, visual_capability=None,
                          prompt=None, prompt_version=None):
     """Validate before creating a job. The caller commits one transaction."""
+    from .grading_definition import reject_mutable_web_execution
+    reject_mutable_web_execution(session, test_id)
     assembler = GradingInputAssembler(session, test_id, root=root, allowed_roots=allowed_roots,
         answer_root=answer_root, reference_root=reference_root, visual_capability=visual_capability)
     row = assembler.execution_preview(submission_id, question_id)

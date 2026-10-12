@@ -717,6 +717,7 @@ def test_confirmation_preserves_saved_diagrams_and_exact_hash(workspace, diagram
     snapshot['domains']['answer']['entries'].extend([*entries, extra])
     for n in [*children, other]:
         snapshot['rubrics'][n['stable_key']] = [{'id': str(uuid4()), 'description': 'Teacher criterion',
+            'levels': [{'score': 0, 'condition': 'No credit'}, {'score': int(n['score_points']), 'condition': 'Complete response'}],
             'points': n['score_points'], 'segment_ids': [], 'grouping_confirmed': True,
             'provenance': {'source': 'teacher_manual'}}]
     row = save(w, path, row, snapshot)
@@ -755,6 +756,23 @@ def test_confirmation_preserves_saved_diagrams_and_exact_hash(workspace, diagram
     assert canonical_hash(expected) == saved['snapshot_sha256']
     body = {'revision_id': saved['id'], 'expected_edit_version': saved['edit_version'],
             'expected_snapshot_sha256': saved['snapshot_sha256']}
+    from scoring.adapters.pdf_region import PyMuPdfRegionRenderer
+    def unexpected_render(*args, **kwargs):
+        raise AssertionError('Confirmation must not render diagram artifacts')
+    monkeypatch.setattr(PyMuPdfRegionRenderer, 'render', unexpected_render)
+    if diagram_kind == 'automatic' and not inject_failure:
+        from scoring.grading_definition import read_reference_asset
+        reference = next(ref for question in expected['domains']['grading_definition']['questions']
+            for ref in question['visual_references'])
+        crop = read_reference_asset(reference, {'answer_import': w.root, 'question_import': w.root / 'questions'})
+        metadata = crop.with_suffix('.json')
+        original_metadata = metadata.read_bytes()
+        metadata.unlink()
+        missing = w.client.post(path+'/confirm', json=body)
+        assert missing.status_code == 409, missing.text
+        assert missing.json()['error']['code'] == 'GRADING_DEFINITION_ARTIFACT_UNAVAILABLE'
+        assert w.client.get(path).json()['revision']['snapshot'] == expected
+        metadata.write_bytes(original_metadata)
     if inject_failure:
         from scoring import authoring_confirmation
         from scoring.db.models import Test as Exam
@@ -785,6 +803,14 @@ def test_confirmation_preserves_saved_diagrams_and_exact_hash(workspace, diagram
         assert basis.snapshot_sha256 == canonical_hash(basis.snapshot) == canonical_hash(expected)
         assert working.edit_version == saved['edit_version']
         assert working.revision == saved['revision']
+        from scoring.grading_definition import confirmed_definition, read_reference_asset
+        definition = confirmed_definition(basis)
+        references = [ref for question in definition['questions'] for ref in question['visual_references']]
+        assert references
+        for reference in references:
+            assert read_reference_asset(reference, {'answer_import': w.root, 'question_import': w.root / 'questions'}).is_file()
+            assert reference['record']['revision'] == next(record['revision'] for entry in expected['domains']['answer']['entries']
+                for record in entry.get('diagram_records', []) if record['id'] == reference['diagram_id'])
     duplicate = w.client.post(path+'/confirm', json=body)
     assert duplicate.status_code == 200, duplicate.text
     assert duplicate.json()['id'] == confirmed.json()['id']

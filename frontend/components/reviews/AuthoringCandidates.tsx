@@ -1,4 +1,5 @@
 "use client";
+import {ExecutableRubricLevels} from "./ExecutableRubricLevels";
 import {useEffect, useRef, useState} from "react";
 import {AuthoringDialog} from "./AuthoringDialog";
 import {testAuthoring} from "@/lib/api/testAuthoring";
@@ -151,6 +152,7 @@ export function AuthoringCandidates({testId, draftId, revision, questionKey, ent
           <label><input type="checkbox" checked={(selected[entry.id]||[]).includes(item.id)} onChange={e=>setSelected(s=>({...s,[entry.id]:e.target.checked?[...(s[entry.id]||[]),item.id]:(s[entry.id]||[]).filter(id=>id!==item.id)}))}/>{rubricCriterionLabel(index)}</label>
           <label>本文<textarea aria-label={`${rubricCriterionLabel(index)}の本文`} ref={element=>{textareas.current[`${entry.id}:${item.id}`]=element;}} value={item.description} onFocus={()=>{activeCriterion.current=`${entry.id}:${item.id}`;}} onChange={e=>update(entry.id,{rubric_edits:all.map(c=>c.id===item.id?{...c,description:e.target.value}:c)})}/></label>
           <label>配点<input aria-label={`${rubricCriterionLabel(index)}の配点`} type="number" min="0" value={item.points} onChange={e=>update(entry.id,{rubric_edits:all.map(c=>c.id===item.id?{...c,points:Number(e.target.value),points_confirmed:true}:c)})}/></label>
+          <ExecutableRubricLevels criterion={item} disabled={disabled||busy} onChange={next=>update(entry.id,{rubric_edits:all.map(c=>c.id===item.id?next:c)})}/>
           <LatexNormalizationControl text={item.description} contextType="rubric" disabled={disabled||busy} onApply={text=>update(entry.id,{rubric_edits:all.map(c=>c.id===item.id?{...c,description:text}:c)})}/>
           {item.grouping_confirmed===false&&<button onClick={event=>{const content=event.currentTarget.closest("fieldset");update(entry.id,{rubric_edits:all.map(c=>c.id===item.id?{...c,grouping_confirmed:true,provenance:{...c.provenance,teacher_confirmed:true}}:c)});if(content)requestAnimationFrame(()=>scrollReviewContent(content));}}>この採点基準を確認</button>}
           {item.points_conflict&&!item.points_confirmed&&<p>配点の確認が必要です。点数を入力して確認してください。</p>}

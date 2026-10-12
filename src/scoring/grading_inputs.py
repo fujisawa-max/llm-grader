@@ -18,6 +18,8 @@ def prepare_inputs(session, test_id, questions, answers, rubric, assignment_path
 The existing assignment retains its teacher-authored rubric levels. They must
 match the approved domain rubric's criteria; no rubric levels are generated.
 """
+    from .grading_definition import reject_web_legacy_policy
+    reject_web_legacy_policy(session, test_id)
     readiness = GradingReadinessService(session, root=root)
     if not readiness.evaluate(test_id)["can_start_grading"]:
         raise ValueError("GRADING_NOT_READY")

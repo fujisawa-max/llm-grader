@@ -35,6 +35,9 @@ test("whole-test drafts preserve local caret, materials, section state and forma
   await page.getByRole("button",{name:"基準を追加"}).click();
   await page.getByLabel(/^基準\d+の本文$/).fill("Correct result");
   await page.getByLabel(/^基準\d+の配点$/).fill("10");
+  const levels=page.getByRole("region",{name:"得点段階と部分点の条件"});
+  await levels.getByRole("button",{name:"得点段階を追加",exact:true}).click();await levels.getByLabel("得点段階1の得点",{exact:true}).fill("0");await levels.getByLabel("得点段階1の条件",{exact:true}).fill("Incorrect result");
+  await levels.getByRole("button",{name:"得点段階を追加",exact:true}).click();await levels.getByLabel("得点段階2の得点",{exact:true}).fill("10");await levels.getByLabel("得点段階2の条件",{exact:true}).fill("Correct result");
   await page.getByRole("checkbox",{name:"問題",exact:true}).uncheck();
   await expect(editor).toHaveCount(0);
   await page.getByRole("checkbox",{name:"問題",exact:true}).check();

@@ -37,7 +37,7 @@ def workspace(tmp_path):
         a = d.model_answer(legacy.id, question_id=q.id, answer_text='Original answer',
             provenance_json={'source_sha256':'f'*64, 'diagrams':[]})
         rub = d.rubric(legacy.id, {'questions':[{'question_id':q.id,'max_points':10,
-            'criteria':[{'id':'c1','description':'Original criterion','points':10}]}]})
+            'criteria':[{'id':'c1','description':'Original criterion','points':10,'levels':[{'score':0,'condition':'No credit'},{'score':10,'condition':'Complete response'}]}]}]})
         d.approve_rubric(rub.id, teacher.id)
         foreign_course = d.course(other.id, name='Other course')
         fo = d.offering(foreign_course.id, academic_year=2026, term='fall')
@@ -331,10 +331,10 @@ def test_submission_and_grading_job_pin_confirmed_revision(workspace,monkeypatch
         monkeypatch.setattr(grading_inputs,'prepare_inputs',lambda *args,**kwargs:{})
         monkeypatch.setattr(grading_mapping,'prepare_submission_bundles',lambda *args,**kwargs:[])
         from scoring.domain_adapter import DomainGradingJobAdapter
-        job,_=DomainGradingJobAdapter(s).create_legacy_job(s.get(Exam,w.legacy),rubric,questions,policy,[submission],
-            assignment_path='/unused/a',run_path='/unused/r',config_path='/unused/c')
-        assert job.confirmed_authoring_revision_id==basis_id
-        assert job.metadata_json['grading_input_manifest']['confirmed_authoring_revision_id']==basis_id
+        with pytest.raises(ValueError, match='LEGACY_ASSIGNMENT_NOT_ALLOWED_FOR_WEB_TEST'):
+            DomainGradingJobAdapter(s).create_legacy_job(s.get(Exam,w.legacy),rubric,questions,policy,[submission],
+                assignment_path='/unused/a',run_path='/unused/r',config_path='/unused/c')
+        assert s.scalar(select(func.count()).select_from(GradingJob)) == 0
 
 
 def test_confirmed_revision_migration_is_additive_on_sqlite():
@@ -638,7 +638,8 @@ def test_actionable_review_values_and_specific_targets_preserve_blockers(workspa
     assert value == before
     value['rubrics'][workspace.question][0].update(points=10, grouping_confirmed=True)
     after = preflight(value)
-    assert len(after['issues']) == len(result['issues']) - 2
+    assert {i.get('code') for i in after['issues']} == {'answer_classification', 'answer_unassigned'}
+    assert {'rubric_points', 'rubric_review', 'grading_levels_incomplete'} <= set(by_code)
     assert any(item.get('code') == 'answer_classification' for item in after['issues'])
 
 

@@ -667,6 +667,14 @@ def validate_domains(value, previous):
                             or type(criterion.get('points')) not in (int, float)
                             or not math.isfinite(criterion['points']) or criterion['points'] < 0):
                         raise AuthoringError('AUTHORING_INVALID_RUBRIC', '採点基準の内容と配点を確認してください。')
+                    levels = criterion.get('levels', [])
+                    if (not isinstance(levels, list) or len(levels) > 200 or any(
+                            not isinstance(level, dict) or
+                            (level.get('score') is not None and (type(level['score']) not in (int, float)
+                                or not math.isfinite(level['score']))) or
+                            not isinstance(level.get('condition', ''), str) or len(level.get('condition', '')) > 20000
+                            for level in levels)):
+                        raise AuthoringError('AUTHORING_INVALID_RUBRIC', '得点段階の形式を確認してください。')
             value['rubrics'] = rubric_snapshot_projection(new, keys)
             value['rubric_histories'] = {entry['authoring_question_key']: deepcopy(entry.get('operation_history', []))
                 for entry in new['entries'] if entry.get('authoring_question_key') and entry.get('operation_history')}

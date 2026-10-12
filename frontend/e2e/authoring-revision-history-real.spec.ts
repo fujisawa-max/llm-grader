@@ -47,7 +47,7 @@ test("real Sample Q5 revision history forks exact diagrams and confirms an indep
  const fixture=structuredClone(row.snapshot),leaves=fixture.nodes.filter((n:any)=>n.included&&!fixture.nodes.some((c:any)=>c.included&&c.parent_key===n.stable_key));
  expect(leaves).toHaveLength(6);
  const scores=[30,10,30,10,8,12];
- for(let i=0;i<leaves.length;i++){const n=leaves[i];n.score_semantics="direct";n.score_points=scores[i];fixture.rubrics[n.stable_key]=[{id:`teacher-criterion-${n.stable_key}`,description:"教師がPDFの正答と採点条件を確認",points:scores[i],segment_ids:[],grouping_confirmed:true,provenance:{source:"teacher_manual"}}];}
+ for(let i=0;i<leaves.length;i++){const n=leaves[i];n.score_semantics="direct";n.score_points=scores[i];fixture.rubrics[n.stable_key]=[{id:`teacher-criterion-${n.stable_key}`,description:"教師がPDFの正答と採点条件を確認",points:scores[i],levels:[{score:0,condition:"No credit"},{score:scores[i],condition:"Teacher-confirmed complete response"}],segment_ids:[],grouping_confirmed:true,provenance:{source:"teacher_manual"}}];}
  for(const entry of fixture.domains.answer.entries){
    if(!entry.authoring_question_key){entry.disposition="ignored";entry.teacher_correction={teacher_confirmed:true,disposition:"ignored"};}
    else if(entry.semantic_classification?.status==="needs_teacher_review")entry.semantic_classification.status="teacher_reviewed";

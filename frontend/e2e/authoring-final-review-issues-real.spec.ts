@@ -13,7 +13,7 @@ test("Final Review issues show current values, overlay without reflow, and resol
   parent.body_text='親の問題文';parent.ordered_content=[{type:'text',order:0,text:parent.body_text}];parent.score_semantics='sum_children';parent.score_points=null;
   child.parent_key=parent.stable_key;child.label={raw:'(1)',normalized:'(1)'};child.depth=1;child.node_type='subquestion';child.body_text='小問本文';child.ordered_content=[{type:'text',order:0,text:child.body_text}];child.score_points=10;
   other.body_text='別の大問';other.ordered_content=[{type:'text',order:0,text:other.body_text}];other.score_points=10;
-  for(const n of [child,other]){row.snapshot.answers[n.stable_key]={primary:'教師の正答',alternatives:[],diagram_records:[]};row.snapshot.rubrics[n.stable_key]=[{id:`criterion-${n.stable_key}`,description:'正答の条件',points:n===child?8:10,segment_ids:[],grouping_confirmed:true,provenance:{source:'teacher_manual'}}];}
+  for(const n of [child,other]){row.snapshot.answers[n.stable_key]={primary:'教師の正答',alternatives:[],diagram_records:[]};row.snapshot.rubrics[n.stable_key]=[{id:`criterion-${n.stable_key}`,description:'正答の条件',points:n===child?8:10,levels:[{score:0,condition:"No credit"},{score:n===child?8:10,condition:"Complete criterion"}],segment_ids:[],grouping_confirmed:true,provenance:{source:'teacher_manual'}}];}
   // Keep the teacher-authored buffers aligned with the fixture body edits.
   for(const n of row.snapshot.nodes)row.snapshot.question_text_buffers[n.stable_key]=n.body_text;
   expect((await page.request.put(base,{data:{snapshot:row.snapshot,expected_edit_version:row.edit_version}})).status()).toBe(200);
@@ -41,7 +41,7 @@ test("Final Review issues show current values, overlay without reflow, and resol
   const body=page.getByLabel('基準1の本文',{exact:true});await expect(body).toBeVisible();
   const bodyBox=(await body.boundingBox())!,selectorBottom=await page.locator('.review-workspace-selector').evaluate(el=>el.getBoundingClientRect().bottom);
   expect(bodyBox.y).toBeGreaterThanOrEqual(selectorBottom);expect(bodyBox.y+bodyBox.height).toBeLessThanOrEqual(900);
-  await points.fill('10');
+  await points.fill('10');await page.getByLabel('得点段階2の得点',{exact:true}).fill('10');
   await expect(page.getByRole('button',{name:/^要修正 \d+件$/})).toHaveCount(0);
   await page.getByRole('button',{name:'最終確認へ',exact:true}).click();await expect(page.getByRole('alert').filter({hasText:'テストを確定するには先に保存してください。'})).toBeVisible();await expect(page.getByRole('button',{name:'この内容でテストを確定',exact:true})).toBeDisabled();
   const saved=page.waitForResponse(r=>r.request().method()==='PUT'&&r.url().endsWith(base));await page.getByRole('button',{name:'保存する',exact:true}).click();expect((await saved).status()).toBe(200);
@@ -52,7 +52,7 @@ test("Final Review issues show current values, overlay without reflow, and resol
   await expect(page.getByLabel('基準1の配点',{exact:true})).toBeVisible();
   await page.getByLabel('基準1の配点',{exact:true}).fill('9');
   await expect(marked).toContainText(' *');
-  await expect(page.getByRole('button',{name:'要修正 1件',exact:true})).toBeVisible();
+  await expect(page.getByRole('button',{name:'要修正 2件',exact:true})).toBeVisible();
   await page.getByLabel('基準1の配点',{exact:true}).fill('10');
   const savedAgain=page.waitForResponse(r=>r.request().method()==='PUT'&&r.url().endsWith(base));
   await page.getByRole('button',{name:'保存',exact:true}).click();expect((await savedAgain).status()).toBe(200);

@@ -198,6 +198,11 @@ export default function TestAuthoringPage() {
       if(issue.field==="classification"){
         const details=target?.querySelector<HTMLDetailsElement>('[data-authoring-classification]');if(details){details.open=true;target=details;}
       }
+      if(issue.field==="diagram"){
+        const card=Array.from(target?.querySelectorAll<HTMLElement>('[data-diagram-id]')||[]).find(element=>element.dataset.diagramId===issue.diagram_id);
+        target=card||target?.querySelector<HTMLElement>('.diagram-review')||target;
+      }
+      if(issue.field==="levels")target=target?.querySelector<HTMLElement>('[aria-label="得点段階と部分点の条件"]')||target;
       let content=target;
       if(issue.field==="score"||issue.field==="points")target=target?.querySelector<HTMLElement>('input[type="number"]')||target;
       if(issue.field==="mapping")target=target?.querySelector<HTMLElement>('[aria-label="対応する設問"]')||target;
@@ -537,6 +542,7 @@ export default function TestAuthoringPage() {
           let depth=0,current=n;const seen=new Set<string>();while(current.parent_key&&!seen.has(current.stable_key)){seen.add(current.stable_key);const parent=nodes.find(item=>item.stable_key===current.parent_key);if(!parent)break;depth++;current=parent;}
           return <tr key={n.stable_key}><th scope="row"><span className="authoring-hierarchy-label" style={{paddingLeft:depth*20}}>{n.label.raw}</span></th><td>{gradable?`${points??"未設定"}点`:"小問合計"}</td><td>{gradable?(answerReady?"準備完了":"未登録"):"—"}</td><td>{gradable?(rubricReady?`${rubricCriteria.length}基準・${rubricCriteria.reduce((sum,c)=>sum+c.points,0)}点`:"確認が必要"):"—"}</td><td>{accepted?"確認済み図あり":"なし"}</td><td>{hasSourceProblem?"確認が必要":"確認済み"}</td></tr>;
         })}</tbody></table>
+        <details><summary>得点段階と部分点の条件</summary>{orderedNodes().filter(n=>n.included&&!nodes.some(child=>child.included&&child.parent_key===n.stable_key)).map(n=><section key={n.stable_key}><h3>{pathFor(n.stable_key)}</h3><p>基準ごとの得点を合計します。</p>{(snapshot.rubrics[n.stable_key]||[]).map(c=><article key={c.id}><p>{c.description} — {c.points}点</p>{c.levels?.length?<ul>{c.levels.map((level,index)=><li key={index}>{level.score??"未設定"}点: {level.condition||"条件が未設定"}</li>)}</ul>:<p>得点段階が未設定です。</p>}</article>)}</section>)}</details>
         <h3>要修正事項 {issues.length}件</h3><AuthoringIssueCards issues={issues} pathFor={pathFor} onAction={navigate}/>
         {questionDomain&&questionDomain.document.warnings.length>0&&<WarningPanel quickAcknowledge targetLabel={w=>{const owner=warningQuestion(w);return owner?pathFor(owner.stable_key):"試験全体";}} warnings={questionDomain.document.warnings} states={questionDomain.snapshot.warning_states||{}} readonly={readonly||saving||analyzing}
             onChange={(key,resolution)=>change({...snapshot,domains:{...snapshot.domains,question:{...questionDomain,snapshot:{...questionDomain.snapshot,warning_states:{...questionDomain.snapshot.warning_states,[key]:resolution}}}}})}/>}

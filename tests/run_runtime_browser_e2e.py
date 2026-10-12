@@ -446,6 +446,7 @@ def seed(root):
                     'mapping_state': 'needs_review' if mode == 'queue' and index == 0 else 'automatic',
                     'disposition': 'unassigned' if mode == 'queue' and index == 0 else 'include', 'answer_text': '',
                     'rubric_edits': [{'id': str(uuid4()), 'description': 'Explain the source condition.', 'points': 10,
+                                     'levels': [{'score': 0, 'condition': 'No credit'}, {'score': 10, 'condition': 'Complete source condition'}],
                                      'segment_ids': [], 'grouping_confirmed': True}],
                     'source': {'kind': 'native_pdf', 'material_id': rubric_material.id,
                                'source_sha256': split_digest, 'segments': []}})
@@ -453,6 +454,7 @@ def seed(root):
                 rubric_entries.append({'id': str(uuid4()), 'question_id': None, 'mapping_state': 'needs_review',
                     'disposition': 'unassigned', 'answer_text': '',
                     'rubric_edits': [{'id': str(uuid4()), 'description': 'Unused source condition.', 'points': 10,
+                                     'levels': [{'score': 0, 'condition': 'No credit'}, {'score': 10, 'condition': 'Complete source condition'}],
                                      'segment_ids': [], 'grouping_confirmed': True}],
                     'source': {'kind': 'native_pdf', 'material_id': rubric_material.id,
                                'source_sha256': split_digest, 'segments': []}})
@@ -471,6 +473,8 @@ def seed(root):
             correction_revision = create_draft(session, correction_test, teacher.id, source_roots=(root, root))
             working = deepcopy(correction_revision.snapshot)
             merge_answer_analysis(working, correction_answer_draft)
+            from scoring.grading_definition import freeze_definition
+            freeze_definition(working)
             correction_revision.snapshot = working
             correction_revision.snapshot_sha256 = canonical_hash(working)
             geometry_env[f'AUTHORING_CORRECTION_{mode.upper()}_TEST_ID'] = correction_test.id

@@ -5,6 +5,8 @@ An optional grouping callback can only partition existing element IDs. It cannot
 invent coordinates. This module deliberately has no database or model client.
 """
 from copy import deepcopy
+from contextlib import contextmanager
+from contextvars import ContextVar
 import json
 import math
 from pathlib import Path
@@ -13,6 +15,19 @@ from uuid import uuid4
 from .adapters.pdf_region import PyMuPdfRegionRenderer
 from .pdf_native import canonical_hash, sha256_file
 from .vision_policy import DEFAULT_POLICY, crop_geometry, page_space
+
+
+_read_only_crops = ContextVar('read_only_diagram_crops', default=False)
+
+
+@contextmanager
+def read_only_diagram_crops():
+    """Confirmation validates cached evidence; it must never render artifacts."""
+    token = _read_only_crops.set(True)
+    try:
+        yield
+    finally:
+        _read_only_crops.reset(token)
 
 
 MAX_ELEMENTS = 2048
@@ -241,6 +256,8 @@ class DiagramRegionExtractor:
         ref = f"diagrams/{key}.png"
         output = self.store.path(ref)
         metadata = self.store.path(f"diagrams/{key}.json")
+        if not metadata.exists() and _read_only_crops.get():
+            raise ValueError('diagram_artifact_missing')
         if metadata.exists():
             render = json.loads(metadata.read_text())
             if (render["sha256"] != sha256_file(output)

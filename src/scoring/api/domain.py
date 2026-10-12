@@ -436,6 +436,15 @@ def router(db, artifact_root=None, allowed_roots=None, grading_visual_config=Non
     @r.post("/tests/{tid}/grading-jobs", status_code=201)
     def grading_job(tid, v: dict, s=Depends(db)):
         get(Test, tid, s)
+        from ..grading_definition import reject_web_legacy_policy, reject_mutable_web_execution
+        try:
+            if v.get("input_stage") in {"selected_reconstruction", "student_visual_answer"}:
+                reject_mutable_web_execution(s, tid)
+            else:
+                reject_web_legacy_policy(s, tid)
+        except ValueError as exc:
+            raise HTTPException(409, {"error": {"code": str(exc),
+                "message": "この確定版は旧方式では採点できません。版に対応した採点機能が必要です。"}}) from exc
         if v.get("input_stage") in {"selected_reconstruction", "student_visual_answer"}:
             from ..grading_execution import create_execution_job
             roots = [Path(p).resolve() for p in (allowed_roots or [Path.cwd()])]
