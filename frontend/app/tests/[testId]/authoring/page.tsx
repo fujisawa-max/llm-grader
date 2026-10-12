@@ -17,7 +17,8 @@ import {authoringBuffers,prepareAuthoringSave,analysisReadiness} from "@/lib/aut
 import {testData} from "@/lib/api/domain";
 import {apiFetch, json} from "@/lib/api/client";
 import {canonicalQuestionPath} from "@/lib/canonicalQuestionPath";
-import {scrollReviewContent} from "@/lib/reviewIssues";
+import {reviewFieldId} from "@/lib/reviewValidation";
+import {scrollReviewContent,reviewWarningId} from "@/lib/reviewIssues";
 import {localId} from "@/lib/localId";
 import {editQuestionContent, questionContent} from "@/lib/questionContent";
 import {DiagramReview, type DiagramSelection} from "@/components/reviews/DiagramReview";
@@ -164,16 +165,23 @@ export default function TestAuthoringPage() {
     const timer=window.setTimeout(clear,8000);target.addEventListener("input",clear);target.addEventListener("change",clear);clearHighlight.current=clear;
   }
   function navigate(issue:AuthoringIssue){
-    if(readonly&&issue.section==="source"){void begin();return;}
+    if(readonly&&(issue.section==="source"||issue.correction_type)){void begin();return;}
     if(issue.section==="save"){void save();return;}
     setFinalReviewMode(false);setIssuesOpen(false);setDiagramSelection(undefined);setRegionId("");
     const section=issue.section==="source"?"source":issue.section;
+    const questionSource=section==="question"&&!!issue.correction_type;
+    if(questionSource){
+      setQuestionSettings(false);setVisible(v=>({...v,question:true}));
+      if(issue.source_material_id){setMaterialId(issue.source_material_id);setSourceMode("pdf");}
+      if(issue.region_id)setRegionId(issue.region_id);
+    }
     if(section==="source"){setSourceMode("manage");}
     else if(section==="metadata"||section==="publication"){setSelected("all");}
     else {
-      setSelected(issue.question_key||"unassigned");
+      setSelected(issue.question_key||(issue.warning_id?"all":"unassigned"));
       setVisible(v=>({...v,[section]:true}));setEditing(v=>({...v,[section]:issue.field!=="score"}));
       if(section==="question")setQuestionSettings(issue.field==="score");
+      if(issue.warning_id)setEditing(v=>({...v,question:false}));
     }
     requestAnimationFrame(()=>requestAnimationFrame(()=>{
       let target:HTMLElement|null=document.getElementById(`authoring-${section}`);
@@ -184,6 +192,9 @@ export default function TestAuthoringPage() {
         target=document.getElementById(`authoring-recovery-${issue.entry_id}`)||panel;
       }else if(issue.criterion_id)target=document.getElementById(`authoring-rubric-${issue.criterion_id}`)||target;
       else if(issue.entry_id){target=document.getElementById(`authoring-candidate-${issue.entry_id}`)||target;}
+      if(issue.warning_id)target=document.getElementById(reviewWarningId(issue.warning_id));
+      else if(issue.region_id&&issue.question_key)target=document.getElementById(reviewFieldId(issue.question_key,issue.field==="formula"?`source:${issue.region_id}`:`figure:${issue.region_id}`))||target;
+      if(target)for(let parent=target.parentElement;parent;parent=parent.parentElement)if(parent instanceof HTMLDetailsElement)parent.open=true;
       if(issue.field==="classification"){
         const details=target?.querySelector<HTMLDetailsElement>('[data-authoring-classification]');if(details){details.open=true;target=details;}
       }
@@ -527,7 +538,7 @@ export default function TestAuthoringPage() {
           return <tr key={n.stable_key}><th scope="row"><span className="authoring-hierarchy-label" style={{paddingLeft:depth*20}}>{n.label.raw}</span></th><td>{gradable?`${points??"未設定"}点`:"小問合計"}</td><td>{gradable?(answerReady?"準備完了":"未登録"):"—"}</td><td>{gradable?(rubricReady?`${rubricCriteria.length}基準・${rubricCriteria.reduce((sum,c)=>sum+c.points,0)}点`:"確認が必要"):"—"}</td><td>{accepted?"確認済み図あり":"なし"}</td><td>{hasSourceProblem?"確認が必要":"確認済み"}</td></tr>;
         })}</tbody></table>
         <h3>要修正事項 {issues.length}件</h3><AuthoringIssueCards issues={issues} pathFor={pathFor} onAction={navigate}/>
-        {questionDomain&&questionDomain.document.warnings.length>0&&<WarningPanel targetLabel={w=>{const owner=warningQuestion(w);return owner?pathFor(owner.stable_key):"試験全体";}} warnings={questionDomain.document.warnings} states={questionDomain.snapshot.warning_states||{}} readonly={readonly||saving||analyzing}
+        {questionDomain&&questionDomain.document.warnings.length>0&&<WarningPanel quickAcknowledge targetLabel={w=>{const owner=warningQuestion(w);return owner?pathFor(owner.stable_key):"試験全体";}} warnings={questionDomain.document.warnings} states={questionDomain.snapshot.warning_states||{}} readonly={readonly||saving||analyzing}
             onChange={(key,resolution)=>change({...snapshot,domains:{...snapshot.domains,question:{...questionDomain,snapshot:{...questionDomain.snapshot,warning_states:{...questionDomain.snapshot.warning_states,[key]:resolution}}}}})}/>}
         {revision?.state==="confirmed"?<p role="status">テスト内容は確定済みです。</p>:<>
           {dirty&&<div className="authoring-final-unsaved" role="alert"><p>未保存の変更があります。<br/>テストを確定するには先に保存してください。</p><button disabled={busy} onClick={()=>void save()}>保存する</button><button onClick={()=>{setFinalReviewMode(false);setSelected(editingTarget.current||nodes[0]?.stable_key||"all");}}>編集に戻る</button></div>}
@@ -566,10 +577,12 @@ export default function TestAuthoringPage() {
           {questionDomain&&revision&&<DiagramReview path={`/tests/${id}/authoring/nodes/${selected}/diagrams`} revision={revision.edit_version}
             records={node.diagram_records} sourceStale={questionStale} disabled={readonly||saving||analyzing} label="図の確認" onSelect={setDiagramSelection}
             onChange={records=>{markDirty();setDirtyDomains(d=>({...d,diagram:true}));setSnapshot(current=>current?{...current,nodes:current.nodes.map(n=>{if(n.stable_key!==node.stable_key)return n;const decisions={...n.figure_decisions};for(const record of records)for(const rid of record.legacy_region_ids||(record.legacy_region_id?[record.legacy_region_id]:[]))decisions[rid]={decision:record.state==="accepted"?"accepted_as_evidence":record.state==="excluded"?"excluded":"unreviewed"};return {...n,diagram_records:records,figure_decisions:decisions};})}:current);}}/>}
-          {questionDomain&&questionWarnings.length>0&&<WarningPanel warnings={questionWarnings} targetLabel={()=>pathFor(selected)} states={questionDomain.snapshot.warning_states||{}} readonly={readonly||saving||analyzing} confirmed={readonly}
-            onChange={(key,resolution)=>change({...snapshot,domains:{...snapshot.domains,question:{...questionDomain,snapshot:{...questionDomain.snapshot,warning_states:{...questionDomain.snapshot.warning_states,[key]:resolution}}}}})}/>}
+
           </div>
-        </AuthoringPreviewEditor></section>}
+        </AuthoringPreviewEditor>
+          {questionDomain&&questionWarnings.length>0&&<WarningPanel quickAcknowledge warnings={questionWarnings} targetLabel={()=>pathFor(selected)} states={questionDomain.snapshot.warning_states||{}} readonly={readonly||saving||analyzing} confirmed={readonly}
+            onChange={(key,resolution)=>change({...snapshot,domains:{...snapshot.domains,question:{...questionDomain,snapshot:{...questionDomain.snapshot,warning_states:{...questionDomain.snapshot.warning_states,[key]:resolution}}}}})}/>}
+        </section>}
         {visible.answer&&<section id="authoring-answer" tabIndex={-1} aria-label="模範解答"><h2>模範解答</h2>
           {snapshot.domains?.answer&&revision?<AuthoringCandidates key={`answer:${snapshot.domains.answer.draft_id}`} testId={id} draftId={snapshot.domains.answer.draft_id} revision={revision.edit_version} questionKey={selected}
             staleSourceDraftIds={staleAnswerSourceDraftIds} entries={snapshot.domains.answer.entries as AuthoringEntry[]} savedEntries={(revision.snapshot.domains?.answer?.entries||[]) as AuthoringEntry[]} disabled={readonly||saving||analyzing}

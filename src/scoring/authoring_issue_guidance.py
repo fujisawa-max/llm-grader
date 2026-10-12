@@ -5,11 +5,21 @@ def issue_guidance(snapshot, issue, total):
     key, code = issue.get('question_key'), issue.get('code')
     node = next((n for n in snapshot['nodes'] if n['stable_key'] == key), {})
     criteria = snapshot['rubrics'].get(key, [])
-    labels = {'question': '問題を修正', 'answer': '模範解答を確認',
+    labels = {'question': '本文を修正', 'answer': '模範解答を確認',
               'rubric': '採点基準を修正', 'source': '出典を確認', 'metadata': '合計点を修正'}
     result = {**issue, 'action_label': labels.get(issue['section'], '内容を確認'),
               'expected_state': '該当する編集欄で内容を確認・修正し、保存してください。'}
-    if code == 'rubric_points':
+    if code == 'question_source_warning':
+        result.update(action_label='出典確認へ',
+                      current_state=f"確認事項 {issue.get('source_review_index', '')}: {issue.get('source_review_label', '自動解析の確認事項')} / 未確認",
+                      expected_state='元PDFと該当項目を照合し、正しければ確認状態を「確認済み」にしてください。内容が違う場合は修正して「対応済み」にしてください。')
+    elif code in {'question_formula_review', 'question_figure_review'}:
+        result.update(action_label='出典確認へ', current_state='数式の確認が未完了' if code == 'question_formula_review' else '図の確認結果が未選択',
+                      expected_state='元PDFと読み取り内容を照合し、正しければ「問題文を確認」を押してください。' if code == 'question_formula_review' else '元PDFの図を確認し、図の確認結果を選択してください。')
+    elif issue.get('correction_type') == 'text_source_review':
+        result.update(action_label='本文と出典を確認', current_state='編集本文と出典付き本文に差異があります。',
+                      expected_state='元PDFと編集本文を照合し、数式や出典付き読み取り項目の対応を修正して保存してください。警告の確認だけでは本文の差異は解消されません。')
+    elif code == 'rubric_points':
         points = node.get('score_points')
         result.update(current_state=f"設問の配点: {points if points is not None else '未設定'}点 / 採点基準の合計: {sum(c['points'] for c in criteria)}点",
                       expected_state=f'採点基準の合計を{points}点にしてください。' if points is not None else '先に設問の配点を設定してください。')
@@ -22,7 +32,7 @@ def issue_guidance(snapshot, issue, total):
             states.append('配点が未確認')
         result.update(current_state=' / '.join(states), expected_state='対象基準の本文を確認し、「この採点基準を確認」を押してください。配点が未確認の場合は点数を入力してください。')
     elif code == 'question_score':
-        result.update(current_state=f"設問の配点: {node.get('score_points') if node.get('score_points') is not None else '未設定'}",
+        result.update(action_label='配点を修正', current_state=f"設問の配点: {node.get('score_points') if node.get('score_points') is not None else '未設定'}",
                       expected_state='設問設定で正しい配点を入力してください。')
     elif code == 'answer_missing':
         result.update(current_state='模範解答本文・確認済みの図が未登録', expected_state='模範解答本文を入力するか、正答となる図を確認して使用してください。')

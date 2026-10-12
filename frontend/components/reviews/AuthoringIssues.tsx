@@ -4,7 +4,7 @@ import type {AuthoringIssue} from "@/lib/api/testAuthoring";
 
 export function AuthoringIssueCards({issues,pathFor,onAction}:{issues:AuthoringIssue[];pathFor:(key:string)=>string;onAction:(issue:AuthoringIssue)=>void}){
   return <div className="authoring-issue-cards">{issues.map((issue,index)=>{
-    const category=issue.field==="score"||issue.field==="total"?"配点":issue.field==="source"?"出典":({question:"問題",answer:"模範解答",rubric:"採点基準",source:"出典",metadata:"配点",save:"保存",publication:"確定"}[issue.section]||"内容");
+    const category=issue.field==="score"||issue.field==="total"?"配点":issue.field==="source"||issue.correction_type?"出典":({question:"問題",answer:"模範解答",rubric:"採点基準",source:"出典",metadata:"配点",save:"保存",publication:"確定"}[issue.section]||"内容");
     return <article key={`${issue.question_key}:${issue.entry_id}:${issue.code}:${index}`}>
       <h3>{issue.question_key?`${pathFor(issue.question_key)} — `:""}{category}</h3><p>{issue.message}</p>
       {issue.current_state&&<p className="authoring-issue-current">{issue.current_state}</p>}

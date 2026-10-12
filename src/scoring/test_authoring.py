@@ -297,9 +297,9 @@ def save_draft(session, test, value, expected, actor=None):
 
 def preflight(snapshot):
     issues = []
-    def issue(key, section, message, field=None, code=None, entry_id=None, criterion_id=None):
+    def issue(key, section, message, field=None, code=None, entry_id=None, criterion_id=None, **target):
         issues.append({'question_key': key, 'section': section, 'message': message, **({'field': field} if field else {}), **({'code': code} if code else {}),
-            **({'entry_id': entry_id} if entry_id else {}), **({'criterion_id': criterion_id} if criterion_id else {})})
+            **({'entry_id': entry_id} if entry_id else {}), **({'criterion_id': criterion_id} if criterion_id else {}), **target})
     nodes = [n for n in snapshot['nodes'] if n.get('included', True)]
     if not nodes:
         issue(None, 'question', '設問がありません。')
@@ -308,7 +308,7 @@ def preflight(snapshot):
         key = n['stable_key']
         children = [c for c in nodes if c.get('parent_key') == key]
         if not n['body_text'].strip() and not n.get('diagram_records'):
-            issue(key, 'question', '問題文を確認してください。')
+            issue(key, 'question', '問題文を確認してください。', 'content', 'question_body')
         if not children:
             points = n.get('score_points')
             if not points or not math.isfinite(points):
@@ -333,21 +333,26 @@ def preflight(snapshot):
     question = snapshot.get('domains', {}).get('question')
     if question:
         from .review_document import _formula_confirmation_resolved
+        from .authoring_question_issues import question_source_target, warning_question_key
         for n in nodes:
             for rid, decision in n.get('formula_decisions', {}).items():
                 if not _formula_confirmation_resolved(decision):
-                    issue(n['stable_key'], 'question', '元資料と数式を確認してください。')
+                    issue(n['stable_key'], 'question', '出典確認: 数式の確認が未完了です。', 'formula', 'question_formula_review', **question_source_target(question, kind='formula_review', region_id=rid, materials=snapshot.get('materials', [])))
             for rid, decision in n.get('figure_decisions', {}).items():
                 if decision.get('decision', 'unreviewed') == 'unreviewed':
-                    issue(n['stable_key'], 'question', '元資料の図を確認してください。')
+                    issue(n['stable_key'], 'question', '出典確認: 図の確認が未完了です。', 'figure', 'question_figure_review', **question_source_target(question, kind='figure_review', region_id=rid, materials=snapshot.get('materials', [])))
         states = question['snapshot'].get('warning_states', {})
+        seen_warnings = set()
         for warning in question['document'].get('warnings', []):
+            if warning['id'] in seen_warnings:
+                continue
+            seen_warnings.add(warning['id'])
             if warning.get('blocking') and states.get(warning['id'], {}).get('state', 'unreviewed') == 'unreviewed':
-                owner = next((n['stable_key'] for n in nodes if n['stable_key'] == warning.get('owner') or
-                    n.get('source_draft_stable_key') == warning.get('owner')), None)
-                issue(owner, 'question', '元資料の確認事項を確認してください。')
+                target = question_source_target(question, kind='source_warning', warning=warning, materials=snapshot.get('materials', []))
+                owner = warning_question_key(nodes, warning, question)
+                issue(owner, 'question', f"出典確認: {target['source_review_label']}が未確認です。", 'source_warning', 'question_source_warning', **target)
     for warning in source_warnings(snapshot):
-        issue(warning['question_key'], 'question', '本文と元資料の対応を確認してください。', 'source')
+        issue(warning['question_key'], 'question', '編集した本文と元資料の対応を確認してください。', 'content', warning['code'], correction_type='text_source_review')
     for diagnostic in snapshot['source_provenance'].get('authoring_origins', {}).get('diagnostics', []):
         issue(None, 'source', '保存済みレビューの元資料を確認できません。出典付きレビューを確認してください。')
     for entry in snapshot.get('domains', {}).get('answer', {}).get('entries', []):

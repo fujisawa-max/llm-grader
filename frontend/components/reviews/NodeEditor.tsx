@@ -115,7 +115,7 @@ export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange
       })}
       <details><summary>出典・読み取り構造の診断</summary>
         <pre>{contentDiagnostics}</pre>
-        {regions.filter(r => r.region_type === "formula").map(r => <section key={r.region_id}>
+        {regions.filter(r => r.region_type === "formula").map(r => <section id={reviewFieldId(node.stable_key, `source:${r.region_id}`)} key={r.region_id}>
           <button type="button" onClick={() => onRegion(r.region_id)}>元資料を確認</button>
           {activeRegionId === r.region_id && renderEvidence?.(r.region_id)}
         </section>)}

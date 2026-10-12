@@ -2,11 +2,11 @@ import { reviewWarningId } from "@/lib/reviewIssues";
 import type { ReviewWarning, WarningResolution } from "@/types/reviews";
 import { reviewIssueLabel, reviewIssueReason, reviewStateLabel } from "@/lib/reviewLabels";
 
-export function WarningPanel({ warnings, states, readonly, confirmed=false, onChange, targetLabel, onJump }: {
+export function WarningPanel({ warnings, states, readonly, confirmed=false, quickAcknowledge=false, onChange, targetLabel, onJump }: {
   warnings: ReviewWarning[]; states: Record<string, WarningResolution>; readonly: boolean;
   onChange: (id: string, resolution: WarningResolution) => void;
   targetLabel?: (warning: ReviewWarning) => string; onJump?: (warning: ReviewWarning) => void;
-  confirmed?: boolean;
+  confirmed?: boolean; quickAcknowledge?: boolean;
 }) {
   return <section className="panel" aria-label="確認事項一覧"><h3>確認事項</h3>
     {!warnings.length && <p>確認が必要な項目はありません。</p>}
@@ -22,6 +22,7 @@ export function WarningPanel({ warnings, states, readonly, confirmed=false, onCh
             onChange={event => onChange(warning.id, { ...states[warning.id], state: event.target.value as WarningResolution["state"] })}>
             {(["unreviewed", "acknowledged", "resolved"] as const).map(state => <option key={state} value={state}>{reviewStateLabel(state)}</option>)}
           </select></label>
+          {quickAcknowledge&&<button type="button" disabled={!pending} onClick={()=>onChange(warning.id,{...states[warning.id],state:"acknowledged"})}>確認済みにする</button>}
           <label>教師メモ<input maxLength={2000} value={states[warning.id]?.note || ""} onChange={event => onChange(warning.id, { state: states[warning.id]?.state || "unreviewed", note: event.target.value })} /></label>
           <details><summary>技術情報</summary><code>{warning.source_id} · {warning.code}</code></details>
         </fieldset>

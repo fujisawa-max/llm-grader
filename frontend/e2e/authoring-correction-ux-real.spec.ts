@@ -4,7 +4,9 @@ import {saveAuthoring} from './authoringNotifications';
 test.setTimeout(90000);
 test.skip(!process.env.RUNTIME_MANAGER_E2E,'requires disposable API / RuntimeManager / production frontend');
 async function login(page:Page){
-  await page.setViewportSize({width:1600,height:900});await page.goto('/login');
+  await page.setViewportSize({width:1600,height:900});
+  const authReady=page.waitForResponse(r=>r.url().endsWith('/auth/me'));
+  await page.goto('/login');await authReady;
   await page.getByLabel('メールアドレス').fill(process.env.TEXT_TOOL_TEACHER_EMAIL!);
   await page.getByLabel('パスワード').fill(process.env.MODEL_ANSWER_CLASSIFICATION_PASSWORD!);
   await page.getByRole('button',{name:'ログイン',exact:true}).click();await expect(page).not.toHaveURL(/login/);
