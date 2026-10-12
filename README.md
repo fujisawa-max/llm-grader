@@ -21,7 +21,7 @@ GPU unavailability falls back to CPU in `auto` mode. Missing models do not stop
 the application. Check `/api/v1/system/runtimes` for hardware/backend status;
 `LLM_GRADER_RUNTIME_BACKEND` provides an optional override. Model download and
 Admin runtime controls remain future work. See
-[runtime deployment](docs/operations/runtime-deployment.md) for detailed setup.
+[runtime deployment](docs/admin/runtime-deployment.md) for detailed setup.
 
 ## Overview
 
@@ -38,7 +38,7 @@ llm-grader is a web application for human-in-the-loop, LLM-assisted grading of u
 - Grading, review queue, regrade, finalization, results, CSV, and PDF views
 - Persistent artifact storage, Alembic migrations, and Docker Compose deployment
 
-Model/runtime catalog and download management are not part of the current web administration surface. Normal Compose includes a lazy-starting RuntimeManager and managed llama-server. Model files must be provisioned separately; Ricoh requires its own runtime configuration; Uni-MuMER math OCR has a configurable `math_ocr` profile and requires model/mmproj files. See [runtime deployment](docs/operations/runtime-deployment.md).
+Model/runtime catalog and download management are not part of the current web administration surface. Normal Compose includes a lazy-starting RuntimeManager and managed llama-server. Model files must be provisioned separately; Ricoh requires its own runtime configuration; Uni-MuMER math OCR has a configurable `math_ocr` profile and requires model/mmproj files. See [runtime deployment](docs/admin/runtime-deployment.md).
 
 ## Screenshots
 
@@ -112,12 +112,12 @@ Use `.venv/bin/python -m unittest discover -s tests -v`, `.venv/bin/python -m py
 
 ## Documentation
 
-- [Production runbook](docs/operations/production-runbook.md)
-- [Backup and restore](docs/operations/backup-restore.md)
-- [Incident response](docs/operations/incident-response.md)
-- [Deployment checklist](docs/operations/deployment-checklist.md)
-- [Q5 PostgreSQL cutover notes](docs/operations/q5-postgres-cutover.md)
-- [Reports](docs/reports/)
+- [Production runbook](docs/admin/production-runbook.md)
+- [Backup and restore](docs/admin/backup-restore.md)
+- [Incident response](docs/admin/incident-response.md)
+- [Deployment checklist](docs/admin/deployment-checklist.md)
+- [Q5 PostgreSQL cutover notes](docs/admin/q5-postgres-cutover.md)
+- [Reports](docs/internal/reports)
 
 ## Current Limitations / Planned Features
 
@@ -127,4 +127,4 @@ Model catalog, model download/install, and runtime switching UI are not yet impl
 
 Never commit `.env`, credentials, database dumps, or model files. Replace the example PostgreSQL password before deployment. Header authentication is disabled by default. Use HTTPS at the reverse proxy in production. Passwords are hashed; plaintext passwords and session tokens must not be logged or placed in documentation or screenshots.
 
-Model Answer Review offers on-demand “数式をLaTeX化”. Source-backed formulas use bounded PDF crops and Uni-MuMER, then show a proposal and source preview for teacher confirmation. Apply changes only the editing draft; draft save and formal registration remain separate. See [runtime deployment](docs/operations/runtime-deployment.md) for math model storage settings.
+Model Answer Review offers on-demand “数式をLaTeX化”. Source-backed formulas use bounded PDF crops and Uni-MuMER, then show a proposal and source preview for teacher confirmation. Apply changes only the editing draft; draft save and formal registration remain separate. See [runtime deployment](docs/admin/runtime-deployment.md) for math model storage settings.
