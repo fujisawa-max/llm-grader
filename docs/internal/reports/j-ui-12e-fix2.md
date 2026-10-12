@@ -2,7 +2,7 @@
 
 ## Result
 
-**READY_FOR_PRODUCTION_VALIDATION**. Local implementation and required automated validation passed. Operator deployment and isolated production acceptance are the remaining step; no production access was performed. J.UI.12e, J.UI.12e-fix1 and J.UI.12d remain COMPLETE; none has been reopened.
+**COMPLETE**. Local automated validation and deployed production acceptance passed. The operator-deployed fix2 was verified on a new dedicated actual Sample Q5 source-backed Test. J.UI.12e, J.UI.12e-fix1 and J.UI.12d remain COMPLETE; none has been reopened.
 
 ## Baseline / root cause
 
@@ -17,7 +17,7 @@
 
 A controlled `q2.2` parent → `accuracy` teacher-child fixture reproduces both old owners as `accuracy`; corrected readiness keeps both Test-wide warnings unassigned to any Question. This proves the null-owner misattribution mechanism in addition to missing guidance.
 
-The supplied production screenshot/workflow did not include the saved snapshot or warning IDs. No production connection was made, so the two exact Accuracy-item IDs cannot be reported as independently verified. The previous code could render every distinct warning as an indistinguishable card.
+The supplied production screenshot/workflow did not include the saved snapshot or warning IDs. During local implementation no production connection was made, so the two original Accuracy-item IDs were not independently verified. The production acceptance below uses a new isolated Test rather than mutating those original records. The previous code could render every distinct warning as an indistinguishable card.
 
 Actual unchanged Sample Q5, locally imported through native extraction, contains:
 
@@ -78,7 +78,7 @@ The first full Chromium run had 71 passes / 3 failures: one cold-login pre-hydra
 
 ## Safety / scope
 
-No production access/mutations/deployment, migrations, configuration/dependency changes, grading launch, model inference added for acknowledgment/readiness, Undo/Redo, manual Uni-MuMER recrop, revision-binding follow-on or other phase implementation. No commit or push. Previous diagnosis report remains untracked and unchanged; parent reports are unchanged.
+During local implementation: no production access/mutations/deployment, migrations, configuration/dependency changes, grading launch, model inference added for acknowledgment/readiness, Undo/Redo, manual Uni-MuMER recrop, revision-binding follow-on or other phase implementation. No commit or push. Previous diagnosis report remains untracked and unchanged; parent reports are unchanged.
 
 ## Files changed
 
@@ -97,13 +97,13 @@ No production access/mutations/deployment, migrations, configuration/dependency 
 - `tests/run_runtime_browser_e2e.py`: include the new browser scenario in the normal suite.
 - This separate report.
 
-## Remaining production acceptance
+## Local production handoff (subsequently completed)
 
 After operator deployment, inspect the real Accuracy Question's warning IDs/types, verify both cards identify their conditions, navigate to each actual row, acknowledge only the intended item, Save and verify count/markers update while other requirements remain. Validate PDF visibility and confirmed genuine drift still points to revised-draft creation. No completed parent phase status changes are required.
 
-## Exact git status
+## Local implementation handoff Git status
 
-All changes unstaged; the previous diagnosis report is pre-existing and unchanged. No commit or push.
+Historical status: all changes unstaged; the previous diagnosis report is pre-existing and unchanged. No commit or push.
 
 ```text
  M frontend/app/tests/[testId]/authoring/page.tsx
@@ -121,4 +121,49 @@ All changes unstaged; the previous diagnosis report is pre-existing and unchange
 ?? frontend/e2e/authoring-question-source-issues-real.spec.ts
 ?? src/scoring/authoring_question_issues.py
 ?? tests/test_authoring_question_issues.py
+```
+
+
+## Production acceptance — 2026-10-12
+
+**PASS / COMPLETE**. Baseline HEAD `bff8e41e9152ee434110169f17bd549b834a5dd4`; initial working tree clean. Authenticated real Chromium exercised the deployed UI and backend. Concrete issue metadata/action verified fix2 operationally. The operator performed deployment; no deployment or migration was performed in this acceptance run.
+
+New dedicated Test: **Codex Validation - J.UI.12e-fix2 Sample Q5 2026-10-12T09-47-16-971Z**. Actual unchanged `testData/SampleQ/sampleQ5.pdf` was uploaded/natively analyzed. Normal material-binding Save and Question-source import were used; no Answer/Rubric was needed for this correction UX acceptance. The existing dedicated validation offering was referenced without modification. Only this newly created Test was edited. Original production Accuracy records and other confirmed validation Tests were untouched.
+
+### Concrete issue / navigation
+
+- Question key `q2`; warning `node:q2:ambiguous_geometric_order`; warning type `ambiguous_geometric_order`.
+- Card text: **出典確認: 設問の並び順が未確認です。** Action: **出典確認へ**, not generic `問題を修正`. Current/expected confirmation guidance was visible.
+- Two distinct Test-wide warnings retained different ordering/vector-figure guidance and identities, without being attributed to a normal Question.
+- Clicking selected q2 and revealed the exact `review-warning-node%3Aq2%3Aambiguous_geometric_order` row below sticky controls, highlighted it and focused its confirmation select.
+- `確認済みにする` acknowledged exactly that warning. No Question body field was edited.
+
+| State | Test-wide issues | q2 issues / selector | Other unresolved conditions |
+|---|---:|---|---|
+| Initial saved state | **16** | **1**, `*` present | Present |
+| Confirm q2 warning / Save | **15** | **0**, `*` removed | Unchanged |
+| Confirm one distinct Test-wide warning / Save | **14** | **0**, no `*` | Other Test-wide warning remains |
+| Reload / Back / resume | **14** | **0**, no tab or `*` | Same remaining conditions |
+
+The first correction reduced the server issue list by exactly one. The second separately selected Test-wide correction also removed only its own warning. Final Review displayed matching server counts after Save and reload. A separate read-only browser session verified the clean q2 marker/tab, persisted acknowledgment, then returned to the Test and reopened its draft through the actual authoring link; counts remained consistent.
+
+Question bodies were compared recursively against the ordinary saved editor baseline and remained **unchanged** across acknowledgment/Saves. Existing initial-extraction-to-editor representation normalization was not confused with artificial teacher text edits.
+
+### Safety / scope
+
+- One fresh actual-PDF production scenario passed, plus read-only reload/Back/resume inspection.
+- Grading jobs **0**, submissions **0**, grading requests **0**; additional model/OCR/discovery requests **0** during this flow. Native PDF extraction was the explicit initial analysis. Browser page errors **0** during correction.
+- Test intentionally remains an incomplete working draft with **14 valid unresolved requirements**, including missing Answer/Rubric. This phase verifies actionable source review, not whole-Test confirmation. No valid blocker was suppressed or bypassed.
+- Initial optional Back inspection incorrectly waited for the confirmed-Test link label on a draft Test; the corrected inspection waited for the actual Test route and used its authoring link. No product change or delay/retry workaround was introduced.
+- Genuine confirmed-drift guidance was not induced through production mutations. Existing local full regressions and prior completed fix1 acceptance cover that safety. Parent phases remain COMPLETE.
+- Dedicated Test remains named for inspection; no destructive cleanup, unrelated Test/user/grade/configuration changes, credentials stored, HAR, cookie/token file or credential screenshot.
+- Local results remain **1002 backend passed / 2 skipped / 23 existing warnings**, **74 normal Chromium passed**, **14 focused Chromium passed**, TS/Ruff/build/diff pass, ESLint **0 errors / 19 existing warnings**. Suites were not rerun for this report-only production acceptance update.
+- Final credential-literal audit of this report and the acceptance helper/result/log files: **PASS (0 matches)**; values were never displayed.
+
+## Acceptance final Git status
+
+Only this requested report changed; no commit/push:
+
+```text
+ M docs/internal/reports/j-ui-12e-fix2.md
 ```
