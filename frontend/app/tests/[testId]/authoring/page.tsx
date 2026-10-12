@@ -3,6 +3,7 @@ import {Fragment, useCallback, useEffect, useRef, useState} from "react";
 import {useParams} from "next/navigation";
 import Link from "next/link";
 import {AuthoringIssueCards, QuestionIssueOverlay} from "@/components/reviews/AuthoringIssues";
+import {AuthoringRevisionHistory} from "@/components/reviews/AuthoringRevisionHistory";
 import {AuthoringDialog} from "@/components/reviews/AuthoringDialog";
 import {ReviewWorkspaceLayout} from "@/components/reviews/ReviewWorkspaceLayout";
 import {AuthoringPreviewEditor, AcceptedDiagramPreview} from "@/components/reviews/AuthoringPreviewEditor";
@@ -76,6 +77,9 @@ export default function TestAuthoringPage() {
   const editingTarget=useRef("");
   const clearHighlight=useRef<(()=>void)|null>(null);
   useEffect(()=>()=>{clearHighlight.current?.();},[]);
+  const [activeBasisId,setActiveBasisId]=useState<string|null>(null);
+  const [activeBasisLabel,setActiveBasisLabel]=useState<string|null>(null);
+  const [historyOpen,setHistoryOpen]=useState(false);
   const [confirmOpen,setConfirmOpen]=useState(false);
   const [issuesOpen,setIssuesOpen]=useState(false);
   const [analysisRequest,setAnalysisRequest]=useState<{domain:"question"|"answer";materialId:string}|null>(null);
@@ -100,6 +104,7 @@ export default function TestAuthoringPage() {
       if(!data.revision){data={...data,revision:await testAuthoring.begin(id)};}
       if(!active)return;
       const value=data.revision?.snapshot||data.legacy;
+      setActiveBasisLabel(data.confirmed_revision?.label||null);setActiveBasisId(data.confirmed_revision?.id||null);
       setRevision(data.revision);setSnapshot(value);setDirty(false);setDirtyDomains({});setExternalChange(data.external_source_change);setSourceProblems(data.source_problems||[]);
       setBuffers(authoringBuffers(value));
       setSelected(value.nodes[0]?.stable_key||"all");
@@ -262,12 +267,13 @@ export default function TestAuthoringPage() {
       else notify("success","問題用紙の解析が完了しました","問題文・小問構成を更新する場合があります。模範解答・採点基準は保持されます。");
     }catch(e){const message=`資料を解析できませんでした。保存済みの下書きは保持されています。資料を確認して再試行してください。${e instanceof Error?` (${e.message})`:""}`;setError(message);notify("error","解析に失敗しました",message);}finally{setBusy(false);setAnalyzing(false);setAnalysisProgress(null);}
   }
-  async function begin(){setBusy(true);setError("");try{
-    const row=await testAuthoring.begin(id);setRevision(row);setSnapshot(row.snapshot);setDirty(false);setDirtyDomains({});
+  async function begin(confirmedId:string|undefined=activeBasisId||undefined){setBusy(true);setError("");try{
+    const row=await testAuthoring.begin(id,confirmedId);setRevision(row);setSnapshot(row.snapshot);setDirty(false);setDirtyDomains({});
     setSelected(current=>row.snapshot.nodes.some(n=>n.stable_key===current)?current:row.snapshot.nodes[0]?.stable_key||"all");
     setBuffers(authoringBuffers(row.snapshot));
     notify("info","編集用ワークスペースを開きました","保存しても正式な問題・解答・採点基準は変更されません。");
   }catch(e){setError(e instanceof Error?e.message:"下書きを開けませんでした。");}finally{setBusy(false);}}
+  async function discardDraft(){if(!revision||!window.confirm("修正版の下書きを破棄します。保存済み・未保存の修正は編集対象から外れます。確定版と元資料は保持されます。続行しますか？"))return;setBusy(true);try{const row=await testAuthoring.discard(id,revision);setRevision(row);setSnapshot(row.snapshot);setBuffers(authoringBuffers(row.snapshot));setSelected(current=>row.snapshot.nodes.some(n=>n.stable_key===current)?current:row.snapshot.nodes[0]?.stable_key||"all");setDirty(false);setDirtyDomains({});notify("info","修正版を破棄しました");}catch(e){setError(e instanceof Error?e.message:"下書きを破棄できませんでした。");}finally{setBusy(false);}}
   async function importSources(){if(!revision)return;
     if(dirty){setError("先に現在の編集内容を保存してください。保存済みレビューは自動では取り込みません。");return;}
     if(!window.confirm("最新の解答・採点基準レビューを取り込みます。現在の設問本文・分割・階層は保持し、取り込み前の編集版も残します。問題レビューの変更は確認事項として扱います。続行しますか？"))return;
@@ -311,6 +317,7 @@ export default function TestAuthoringPage() {
     try{
       await testAuthoring.confirm(id,revision.id,revision.edit_version,revision.snapshot_sha256);
       const data=await testAuthoring.get(id);
+      setActiveBasisLabel(data.confirmed_revision?.label||null);setActiveBasisId(data.confirmed_revision?.id||null);
       if(data.revision){synchronize(data.revision);setReviewData(null);setConfirmOpen(false);setIssues([]);notify("success","テスト内容を確定しました","確認した内容を採点基盤として登録しました。");}
     }catch(e){const message=e instanceof Error?e.message:"テスト内容を確定できませんでした。";setError(message);notify("error","確定できませんでした",message);}
     finally{setBusy(false);}
@@ -446,7 +453,7 @@ export default function TestAuthoringPage() {
     const source=snapshot.domains.answer.question_regions.find(r=>r.question_id===sourceId);
     if(source)mappedLocation={id:`${selected}:${materialId}`,page:source.page_index+1,bbox:[source.left,source.top,source.right,source.bottom]};
   }
-  return <><h1>{snapshot.metadata.name}</h1><p>問題・解答・採点基準を編集します。保存しても既存の正式内容は変更されません。</p>
+  return <><h1>{snapshot.metadata.name}</h1><button onClick={()=>setHistoryOpen(true)}>版の履歴</button><p role="status">{readonly?"確定済み・この版は編集できません":revision?.parent_confirmed_revision_id?"現在の下書き（修正版）・現在の確定版は変更されていません":"現在の下書き"}{activeBasisLabel&&` ／ 現在の確定版: ${activeBasisLabel}`}</p><p>問題・解答・採点基準を編集します。保存しても既存の正式内容は変更されません。</p>
     {externalChange&&<section role="alert" className="panel"><p>外部の保存済みレビューが更新されています。統合下書きは上書きされていません。</p>
       <button disabled={busy} onClick={()=>{setContinueExternal(true);notify("info","現在の編集内容を継続します","外部レビューの更新は取り込みません。");}}>現在の下書きを継続</button>
       <button disabled={busy} onClick={importSources}>最新レビューを取り込む</button></section>}
@@ -454,7 +461,8 @@ export default function TestAuthoringPage() {
     {sourceWarnings.length>0&&<section aria-label="保存済み内容の出典確認" className="authoring-source-notice" role="status"><p>⚠ 元資料との対応に確認が必要な設問があります。編集内容は保存されています。</p>{sourceWarnings.map((w,i)=><div key={i}><span>{w.message}</span>{w.question_key&&<button onClick={()=>navigate({question_key:w.question_key,section:"question",field:"source",message:w.message})}>確認する</button>}</div>)}</section>}
     {(sourceProblems.length>0||questionStale||answerStale)&&<p role="alert">{readonly?'確定済みの内容は変更できません。「修正版を作成」して元PDFと本文・図の対応を確認してください。':'元PDFとの対応が無効になっています。資料と保存済みレビューを確認し、必要なら明示的に再解析してください。'}</p>}
     <ReviewWorkspaceLayout actions={<div className="review-toolbar" aria-busy={busy}>
-      {readonly?<button className="button" disabled={busy} onClick={begin}>修正版を作成</button>:<button className={`button authoring-save-button${dirty?" is-dirty":" is-saved"}`} aria-describedby="authoring-save-state" disabled={busy} onClick={()=>void save()}>{saving?"保存中…":"保存"}</button>}
+      {readonly?<button className="button" disabled={busy} onClick={()=>void begin()}>修正版を作成</button>:<button className={`button authoring-save-button${dirty?" is-dirty":" is-saved"}`} aria-describedby="authoring-save-state" disabled={busy} onClick={()=>void save()}>{saving?"保存中…":"保存"}</button>}
+      {!readonly&&revision?.parent_confirmed_revision_id&&<button disabled={busy} onClick={()=>void discardDraft()}>修正版を破棄</button>}
       {!readonly&&<span id="authoring-save-state" className="visually-hidden" role="status">{dirty?"保存状態: 未保存の変更があります":"保存状態: 保存済み"}</span>}
       {!readonly&&<button disabled={busy} onClick={importSources}>保存済みレビューを取り込む</button>}
       <button className="button secondary" disabled={busy} onClick={()=>void finalReview()}>最終確認へ</button><Link className="button secondary" href={`/tests/${id}`} onClick={event=>{if(saving||dirty&&!window.confirm("未保存の変更があります。保存せずにテスト詳細へ戻りますか？"))event.preventDefault();}}>戻る</Link>
@@ -604,6 +612,7 @@ export default function TestAuthoringPage() {
       </>}
 
     </ReviewWorkspaceLayout>
+    {historyOpen&&<AuthoringRevisionHistory testId={id} dirty={dirty} onClose={()=>setHistoryOpen(false)} onFork={async parent=>{await begin(parent);setHistoryOpen(false);}}/>}
     {splitProposal&&(()=>{const target=nodes.find(candidate=>candidate.stable_key===splitProposal.targetKey);if(!target)return null;return <AuthoringDialog title={`${pathFor(target.stable_key)}の分割案`} onCancel={()=>setSplitProposal(null)} actions={<><button type="button" onClick={()=>setSplitProposal(null)}>取消</button><button type="button" disabled={splitProposal.children.some(child=>child.included&&(child.role||"child")==="child"&&(!["automatic","manual_mapped"].includes(child.mappingStatus)||!child.contentValid))} onClick={applyQuestionSplitProposal}>分割を適用</button></>}>
       <p>元の問題文</p><div className="authoring-question-preview-frame"><MarkdownMathText source={buffers[target.stable_key]??questionContent(target,regions).text}/></div>
       {error&&<p role="alert" className="error">{error}</p>}<h3>分割後の候補</h3>{splitProposal.children.map((child,index)=><Fragment key={`${target.stable_key}:${index}`}><div className="authoring-split-block">

@@ -719,3 +719,134 @@ def test_duplicate_confirmation_rejects_corrupt_prior_payload_without_repair(wor
         assert prior.snapshot_sha256 == row['snapshot_sha256']
         assert session.get(Exam, w.legacy).active_confirmed_revision_id == identifier
         assert session.scalar(select(func.count()).select_from(ConfirmedAuthoringRevision)) == 1
+
+
+def test_revision_fork_exact_lineage_and_second_confirmation(workspace, monkeypatch):
+    from scoring.pdf_native import canonical_hash
+    w = workspace
+    def confirm(row):
+        result = w.client.post(base(w)+'/authoring/confirm', json={
+            'revision_id': row['id'], 'expected_edit_version': row['edit_version'],
+            'expected_snapshot_sha256': row['snapshot_sha256']})
+        assert result.status_code == 200, result.text
+        return result.json()
+    first = confirm(begin(w))
+    assert first['label'] == '第1版'
+    draft_response = w.client.post(base(w)+'/authoring/revisions', json={'confirmed_revision_id': first['id']})
+    assert draft_response.status_code == 200, draft_response.text
+    draft = draft_response.json()
+    assert draft['snapshot'] == first['snapshot']
+    assert canonical_hash(draft['snapshot']) == first['snapshot_sha256']
+    assert draft['parent_confirmed_revision_id'] == first['id']
+    assert draft['edit_version'] > first['edit_version']
+    assert w.client.get(base(w)+'/authoring/review').json()['issues'] == []
+    assert w.client.post(base(w)+'/authoring/revisions', json={'confirmed_revision_id': first['id']}).json()['id'] == draft['id']
+    assert w.client.get(base(w)+'/authoring/history').json()['active_confirmed_revision_id'] == first['id']
+    edited = deepcopy(draft['snapshot'])
+    edited['metadata']['description'] = 'Revised teacher description'
+    saved = w.client.put(base(w)+'/authoring', json={'expected_edit_version':draft['edit_version'], 'snapshot':edited})
+    assert saved.status_code == 200, saved.text
+    assert w.client.get(base(w)+'/authoring/confirmed/'+first['id']).json()['snapshot'] == first['snapshot']
+    # A clock correction must never renumber an already-issued edition.
+    from datetime import datetime, timezone
+    monkeypatch.setattr("scoring.db.models.now", lambda: datetime(2000, 1, 1, tzinfo=timezone.utc))
+    second = confirm(saved.json())
+    assert second['label'] == '第2版'
+    assert second['parent_confirmed_revision_id'] == first['id']
+    history = w.client.get(base(w)+'/authoring/history').json()
+    assert history['active_confirmed_revision_id'] == second['id']
+    assert [r['label'] for r in history['revisions']] == ['第2版', '第1版']
+    assert history['draft'] is None
+    assert w.client.get(base(w)+'/authoring/confirmed/'+first['id']).json()['snapshot'] == first['snapshot']
+    assert w.client.post(base(w)+'/authoring/revisions', json={'confirmed_revision_id': first['id']}).status_code == 200
+    assert w.client.post(base(w)+'/authoring/revisions', json={'confirmed_revision_id': second['id']}).status_code == 409
+
+
+def test_revision_lineage_migration_roundtrip():
+    engine = create_engine('sqlite://')
+    metadata = MetaData()
+    Table('confirmed_authoring_revisions',metadata,Column('id',String(36),primary_key=True))
+    working = Table('test_authoring_revisions',metadata,Column('id',String(36),primary_key=True))
+    metadata.create_all(engine)
+    module = importlib.import_module('migrations.versions.0018_revision_lineage')
+    assert len(module.revision) <= 32
+    with engine.begin() as connection:
+        connection.execute(working.insert().values(id='retained-working'))
+        for action in (module.upgrade, module.downgrade, module.upgrade):
+            with Operations.context(MigrationContext.configure(connection)):
+                action()
+            assert connection.execute(select(working.c.id)).scalar_one() == 'retained-working'
+    engine.dispose()
+
+
+def test_revised_draft_discard_and_stale_actions(workspace):
+    w = workspace
+    first_working = begin(w)
+    first_body = {'revision_id':first_working['id'], 'expected_edit_version':first_working['edit_version'],
+        'expected_snapshot_sha256':first_working['snapshot_sha256']}
+    first_response = w.client.post(base(w)+'/authoring/confirm', json=first_body)
+    assert first_response.status_code == 200
+    first = first_response.json()
+    fork = w.client.post(base(w)+'/authoring/revisions', json={'confirmed_revision_id':first['id']}).json()
+    body = {'revision_id':fork['id'], 'expected_edit_version':fork['edit_version'],
+        'expected_snapshot_sha256':fork['snapshot_sha256']}
+    assert w.client.post(base(w)+'/authoring/revisions/discard', json={**body,'expected_edit_version':fork['edit_version']+1}).status_code == 409
+    discarded = w.client.post(base(w)+'/authoring/revisions/discard', json=body)
+    assert discarded.status_code == 200, discarded.text
+    assert discarded.json()['id'] == first_working['id']
+    assert w.client.get(base(w)+'/authoring/history').json()['active_confirmed_revision_id'] == first['id']
+    replacement = w.client.post(base(w)+'/authoring/revisions', json={'confirmed_revision_id':first['id']}).json()
+    assert replacement['edit_version'] > fork['edit_version']
+    assert w.client.put(base(w)+'/authoring',json={'expected_edit_version':fork['edit_version'],'snapshot':fork['snapshot']}).status_code == 409
+    assert w.client.post(base(w)+'/authoring/revisions/discard',json=body).status_code == 409
+    assert w.client.post(base(w)+'/authoring/revisions',json={'confirmed_revision_id':w.foreign}).status_code == 409
+    assert w.client.get(base(w,'foreign')+'/authoring/confirmed/'+first['id']).status_code == 403
+
+
+def test_revised_confirmation_rollback_preserves_active_parent(workspace, monkeypatch):
+    from scoring import authoring_confirmation
+    w = workspace
+    row = begin(w)
+    first_response = w.client.post(base(w)+'/authoring/confirm',json={'revision_id':row['id'],
+        'expected_edit_version':row['edit_version'],'expected_snapshot_sha256':row['snapshot_sha256']})
+    assert first_response.status_code == 200
+    first = first_response.json()
+    fork = w.client.post(base(w)+'/authoring/revisions',json={'confirmed_revision_id':first['id']}).json()
+    original = authoring_confirmation.project_confirmed_snapshot
+    def failed(*args, **kwargs):
+        original(*args, **kwargs)
+        raise ValueError('AUTHORING_INJECTED_FAILURE')
+    monkeypatch.setattr(authoring_confirmation,'project_confirmed_snapshot', failed)
+    response = w.client.post(base(w)+'/authoring/confirm',json={'revision_id':fork['id'],
+        'expected_edit_version':fork['edit_version'],'expected_snapshot_sha256':fork['snapshot_sha256']})
+    assert response.status_code == 409
+    history = w.client.get(base(w)+'/authoring/history').json()
+    assert history['active_confirmed_revision_id'] == first['id']
+    assert len(history['revisions']) == 1
+    assert history['draft']['id'] == fork['id']
+    assert history['revisions'][0]['snapshot'] == first['snapshot']
+
+
+def test_historical_submission_allows_fork_but_blocks_activation(workspace):
+    w = workspace
+    row = begin(w)
+    first_response = w.client.post(base(w)+'/authoring/confirm',json={'revision_id':row['id'],
+        'expected_edit_version':row['edit_version'],'expected_snapshot_sha256':row['snapshot_sha256']})
+    assert first_response.status_code == 200
+    first = first_response.json()
+    with w.sf() as session:
+        service = DomainService(session)
+        student = service.student(w.offering, student_identifier='REVISION-HISTORY-SAFETY')
+        material = service.material(w.legacy,material_type='student_answer_source',storage_ref='/unused/student.pdf',
+            original_filename='student.pdf',mime_type='application/pdf',sha256='a'*64)
+        service.submission(w.legacy,student.id,submission_key='revision-history',material_id=material.id)
+        session.commit()
+    fork_response = w.client.post(base(w)+'/authoring/revisions',json={'confirmed_revision_id':first['id']})
+    assert fork_response.status_code == 200
+    fork = fork_response.json()
+    review = w.client.get(base(w)+'/authoring/review').json()
+    assert not review['can_confirm']
+    response = w.client.post(base(w)+'/authoring/confirm',json={'revision_id':fork['id'],
+        'expected_edit_version':fork['edit_version'],'expected_snapshot_sha256':fork['snapshot_sha256']})
+    assert response.status_code == 409
+    assert w.client.get(base(w)+'/authoring/history').json()['active_confirmed_revision_id'] == first['id']

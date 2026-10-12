@@ -611,6 +611,7 @@ def main():
                         "e2e/model-answer-nested-navigation-real-isolated.spec.ts",
                         "e2e/test-authoring-foundation-real.spec.ts",
                         "e2e/authoring-final-confirmation-real.spec.ts",
+                        "e2e/authoring-revision-history-real.spec.ts",
                         "e2e/authoring-final-review-issues-real.spec.ts",
                         "e2e/authoring-correction-ux-real.spec.ts",
                         "e2e/authoring-source-backed-real.spec.ts", "e2e/authoring-rubric-reliability-real.spec.ts",

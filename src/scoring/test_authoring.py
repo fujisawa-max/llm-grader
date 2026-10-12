@@ -13,7 +13,7 @@ from sqlalchemy import select, update, func, or_
 
 from .db.models import (Test, TestQuestion, TestMaterial, ModelAnswer, RubricVersion,
     TestQuestionAsset, StudentSubmission, GradingJob, GradingJobItem,
-    TestAuthoringRevision, TestArchive, DomainEvent, now)
+    TestAuthoringRevision, ConfirmedAuthoringRevision, TestArchive, DomainEvent, now)
 from .pdf_native import canonical_hash
 
 
@@ -85,21 +85,32 @@ def latest(session, test_id, *, include_backups=False):
                   TestAuthoringRevision.revision.desc()))
 
 
-def create_draft(session, test, actor=None, *, source_roots=None):
-    session.scalar(select(Test).where(Test.id == test.id).with_for_update())
+def create_draft(session, test, actor=None, *, source_roots=None, confirmed_revision_id=None):
+    session.scalar(select(Test).where(Test.id == test.id).with_for_update().execution_options(populate_existing=True))
     if session.get(TestArchive, test.id):
         raise AuthoringError('TEST_ARCHIVED', 'このテストはアーカイブされています。')
     highest = latest(session, test.id, include_backups=True)
     prior = latest(session, test.id) or highest
+    parent_id = confirmed_revision_id or test.active_confirmed_revision_id
+    parent = session.get(ConfirmedAuthoringRevision, parent_id) if parent_id else None
+    if parent_id and (not parent or parent.test_id != test.id):
+        raise AuthoringError('AUTHORING_REVISION_NOT_FOUND', 'このテストの確定版を選択してください。')
     if prior and prior.state in {'draft', 'final_review'}:
+        if confirmed_revision_id and prior.parent_confirmed_revision_id != parent_id:
+            raise AuthoringError('AUTHORING_DRAFT_EXISTS', '編集可能な下書きがあります。現在の下書きを開いてください。')
         return prior
+    if parent and canonical_hash(parent.snapshot) != parent.snapshot_sha256:
+        raise AuthoringError('AUTHORING_CONFIRMED_INTEGRITY', '確定版の内容を確認できません。')
     baseline = projection(session, test)
-    snapshot = deepcopy(prior.snapshot if prior else baseline)
+    snapshot = deepcopy(parent.snapshot if parent else prior.snapshot if prior else baseline)
     if not prior and source_roots:
         from .authoring_sources import source_projection
         snapshot = source_projection(session, test, baseline, *source_roots)
     row = TestAuthoringRevision(id=str(uuid4()), test_id=test.id,
-        revision=highest.revision+1 if highest else 1, edit_version=1, state='draft',
+        revision=highest.revision+1 if highest else 1,
+        edit_version=(session.scalar(select(func.max(TestAuthoringRevision.edit_version)).where(
+            TestAuthoringRevision.test_id == test.id)) or 0)+1, state='draft',
+        parent_confirmed_revision_id=parent.id if parent else None,
         snapshot=snapshot, snapshot_sha256=canonical_hash(snapshot),
         baseline_sha256=baseline_hash(baseline), created_by=actor)
     session.add(row)

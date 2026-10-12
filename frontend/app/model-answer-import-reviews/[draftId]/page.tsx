@@ -109,8 +109,12 @@ export default function ModelAnswerImportReviewPage() {
 
   useEffect(() => {
     if (!activeRubricId) return;
+    const focusAtRequest = document.activeElement;
     const frame = requestAnimationFrame(() => {
       const control = rubricTextareas.current[activeRubricId];
+      // A deferred card focus must not steal a teacher's newer field selection.
+      if (document.activeElement !== focusAtRequest || focusAtRequest instanceof HTMLInputElement
+          || (focusAtRequest instanceof HTMLTextAreaElement && focusAtRequest !== control)) return;
       if (control && !control.disabled) {
         control.focus({preventScroll: true});
         control.scrollIntoView({block: "nearest", behavior: "smooth"});

@@ -1,5 +1,6 @@
 """Domain-authorized whole-test drafts and reversible Test management."""
 from copy import deepcopy
+from datetime import timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -17,6 +18,10 @@ class ManualDiagramCrop(BaseModel):
     expected_revision: int = Field(ge=1)
     page_index: int = Field(ge=0)
     bbox: list[float] = Field(min_length=4, max_length=4)
+
+
+class RevisedDraftRequest(BaseModel):
+    confirmed_revision_id: str = Field(min_length=1, max_length=36)
 
 
 class SaveAuthoring(BaseModel):
@@ -97,7 +102,10 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
         from ..pdf_native import canonical_hash
         snapshot = normalize_authoring_snapshot(row.snapshot)
         return {**{k: getattr(row, k) for k in ('id', 'test_id', 'revision', 'edit_version', 'state',
-            'baseline_sha256')}, 'snapshot_sha256': canonical_hash(snapshot), 'snapshot': snapshot,
+            'baseline_sha256', 'parent_confirmed_revision_id')},
+            **{key: (getattr(row, key).replace(tzinfo=timezone.utc) if getattr(row, key).tzinfo is None
+                else getattr(row, key).astimezone(timezone.utc)).isoformat() for key in ('created_at', 'updated_at')},
+            'snapshot_sha256': canonical_hash(snapshot), 'snapshot': snapshot,
             'source_warnings': source_warnings(snapshot),
             'analysis_readiness': {m['id']: material_analysis_readiness(snapshot, m,
                 editable=row.state in {'draft', 'final_review'}) for m in snapshot['materials']}}
@@ -170,7 +178,15 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
     def _confirmed_view(session, row):
         from ..db.models import User
         actor = session.get(User, row.confirmed_by) if row.confirmed_by else None
-        return {'id': row.id, 'revision': row.revision, 'edit_version': row.edit_version,
+        ordered = list(session.scalars(select(ConfirmedAuthoringRevision).where(
+            ConfirmedAuthoringRevision.test_id == row.test_id).order_by(
+            ConfirmedAuthoringRevision.revision, ConfirmedAuthoringRevision.id)))
+        version = next(index + 1 for index, item in enumerate(ordered) if item.id == row.id)
+        working = session.get(TestAuthoringRevision, row.authoring_revision_id)
+        return {'id': row.id, 'revision': row.revision, 'version': version,
+            'label': f'第{version}版', 'authoring_revision_id': row.authoring_revision_id,
+            'parent_confirmed_revision_id': working.parent_confirmed_revision_id if working else None,
+            'edit_version': row.edit_version,
             'snapshot_sha256': row.snapshot_sha256, 'confirmed_at': row.confirmed_at.isoformat(),
             'confirmed_by': actor.display_name if actor else None, 'snapshot': row.snapshot}
 
@@ -180,13 +196,53 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
         row = s.get(ConfirmedAuthoringRevision, test.active_confirmed_revision_id) if test.active_confirmed_revision_id else None
         return {'active': _confirmed_view(s, row) if row else None}
 
+    @r.get('/tests/{test_id}/authoring/confirmed/{confirmed_id}/diagrams/{record_id}/crop')
+    def confirmed_crop(test_id: str, confirmed_id: str, record_id: str, owner: str, s=Depends(db)):
+        from fastapi.responses import FileResponse
+        from ..pdf_native import canonical_hash
+        from ..authoring_revision_artifacts import confirmed_crop_path
+        owned(test_id, s)
+        confirmed = s.get(ConfirmedAuthoringRevision, confirmed_id)
+        if not confirmed or confirmed.test_id != test_id:
+            raise HTTPException(404, 'AUTHORING_REVISION_NOT_FOUND')
+        if canonical_hash(confirmed.snapshot) != confirmed.snapshot_sha256:
+            raise HTTPException(409, 'AUTHORING_CONFIRMED_INTEGRITY')
+        try:
+            return FileResponse(confirmed_crop_path(s, confirmed, owner, record_id,
+                question_root, answer_root), media_type='image/png')
+        except (ValueError, OSError, KeyError, TypeError) as exc:
+            raise HTTPException(409, 'AUTHORING_DIAGRAM_SOURCE_UNAVAILABLE') from exc
+
+    @r.get('/tests/{test_id}/authoring/history')
+    def revision_history(test_id: str, s=Depends(db)):
+        test = owned(test_id, s)
+        rows = list(s.scalars(select(ConfirmedAuthoringRevision).where(
+            ConfirmedAuthoringRevision.test_id == test_id).order_by(
+            ConfirmedAuthoringRevision.revision.desc(), ConfirmedAuthoringRevision.id.desc())))
+        working = latest(s, test_id)
+        return {'active_confirmed_revision_id': test.active_confirmed_revision_id,
+            'draft': view(working) if working and working.state in {'draft', 'final_review'} else None,
+            'revisions': [_confirmed_view(s, row) for row in rows]}
+
+    @r.get('/tests/{test_id}/authoring/confirmed/{confirmed_id}')
+    def historical_revision(test_id: str, confirmed_id: str, s=Depends(db)):
+        owned(test_id, s)
+        row = s.get(ConfirmedAuthoringRevision, confirmed_id)
+        if not row or row.test_id != test_id:
+            raise HTTPException(404, 'AUTHORING_REVISION_NOT_FOUND')
+        from ..pdf_native import canonical_hash
+        if canonical_hash(row.snapshot) != row.snapshot_sha256:
+            raise HTTPException(409, 'AUTHORING_CONFIRMED_INTEGRITY')
+        return _confirmed_view(s, row)
+
     @r.post('/tests/{test_id}/authoring/revisions')
-    def begin(test_id: str, s=Depends(db)):
+    def begin(test_id: str, body: RevisedDraftRequest | None = None, s=Depends(db)):
         from sqlalchemy.exc import IntegrityError
         test = owned(test_id, s)
         try:
             row = create_draft(s, test, s.info['auth_user'].id,
-                source_roots=(question_root, answer_root) if question_root and answer_root else None)
+                source_roots=(question_root, answer_root) if question_root and answer_root else None,
+                confirmed_revision_id=body.confirmed_revision_id if body else None)
             s.commit()
             return view(row)
         except AuthoringError as exc:
@@ -197,8 +253,35 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
             s.rollback()
             row = latest(s, test_id)
             if row and row.state in {'draft', 'final_review'}:
+                if body and row.parent_confirmed_revision_id != body.confirmed_revision_id:
+                    raise HTTPException(409, 'AUTHORING_DRAFT_EXISTS')
                 return view(row)
             raise HTTPException(409, 'AUTHORING_SAVE_CONFLICT')
+
+    @r.post('/tests/{test_id}/authoring/revisions/discard')
+    def discard_revised_draft(test_id: str, body: ConfirmAuthoring, s=Depends(db)):
+        from ..pdf_native import canonical_hash
+        from ..db.models import now
+        test = owned(test_id, s)
+        s.scalar(select(Test).where(Test.id == test_id).with_for_update())
+        row = latest(s, test_id)
+        if (not row or row.id != body.revision_id or row.edit_version != body.expected_edit_version
+                or row.state not in {'draft', 'final_review'} or not row.parent_confirmed_revision_id
+                or canonical_hash(row.snapshot) != body.expected_snapshot_sha256):
+            raise HTTPException(409, 'AUTHORING_SAVE_CONFLICT')
+        from sqlalchemy import update
+        changed = s.execute(update(TestAuthoringRevision).where(TestAuthoringRevision.id == row.id,
+            TestAuthoringRevision.edit_version == body.expected_edit_version,
+            TestAuthoringRevision.state.in_(['draft', 'final_review']))
+            .values(state='discarded', updated_at=now()))
+        if changed.rowcount != 1:
+            s.rollback()
+            raise HTTPException(409, 'AUTHORING_SAVE_CONFLICT')
+        s.add(DomainEvent(entity_type='test', entity_id=test.id, event_type='authoring_draft_discarded',
+            actor_user_id=s.info['auth_user'].id, payload={'authoring_revision_id': row.id,
+                'parent_confirmed_revision_id': row.parent_confirmed_revision_id}))
+        s.commit()
+        return view(latest(s, test_id))
 
     @r.put('/tests/{test_id}/authoring')
     def save(test_id: str, v: SaveAuthoring, s=Depends(db)):

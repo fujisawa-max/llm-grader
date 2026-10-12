@@ -34,7 +34,7 @@ test("real Sample Q5 split children discover, correct, accept and reuse the Answ
  const routePattern=`**${endpoint}?**`;let release!:()=>void;let entered!:()=>void;
  let gate=new Promise<void>(resolve=>{release=resolve;});let arrived=new Promise<void>(resolve=>{entered=resolve;});let malformed=true;let posts=0;
  await page.route(routePattern,async route=>{if(route.request().method()!=="POST"){await route.continue();return;}posts++;entered();await gate;if(malformed){await route.fulfill({status:200,contentType:"application/json",body:"{broken"});}else await route.continue();});
- await diagram.getByRole("button",{name:"図候補を確認",exact:true}).focus();await page.keyboard.press("Enter");await arrived;
+ await diagram.getByRole("button",{name:"図候補を確認",exact:true}).focus();await expect(diagram.getByRole("button",{name:"図候補を確認",exact:true})).toBeFocused();await page.keyboard.press("Enter");await arrived;
  const progress=diagram.getByRole("button",{name:"図候補を探しています…",exact:true});await expect(progress).toBeDisabled();await expect(progress.locator(".spinner")).toBeVisible();await expect(diagram).toHaveAttribute("aria-busy","true");await expect(diagram.getByRole("status")).toHaveText("図候補を探索しています…");expect(posts).toBe(1);release();
  await expect(diagram.getByRole("alert")).toContainText("図の出典または範囲を確認できません");await expect(diagram.getByRole("button",{name:"図候補を確認",exact:true})).toBeEnabled();await expect(diagram).toHaveAttribute("aria-busy","false");
  malformed=false;gate=new Promise<void>(resolve=>{release=resolve;});arrived=new Promise<void>(resolve=>{entered=resolve;});

@@ -10,8 +10,11 @@ export function AuthoringPreviewEditor({label, editLabel="編集する", auxilia
   const lastEditor=useRef<HTMLTextAreaElement|null>(null);
   return <div className="authoring-preview-editor" aria-label={`${label}の表示切替`}>
     <div className="authoring-mode-actions"><button type="button" aria-expanded={editing||auxiliaryEditing} aria-controls={id} onClick={()=>{
+      const focusAtRequest=document.activeElement;
       onEditing(!editing);
       if(!editing)requestAnimationFrame(()=>{
+        // Keep automatic editor focus unless the teacher selected another control.
+        if(document.activeElement!==focusAtRequest)return;
         const target=lastEditor.current?.isConnected?lastEditor.current:body.current?.querySelector<HTMLTextAreaElement>("textarea");
         target?.focus({preventScroll:true});
       });

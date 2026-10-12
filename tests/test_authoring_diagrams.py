@@ -793,7 +793,51 @@ def test_confirmation_preserves_saved_diagrams_and_exact_hash(workspace, diagram
     assert w.client.get(path+'/review').json()['issues'] == []
     with w.sf() as session:
         assert len(list(session.scalars(select(ConfirmedAuthoringRevision)))) == 1
+    fork_response = w.client.post(path+'/revisions', json={'confirmed_revision_id': confirmed.json()['id']})
+    assert fork_response.status_code == 200, fork_response.text
+    fork = fork_response.json()
+    assert fork['snapshot'] == expected
+    assert fork['snapshot_sha256'] == canonical_hash(expected)
+    assert fork['edit_version'] > saved['edit_version']
+    assert fork['parent_confirmed_revision_id'] == confirmed.json()['id']
+    assert w.client.get(path+'/review').json()['issues'] == []
+    for entry in expected['domains']['answer']['entries']:
+        for record in entry.get('diagram_records', []):
+            if record.get('state') == 'accepted':
+                url = path+f'/confirmed/{confirmed.json()["id"]}/diagrams/{record["id"]}/crop?owner={entry["id"]}'
+                response = w.client.get(url)
+                assert response.status_code == 200, response.text
+    with w.sf() as session:
+        assert session.get(ConfirmedAuthoringRevision, confirmed.json()['id']).snapshot == expected
+    if diagram_kind == 'multiple' and not inject_failure:
+        from scoring.authoring_revision_artifacts import confirmed_crop_path
+        from scoring.db.models import DomainEvent
+        entry = next(e for e in expected['domains']['answer']['entries'] if e.get('diagram_records'))
+        record = entry['diagram_records'][0]
+        historical_url = path+f'/confirmed/{confirmed.json()["id"]}/diagrams/{record["id"]}/crop?owner={entry["id"]}'
+        with w.sf() as session:
+            basis = session.get(ConfirmedAuthoringRevision, confirmed.json()['id'])
+            artifact = confirmed_crop_path(session, basis, entry['id'], record['id'], w.root, w.root)
+        original_bytes = artifact.read_bytes()
+        try:
+            artifact.write_bytes(b'invalid historical crop')
+            assert w.client.get(historical_url).status_code == 409
+        finally:
+            artifact.write_bytes(original_bytes)
+        assert w.client.get(historical_url+'&owner=unknown').status_code == 409
+        with w.sf() as session:
+            session.add(DomainEvent(entity_type='material', entity_id=record['material_id'],
+                event_type='material_binding_deleted', payload={'test_id': w.answer['test_id']}))
+            session.commit()
+        # Historical inspection reads the exact attested existing crop;
+        # it does not re-enable that retired source for the current draft.
+        assert w.client.get(historical_url).status_code == 200
+        assert any(issue['section'] == 'source' for issue in w.client.get(path+'/review').json()['issues'])
     if diagram_kind == 'automatic' and not inject_failure:
+        # Restore the confirmed current-view fixture for the existing genuine-drift negative.
+        with w.sf() as session:
+            session.get(TestAuthoringRevision, fork['id']).state = 'discarded'
+            session.commit()
         pdf = w.root / 'answer.pdf'
         pdf.write_bytes(pdf.read_bytes()+b'changed source')
         stale = w.client.get(path+'/review').json()['issues']

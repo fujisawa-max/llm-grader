@@ -24,16 +24,18 @@ export interface RubricDraftEntry {mapping_state?:string;teacher_correction?:Mod
 export interface RubricRecoveryCandidate {id:string;origin_role:string;source_draft_id:string;source_candidate_id:string;source_binding_id:string|null;source_sha256:string|null;segment_id:string;text:string;category:string;classification_status?:string;question_key?:string|null;provenance:Record<string,unknown>;dismissed?:boolean;promoted?:boolean}
 export interface AnalysisReadiness {state:"ready"|"unsaved_changes"|"missing_material"|"unsupported"|"stale_source"|"busy"|"readonly";reason:string;analyzed?:boolean}
 export interface SourceWarning {question_key:string|null;code:string;message:string}
-export interface AuthoringRevision {analysis_readiness?:Record<string,AnalysisReadiness>;source_warnings?:SourceWarning[];id: string; test_id: string; revision: number; edit_version: number; state: string; snapshot: AuthoringSnapshot; snapshot_sha256: string; baseline_sha256: string}
+export interface AuthoringRevision {created_at?:string;updated_at?:string;parent_confirmed_revision_id?:string|null;analysis_readiness?:Record<string,AnalysisReadiness>;source_warnings?:SourceWarning[];id: string; test_id: string; revision: number; edit_version: number; state: string; snapshot: AuthoringSnapshot; snapshot_sha256: string; baseline_sha256: string}
 export interface AuthoringIssue {question_key: string | null; section: string; message: string; field?: string; code?:string; entry_id?:string; criterion_id?:string; current_state?:string; expected_state?:string; action_label?:string}
 export interface AuthoringReview {issues:AuthoringIssue[];notifications?:AuthoringIssue[];total_points:number;question_count:number;gradable_question_count:number;can_confirm:boolean}
-export interface ConfirmedAuthoringRevision {id:string;revision:number;edit_version:number;snapshot_sha256:string;confirmed_at:string;confirmed_by:string|null;snapshot:AuthoringSnapshot}
+export interface ConfirmedAuthoringRevision {label:string;version:number;authoring_revision_id:string;parent_confirmed_revision_id:string|null;id:string;revision:number;edit_version:number;snapshot_sha256:string;confirmed_at:string;confirmed_by:string|null;snapshot:AuthoringSnapshot}
 export interface ArchiveImpact {test_id: string; name: string; questions: number; model_answers: number; rubrics: number; submissions: number; grading_jobs: number; results: number; impact_sha256: string}
 const path = (id: string) => `/tests/${encodeURIComponent(id)}`;
 export const testAuthoring = {
   status: (id:string) => apiFetch<{state:string|null}>(path(id)+"/authoring/status"),
   get: (id: string) => apiFetch<{revision: AuthoringRevision | null; legacy: AuthoringSnapshot; publication_available: boolean; confirmed_revision:ConfirmedAuthoringRevision|null; external_source_change: boolean; source_problems:{domain:string;code:string}[]}>(path(id)+"/authoring"),
-  begin: (id: string) => apiFetch<AuthoringRevision>(path(id)+"/authoring/revisions", {method: "POST"}),
+  history: (id:string) => apiFetch<{active_confirmed_revision_id:string|null;draft:AuthoringRevision|null;revisions:ConfirmedAuthoringRevision[]}>(path(id)+"/authoring/history"),
+  begin: (id: string, confirmed_revision_id?:string) => apiFetch<AuthoringRevision>(path(id)+"/authoring/revisions", confirmed_revision_id?json({confirmed_revision_id}):{method: "POST"}),
+  discard: (id:string,row:AuthoringRevision) => apiFetch<AuthoringRevision>(path(id)+"/authoring/revisions/discard",json({revision_id:row.id,expected_edit_version:row.edit_version,expected_snapshot_sha256:row.snapshot_sha256})),
   save: (id: string, snapshot: AuthoringSnapshot, expected: number, continue_after_external_change=false) => apiFetch<AuthoringRevision>(path(id)+"/authoring", {...json({snapshot, expected_edit_version: expected, continue_after_external_change}), method: "PUT"}),
   analyzeAnswer: (id:string, material_id:string, expected_edit_version:number,preserve_previous=false) => apiFetch<AuthoringRevision>(path(id)+"/authoring/analyze-answer", json({material_id,expected_edit_version,preserve_previous})),
   importSources: (id: string, expected_edit_version: number, preserve_previous=false, analysis_material_id?:string) => apiFetch<AuthoringRevision>(path(id)+"/authoring/source-import", json({expected_edit_version,preserve_previous,analysis_material_id})),

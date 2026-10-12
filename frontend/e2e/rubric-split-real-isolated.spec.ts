@@ -91,7 +91,13 @@ test("rubric ranges preview, split, insert, undo and registration preserve sourc
   await expect(descriptions()).toHaveCount(4);
   await descriptions().nth(1).fill("Accepted manual criterion.");
   await descriptions().nth(2).fill("Accepted duplicate criterion.");
-  for (const [index, value] of ["3", "2", "2", "3"].entries()) await points().nth(index).fill(value);
+  for (const [index, value] of ["3", "2", "2", "3"].entries()) {
+    await points().nth(index).fill(value);
+    await expect(points().nth(index)).toHaveValue(value);
+  }
+  // Deferred textarea focus must not divert digits from the score inputs.
+  await expect(descriptions().nth(1)).toHaveValue("Accepted manual criterion.");
+  await expect(descriptions().nth(2)).toHaveValue("Accepted duplicate criterion.");
   const manualSaved = page.waitForResponse((response) => response.request().method() === "PUT" && response.url().endsWith(draft.id));
   await page.getByRole("button", {name: "下書き保存"}).click();
   expect((await manualSaved).ok()).toBeTruthy();
