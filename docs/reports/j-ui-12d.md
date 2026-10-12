@@ -2,7 +2,7 @@
 
 ## Result
 
-**READY_FOR_PRODUCTION_VALIDATION**. Local implementation and all required automated validation passed. Production deployment and acceptance are deliberately not performed. J.UI.12c, J.UI.12e and J.UI.12e-fix1 remain COMPLETE. No commit or push.
+**COMPLETE**. Local automated validation and deployed production acceptance passed. The operator deployed J.UI.12d; acceptance used a new dedicated actual Sample Q5 Test. J.UI.12c, J.UI.12e and J.UI.12e-fix1 remain COMPLETE. No commit or push.
 
 ## Baseline
 
@@ -74,9 +74,9 @@ Actual Sample Q5 Chromium scenario uses `testData/SampleQ/sampleQ5.pdf` and `tes
 
 Confirmed revisions remain immutable anchors. A future working-history journal can store operation boundaries or immutable working snapshots keyed by working revision/edit version, covering text/score edits, Question split/merge/reparent, Rubric split/merge, candidate assign/exclude and diagram accept/reuse/manual crop. Undo/redo should only move/reapply working-state operations; it must never mutate confirmed history or retroactively change a grading pin. Discarded working rows are retained but are not yet a general undo engine.
 
-## Operator handoff
+## Local implementation handoff (completed by operator)
 
-Deploy frontend, backend and additive migration together using the established backup/deployment workflow. Preserve the production environment files and artifact directories; do not reset the database. Then use a **new dedicated validation Test**: confirm 第1版 with actual Sample Q5 diagrams, create exact revised draft, edit/Save, verify active basis still 第1版, confirm 第2版, inspect both editions and reload/resume. Verify inherited diagrams/source review remain valid; verify historical submission/grading activation guard remains enforced. No production Test was accessed or changed during this phase.
+Deploy frontend, backend and additive migration together using the established backup/deployment workflow. Preserve the production environment files and artifact directories; do not reset the database. Then use a **new dedicated validation Test**: confirm 第1版 with actual Sample Q5 diagrams, create exact revised draft, edit/Save, verify active basis still 第1版, confirm 第2版, inspect both editions and reload/resume. Verify inherited diagrams/source review remain valid; verify historical submission/grading activation guard remains enforced. No production Test was accessed or changed during the local implementation run. The subsequent isolated acceptance is recorded below.
 
 ## Files changed
 
@@ -100,16 +100,16 @@ Deploy frontend, backend and additive migration together using the established b
 
 ## Remaining issues / safety
 
-- Operator deployment and a new dedicated production validation Test are required before COMPLETE.
+- Operator deployment and the new dedicated production acceptance are complete; no remaining 12d acceptance blocker was found.
 - Actual PostgreSQL migration execution was not available locally; standard additive ALTER/FK migration and migration identifier constraints were reviewed, and SQLite fresh/upgrade/downgrade/upgrade paths passed. Follow the production runbook and backups.
 - Historical grading activation remains deliberately blocked; full immutable grading-input assembly is future work.
 - General Undo/Redo, visual revision diffs and parallel branch management remain deferred.
-- No production connection or mutation occurred. All browser/domain validation used disposable local records/artifacts; no student grading was launched. Fork/history/Save/Confirm introduced no additional model calls.
+- During local implementation, no production connection or mutation occurred. Local browser/domain validation used disposable local records/artifacts; no student grading was launched. Fork/history/Save/Confirm introduced no additional model calls.
 - No production credential values were printed or written. Added-content password-literal audit found 0 matches. No credential/config/auth/local-helper file is in the change list.
 
-## Git status
+## Local implementation handoff Git status
 
-Exact final status (all changes unstaged, no commit/push):
+Historical handoff status (all changes unstaged, no commit/push):
 
 ```text
  M frontend/app/model-answer-import-reviews/[draftId]/page.tsx
@@ -147,4 +147,54 @@ Tracked diff summary (new service files listed above are additional):
  tests/test_authoring_diagrams.py                   |  44 +++++++
  tests/test_test_authoring.py                       | 131 +++++++++++++++++++++
  12 files changed, 313 insertions(+), 18 deletions(-)
+```
+
+## Production acceptance — 2026-10-12
+
+**PASS / COMPLETE**. Acceptance baseline HEAD: `66ade069f4ba29e356b3f1deffd7feaf37c063b7`; initial working tree clean. The deployed authenticated history endpoint, history UI, lineage fork and second confirmation all operated successfully. No deployment, migration, database reset or configuration change was performed by this acceptance run. Migration-backed lineage was verified operationally; the production migration command itself was operator-managed.
+
+Dedicated new Test: **Codex Validation - J.UI.12d Sample Q5 2026-10-12T03-48-22-454Z**. Its current name after the intended revised-draft edit is **Codex Validation - J.UI.12d Sample Q5 2026-10-12T03-48-22-454Z（第2版）**. The existing dedicated validation offering was reused without modification; unrelated Tests, users, grades and submissions were not modified. The new Test remains available for inspection.
+
+Actual inputs were `testData/SampleQ/sampleQ5.pdf` and `testData/SampleQ/modelAnswer/sampleQ5_modelAnswer.pdf`. Real Chromium performed upload/analysis, Q3 three-child split, automatic diagram acceptance, manual PDF crop and same-major reuse. Four accepted diagram records were saved; two origin diagrams were server-attested reusable (`candidate_count=2`). Teacher-authored criteria and scores were entered through the editor; unresolved Answer candidates were explicitly excluded and required classifications confirmed. The final three Question source-review items were explicitly reviewed and saved: blockers became **0**, without suppression.
+
+### Edition lifecycle evidence
+
+| Check | Production result |
+|---|---|
+| Save → Confirm 第1版 | Exact recursive saved/confirmed snapshot equality; stored canonical hash matches payload |
+| 第1版 history inspection | Read-only content, no editable inputs; all four diagram previews loaded |
+| 修正版を作成 | Exact parent/child snapshot and hash equality; diagram revisions unchanged |
+| Fork lineage / active basis | Child explicitly references 第1版; active basis remains 第1版 |
+| Revised edit / Save | Only intended teacher content change: Test name gains `（第2版）`; ordinary Save revision stamps allowed |
+| Parent after revised Save | 第1版 snapshot and hash unchanged; active basis still 第1版 |
+| Confirm 第2版 | Exact saved/confirmed equality and canonical hash; diagram metadata/revisions unchanged by Confirm |
+| Active basis | Switches to 第2版 only after successful second confirmation |
+| Independent views | 第1版 original name and 第2版 revised name independently displayed read-only; parent label retained |
+| Duplicate first confirmation | Returns original 第1版; does not reactivate it or create another edition |
+| Reload / Back / resume | Both history entries, active 第2版, parent lineage and clean readiness retained |
+
+Canonical hashes were computed from raw API JSON using the backend canonical-hash implementation, avoiding JavaScript numeric representation differences:
+
+- Saved 第1版 = confirmed 第1版 = initial fork: `dca5606e7ce4c33327f010038eb2d5cfcb2d43d112355f034f568ca66877019d`.
+- Saved revised draft = confirmed 第2版: `2ad52832564f530b341091848c7211ab4a46741a11c1b08a25b518c01c1c8e9c`.
+- Final history contains exactly **2 editions**, ordered 第2版 / 第1版, with no editable draft. 第1版 remains byte/semantic-equivalent to its captured original snapshot.
+
+### Production safety and verification scope
+
+- Production actual-PDF lifecycle: **1 complete dedicated scenario passed**, including both confirmations, independent history views and reload/Back/resume.
+- Grading jobs **0**, submissions **0**, grading requests **0**.
+- Additional explicit analysis/OCR/discovery/manual-crop requests during history/fork/Save/Confirm operations: **0**. Normal initial Question/Answer analysis and diagram preparation occurred beforehand; this is a browser request audit, not an internal RuntimeManager counter.
+- Browser page errors during the revision lifecycle: **0**.
+- The initial Answer-analysis response wait timed out client-side; read-only diagnostics confirmed it had completed server-side. No duplicate analysis was submitted.
+- No historical grading activation guard was bypassed. Its controlled negatives remain covered by the local backend suite; production acceptance intentionally created no student submissions.
+- Previous local validation remains: backend **996 passed / 2 skipped**, normal Chromium **73 passed**, focused Chromium **3 passed**, TS/Ruff/build/diff passed, ESLint **0 errors / 19 existing warnings**. These suites were not rerun for this report-only acceptance update.
+- Credential values were not printed or embedded in repository files, reports, screenshots or helper artifacts. No HAR, storage-state cookie file or authentication screenshot was saved. Final credential-literal audit of the report and acceptance helper/result/log files: **PASS (0 matches)**; values were never displayed.
+- No new implementation changes, Undo/Redo or additional phase work were performed.
+
+### Acceptance final Git status
+
+Only the requested report changed; no commit or push:
+
+```text
+ M docs/reports/j-ui-12d.md
 ```
