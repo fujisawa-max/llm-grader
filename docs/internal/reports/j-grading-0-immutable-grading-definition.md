@@ -2,7 +2,7 @@
 
 ## Result and authority decision
 
-**READY_FOR_PRODUCTION_VALIDATION.** Local implementation and all required automated validation passed. **Production deployment/acceptance is not performed.**
+**COMPLETE.** Local implementation and required automated validation passed previously. Operator deployment was followed by successful isolated production acceptance on 2026-10-12. Production evidence and scope are recorded below. J.GRADING.1 remains outside this phase.
 
 The initial audit reproduced a real disagreement: approved DB levels `[0, 10]` and external assignment levels `[0, 5, 10]` were both accepted for identical Test/Question/criterion identities and points. Development initially stopped rather than selecting an authority. The user's subsequent decision resolves that boundary: **Web authoring Rubric is canonical; filesystem assignment is explicit legacy compatibility only.** No reconciliation UI or legacy-policy import into new Web grading was added.
 
@@ -167,4 +167,87 @@ Changed files and exact status follow. This lists the complete source/test/UI/re
 ?? frontend/components/reviews/ExecutableRubricLevels.tsx
 ?? src/scoring/grading_definition.py
 ?? tests/test_grading_definition.py
+```
+
+
+## Production acceptance — 2026-10-12
+
+**COMPLETE for J.GRADING.0 Web grading-definition completeness.** Operator deployed the feature; acceptance verified the live levels editor, grading-definition readiness, immutable contract and two editions. No deployment or migration was executed during acceptance. Submission/job revision binding was neither implemented nor exercised. The expected `WEB_GRADING_REVISION_BINDING_REQUIRED` boundary remains in place; no grading endpoint was invoked.
+
+### Isolation and normal Web workflow
+
+Dedicated Course, Offering and Test were created through authorized service APIs. Only those new records were mutated. Test name:
+
+`Codex Validation - J.GRADING.0 2026-10-12T15-18-28-047Z`
+
+Question, ModelAnswer and Rubric were entered through the normal Web editor, with one 10-point Question (`x + 1 = 2`), answer `x = 1`, and one teacher-written criterion. This focused acceptance used manual authoring rather than PDF extraction; no source analysis/model request was needed. Existing production Tests, Submissions, grading history, runtime settings and external assignments were untouched. Dedicated records remain available for operator inspection.
+
+### Incomplete policy: Save succeeds, Confirm fails safely
+
+- Explicitly created criterion had **no levels**. Draft Save returned **200**, retaining an empty levels array; no hidden score levels or conditions were synthesized.
+- Final Review emitted `grading_levels_incomplete`: 「採点基準の得点段階が未設定または不完全です。部分点の条件を確認してください。」
+- Confirm button was disabled. An authenticated direct confirmation of that same saved revision returned **409**; no confirmed revision was created.
+- 「得点段階を設定」 navigated to the criterion's policy editor. Each 「得点段階を追加」 initially showed blank score and condition fields. Teacher explicitly entered the policy below.
+
+### Explicit policy and teacher review
+
+| Edition | Score | Explicit teacher condition |
+|---|---:|---|
+| 第1版 / 第2版 | 0 | 正しい値 x=1 を示していない。 |
+| 第1版 / 第2版 | 10 | x=1を示し、元の式に代入して成立を確認している。 |
+| 第2版 only | 5 | x=1を示しているが、代入による確認がない。 |
+
+Final Review's 「得点段階と部分点の条件」 displayed the criterion, 10-point maximum, levels and conditions. No unresolved issue remained and Confirm became enabled. Both confirmations were performed through the explicit Web confirmation dialog.
+
+### Exact snapshots, hashes and independent executable definitions
+
+| Check | 第1版 | 第2版 |
+|---|---|---|
+| Complete recursive saved/confirmed snapshot equality | Passed | Passed |
+| `canonical_hash(saved) == canonical_hash(confirmed) == stored snapshot_sha256` | Passed | Passed |
+| `grading_definition.complete` and API completeness flag | true | true |
+| Authority | `web_authoring` | `web_authoring` |
+| Score set | `[0, 10]` | `[0, 5, 10]` |
+| Snapshot-only executable rubric reconstruction/validation | Passed | Passed |
+| Duplicate Confirm returns same confirmed revision | Passed | Passed |
+
+第2版 retains the explicit UI insertion order `[0, 10, 5]`; its score set is `[0, 5, 10]`. No policy reordering or synthesis was required.
+
+Canonical hashes, recomputed with the service's Python canonical-hash implementation from raw authenticated API JSON:
+
+- 第1版: `8b8c4cc5966ff2cf19a86e0a16b31448b2a99ab3ea678f08186caa18b6a718cc`
+- 第2版: `d62206844758edba29c0cecd5405205e30d5ef9dfaf2c6617dd84f8660e9f046`
+
+Opening 第1版 through 「版の履歴」 showed read-only content. 「修正版を作成」 produced an exact snapshot/hash copy with explicit parent lineage and kept 第1版 active. After adding the 5-point level through the Web editor and saving/confirming, 第2版 became active atomically. History retained exactly two independent confirmed snapshots; 第1版's original snapshot/policy/hash remained unchanged.
+
+### Legacy independence: evidence and limits
+
+Both **real production confirmed snapshots** were reconstructed using `executable_definition()` and `executable_rubric()` with external filesystem reads and network connections forbidden. Reconstruction required no DB/current-policy lookup and retained the exact levels/conditions above.
+
+An isolated **local temporary legacy-assignment fixture** was changed from `[0, 10]` to `[0, 5, 10]` with different conditions. Reconstructing production 第1版 before/after that change yielded identical executable Rubrics. Production 第2版 changed only through the explicit Web edit described above. The new dedicated production Test had **0 DB grading-policy rows** at final audit.
+
+No production filesystem assignment was edited or inventoried; live external-assignment mutation is **not claimed**. The independence counterexample used a safe local fixture plus the actual production snapshots, and the snapshot-only reconstruction denied the very external reads that could introduce mutable legacy policy. No unrelated legacy workflow was modified.
+
+### References, navigation and audits
+
+This dedicated manual Test contained **no diagrams/visual references**, so conditional visual SHA/geometry/provenance/revision checks were not applicable to this production run. The earlier automated visual/accepted/manual/reused-diagram integrity coverage remains recorded above; it is not represented as a new production visual test.
+
+- Reload, Back/return and 「版の履歴」 reopened both editions and their saved conditions unchanged.
+- History still identified 第2版 as active and 第1版 as historical, with 第2版's parent link to 第1版.
+- Final server readiness issues: **0**.
+- Dedicated Test Submissions: **0**; grading jobs: **0**; grading endpoint requests: **0**.
+- Authoring analysis/inference endpoint requests during acceptance: **0**. No real model grading was performed.
+- No migrations, production configuration changes, existing immutable-record repairs, commits or pushes.
+- Credential literal audit of acceptance scripts, result/snapshot artifacts and changed repository content: **clean**. No HAR, cookie/token storage, credential screenshots or credential values were recorded in this report.
+
+Production acceptance scope passed. No remaining J.GRADING.0 issue was observed. Future J.GRADING.1 revision-bound grading execution remains separate and was not started.
+
+### Repository after production acceptance
+
+Only this report changed; no application, test, migration or configuration file changed during acceptance. `git diff --check` passed. Previously recorded full local results remain unchanged; expensive local suites were not repeated for this report-only production acceptance.
+
+Exact `git status --short`:
+
+```text
+ M docs/internal/reports/j-grading-0-immutable-grading-definition.md
 ```
