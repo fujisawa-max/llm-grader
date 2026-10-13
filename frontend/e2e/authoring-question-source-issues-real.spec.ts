@@ -24,16 +24,23 @@ test('Sample Q5 source issues navigate to exact warning and resolve without body
  const owned=before.find((i:{code:string;question_key:string})=>i.code==='question_source_warning'&&i.question_key);
  expect(owned).toBeTruthy();
  const globals=before.filter((i:{code:string;question_key:string})=>i.code==='question_source_warning'&&!i.question_key);
- expect(globals).toHaveLength(2);expect(globals[0].message).not.toBe(globals[1].message);
+ expect(globals).toHaveLength(1);expect(globals[0].warning_id).toBe('draft:document:unresolved_vector_evidence');
+ const label='設問の図表や数値・文字・文章の位置関係を確認してください';
+ const explanation='本来意図されている位置関係の認識に失敗した可能性があります。元資料と照合してください。';
+ expect(owned.question_key).toBe('q2');expect(owned.warning_id).toBe('node:q2:ambiguous_geometric_order');expect(owned.message).toBe(label);
+ const aggregateId='draft:document:ambiguous_geometric_order';
+ const catalog=(await(await page.request.get(base+'/review')).json()).question_warning_catalog;
+ expect(catalog.find((w:{id:string})=>w.id===aggregateId).actionable).toBe(false);
+ expect(before.some((i:{warning_id:string})=>i.warning_id===aggregateId)).toBe(false);
  await page.goto(`/tests/${exam.id}/authoring`);
  const selector=page.getByLabel('対象設問',{exact:true});await selector.selectOption(owned.question_key);
  const count=before.filter((i:{question_key:string})=>i.question_key===owned.question_key).length;
  const tab=page.getByRole('button',{name:`要修正 ${count}件`,exact:true});await expect(tab).toBeVisible();
  await tab.click();const overlay=page.getByRole('region',{name:/の要修正$/});
- const card=overlay.locator('article').filter({hasText:owned.message});await expect(card).toContainText('確認状態を「確認済み」');
+ const card=overlay.locator('article').filter({hasText:owned.message});await expect(card).toContainText('確認状態を「確認済み」');await expect(card).toContainText(explanation);
  await card.getByRole('button',{name:'出典確認へ',exact:true}).click();
  const warning=page.locator(`[id="review-warning-${encodeURIComponent(owned.warning_id)}"]`);
- await expect(warning).toBeVisible();await expect(warning).toHaveClass(/authoring-correction-target/);
+ await expect(warning).toBeVisible();await expect(warning).toContainText(label);await expect(warning).toContainText(explanation);await expect(warning).toHaveClass(/authoring-correction-target/);
  const select=warning.getByRole('combobox');await expect(select).toBeFocused();
  expect(await selector.inputValue()).toBe(owned.question_key);
  const box=(await warning.boundingBox())!,bottom=await page.locator('.review-workspace-selector').evaluate(e=>e.getBoundingClientRect().bottom);
@@ -55,6 +62,37 @@ test('Sample Q5 source issues navigate to exact warning and resolve without body
  expect(final.snapshot.nodes.map((n:{stable_key:string;body_text:string})=>[n.stable_key,n.body_text])).toEqual(bodies);
  const finalIssues=(await(await page.request.get(base+'/review')).json()).issues;
  expect(finalIssues.some((i:{warning_id:string})=>i.warning_id===globals[0].warning_id)).toBe(false);
- expect(finalIssues.some((i:{warning_id:string})=>i.warning_id===globals[1].warning_id)).toBe(true);
- await page.reload();await selector.selectOption('all');await expect(page.locator(`[id="review-warning-${encodeURIComponent(globals[0].warning_id)}"]`).getByRole('combobox')).toHaveValue('acknowledged');
+ expect(finalIssues.some((i:{warning_id:string})=>i.warning_id===aggregateId)).toBe(false);
+ expect(final.snapshot.domains.question.snapshot.warning_states[aggregateId]).toBeUndefined();
+ expect(final.snapshot.domains.question.document.warnings.some((w:{id:string})=>w.id===aggregateId)).toBe(true);
+ await page.reload();await selector.selectOption('all');await expect(page.locator(`[id="review-warning-${encodeURIComponent(globals[0].warning_id)}"]`).getByRole('combobox')).toHaveValue('acknowledged');await expect(page.locator(`[id="review-warning-${encodeURIComponent(aggregateId)}"]`)).toHaveCount(0);await selector.selectOption('q2');await expect(selector.locator('option[value="q2"]')).not.toContainText('*');await page.getByRole('link',{name:'戻る',exact:true}).click();await page.getByRole('link',{name:'テスト内容を編集',exact:true}).click();await selector.selectOption('q2');await expect(selector.locator('option[value="q2"]')).not.toContainText('*');
+ // Controlled server-response fixture for an independently attested document concern.
+ // Real backend mixed/independent provenance behavior is covered in backend tests.
+ await page.route(`**/api/v1/tests/${exam.id}/authoring/review`,async route=>{
+  const response=await route.fetch(),data=await response.json();
+  const current=route.request().method()==='POST'?route.request().postDataJSON().snapshot:
+   (await(await page.request.get(base)).json()).revision.snapshot;
+  const aggregate=data.question_warning_catalog.find((w:{id:string})=>w.id===aggregateId);
+  aggregate.coverage.independent_evidence_ids=['fixture:page-1-header'];aggregate.actionable=true;delete aggregate.requirement_kind;
+  if((current.domains.question.snapshot.warning_states[aggregateId]?.state||'unreviewed')==='unreviewed'){
+   data.issues.push({...owned,question_key:null,warning_id:aggregateId,source_item_id:'document',source_scope:'draft',source_review_index:1,
+    current_state:'元資料全体について確認が必要です。'});data.can_confirm=false;
+  }
+  await route.fulfill({response,json:data});
+ });
+ await page.reload();await page.getByRole('button',{name:'最終確認へ',exact:true}).click();
+ const independent=page.locator('.authoring-issue-cards article').filter({hasText:label});
+ await expect(independent).toHaveCount(1);await expect(independent).toContainText(explanation);
+ await independent.getByRole('button',{name:'出典確認へ',exact:true}).click();await expect(selector).toHaveValue('all');
+ const documentRow=page.locator(`[id="review-warning-${encodeURIComponent(aggregateId)}"]`);
+ await expect(documentRow).toBeVisible();await expect(documentRow).toHaveClass(/authoring-correction-target/);
+ await expect(documentRow).toContainText(label);await expect(documentRow).toContainText(explanation);
+ await documentRow.getByRole('button',{name:'確認済みにする',exact:true}).click();
+ const saveIndependent=page.waitForResponse(r=>r.request().method()==='PUT'&&r.url().endsWith(base));
+ await page.getByRole('button',{name:'保存',exact:true}).click();expect((await saveIndependent).status()).toBe(200);
+ await page.getByRole('button',{name:'最終確認へ',exact:true}).click();await expect(page.locator('.authoring-issue-cards article').filter({hasText:label})).toHaveCount(0);
+ const independentSaved=(await(await page.request.get(base)).json()).revision.snapshot;
+ expect(independentSaved.domains.question.snapshot.warning_states[aggregateId].state).toBe('acknowledged');
+ expect(independentSaved.nodes.map((n:{stable_key:string;body_text:string})=>[n.stable_key,n.body_text])).toEqual(bodies);
+
 });

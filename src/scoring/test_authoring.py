@@ -311,7 +311,7 @@ def save_draft(session, test, value, expected, actor=None):
     return row
 
 
-def preflight(snapshot):
+def preflight(snapshot, *, question_warnings=None):
     from .grading_definition import compile_definition
     issues = compile_definition(snapshot)[1]
     def issue(key, section, message, field=None, code=None, entry_id=None, criterion_id=None, **target):
@@ -350,6 +350,7 @@ def preflight(snapshot):
         if n.get('review_flags') and not snapshot.get('domains', {}).get('question'):
             issue(key, 'question', '出典の未確認項目があります。')
     question = snapshot.get('domains', {}).get('question')
+    catalog = []
     if question:
         from .review_document import _formula_confirmation_resolved
         from .authoring_question_issues import question_source_target, warning_question_key
@@ -362,14 +363,18 @@ def preflight(snapshot):
                     issue(n['stable_key'], 'question', '出典確認: 図の確認が未完了です。', 'figure', 'question_figure_review', **question_source_target(question, kind='figure_review', region_id=rid, materials=snapshot.get('materials', [])))
         states = question['snapshot'].get('warning_states', {})
         seen_warnings = set()
-        for warning in question['document'].get('warnings', []):
+        from .source_warning_requirements import warning_requirements
+        catalog = warning_requirements(question_warnings if question_warnings is not None else question['document'].get('warnings', []), question, nodes)
+        for warning in catalog:
             if warning['id'] in seen_warnings:
                 continue
             seen_warnings.add(warning['id'])
-            if warning.get('blocking') and states.get(warning['id'], {}).get('state', 'unreviewed') == 'unreviewed':
+            if warning.get('blocking') and warning.get('actionable', True) and states.get(warning['id'], {}).get('state', 'unreviewed') == 'unreviewed':
                 target = question_source_target(question, kind='source_warning', warning=warning, materials=snapshot.get('materials', []))
                 owner = warning_question_key(nodes, warning, question)
-                issue(owner, 'question', f"出典確認: {target['source_review_label']}が未確認です。", 'source_warning', 'question_source_warning', **target)
+                from .source_warning_requirements import SPATIAL_WARNING, SPATIAL_LABEL
+                message = SPATIAL_LABEL if warning['code'] == SPATIAL_WARNING else f"出典確認: {target['source_review_label']}が未確認です。"
+                issue(owner, 'question', message, 'source_warning', 'question_source_warning', **target)
     for warning in source_warnings(snapshot):
         issue(warning['question_key'], 'question', '編集した本文と元資料の対応を確認してください。', 'content', warning['code'], correction_type='text_source_review')
     for diagnostic in snapshot['source_provenance'].get('authoring_origins', {}).get('diagnostics', []):
@@ -398,7 +403,7 @@ def preflight(snapshot):
         issue(None, 'metadata', '設問の合計点とテストの合計点が一致していません。', 'total', 'test_total')
     from .authoring_issue_guidance import issue_guidance
     issues = [issue_guidance(snapshot, item, total) for item in issues]
-    return {'issues': issues, 'notifications': [], 'total_points': total,
+    return {'issues': issues, 'question_warning_catalog': catalog, 'notifications': [], 'total_points': total,
         'question_count': len(nodes), 'gradable_question_count': sum(1 for n in nodes if not any(
             c.get('included', True) and c.get('parent_key') == n['stable_key'] for c in nodes)),
         'can_confirm': not issues}

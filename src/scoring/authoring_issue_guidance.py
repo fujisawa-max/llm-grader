@@ -17,7 +17,7 @@ def issue_guidance(snapshot, issue, total):
     elif code == 'question_source_warning':
         result.update(action_label='出典確認へ',
                       current_state=f"確認事項 {issue.get('source_review_index', '')}: {issue.get('source_review_label', '自動解析の確認事項')} / 未確認",
-                      expected_state='元PDFと該当項目を照合し、正しければ確認状態を「確認済み」にしてください。内容が違う場合は修正して「対応済み」にしてください。')
+                      expected_state=(issue.get('source_review_explanation', '')+' ' if issue.get('source_review_explanation') else '')+'元PDFと該当項目を照合し、正しければ確認状態を「確認済み」にしてください。内容が違う場合は修正して「対応済み」にしてください。')
     elif code in {'question_formula_review', 'question_figure_review'}:
         result.update(action_label='出典確認へ', current_state='数式の確認が未完了' if code == 'question_formula_review' else '図の確認結果が未選択',
                       expected_state='元PDFと読み取り内容を照合し、正しければ「問題文を確認」を押してください。' if code == 'question_formula_review' else '元PDFの図を確認し、図の確認結果を選択してください。')

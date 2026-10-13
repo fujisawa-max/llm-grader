@@ -63,7 +63,12 @@ def warning_catalog(draft, pin):
         p = pinned.get(r["region_id"], {})
         flags = r.get("review_flags", []) + p.get("review_flags", [])
         add("region", r["region_id"], flags, r.get("assigned_question_key"))
-    return warnings
+    from .source_warning_requirements import parser_coverage, warning_requirements
+    coverage = parser_coverage(draft)
+    for warning in warnings:
+        if warning['scope'] == 'draft' and warning['code'] in coverage:
+            warning['coverage'] = coverage[warning['code']]
+    return warning_requirements(warnings)
 
 
 def _text(value, limit=20000):
@@ -480,7 +485,9 @@ def validate_snapshot(snapshot, current, draft, pin, *, mark=False):
                 elif not any(d.get("decision", "unreviewed") != "unreviewed" for d in decisions):
                     raise ReviewError(f"{kind}_review_required", 422, node_key=owner,
                                       field_key=f"figure:{region['region_id']}")
-    catalog = {w["id"]: w for w in warning_catalog(draft, pin)}
+    from .source_warning_requirements import warning_requirements
+    catalog = {w["id"]: w for w in warning_requirements(
+        warning_catalog(draft, pin), {'document': {'regions': regions(draft)}}, snap['nodes'])}
     resolutions = snap.get("warning_states", {})
     if not isinstance(resolutions, dict):
         raise ReviewError("invalid_warning_states", 422)
@@ -494,13 +501,14 @@ def validate_snapshot(snapshot, current, draft, pin, *, mark=False):
         for wid, warning in catalog.items():
             owner = warning["owner"]
             active = owner is None or by_key.get(owner, {}).get("included", True)
-            if active and resolutions.get(wid, {}).get("state", "unreviewed") == "unreviewed":
+            if active and warning.get("actionable", True) and resolutions.get(wid, {}).get("state", "unreviewed") == "unreviewed":
                 raise ReviewError("warning_acknowledgement_required", 422)
     snap["editing_contract"] = 1
     return snap
 
 
 def review_summary(snap, draft, pin):
+    from .source_warning_requirements import warning_requirements
     included = [n for n in snap["nodes"] if n["included"]]
     by_key = {n["stable_key"]: n for n in included}
     all_by_key = {n["stable_key"]: n for n in snap["nodes"]}
@@ -563,5 +571,7 @@ def review_summary(snap, draft, pin):
         result[f"{kind}_reviewed"] = len(decisions) - decisions.count("unreviewed")
     result["unresolved_warnings"] = sum(
         snap.get("warning_states", {}).get(w["id"], {}).get("state", "unreviewed") == "unreviewed"
-        for w in warning_catalog(draft, pin) if w["owner"] is None or w["owner"] in by_key)
+        for w in warning_requirements(
+            warning_catalog(draft, pin), {'document': {'regions': regions(draft)}}, snap['nodes'])
+        if w.get('actionable', True) and (w["owner"] is None or w["owner"] in by_key))
     return result

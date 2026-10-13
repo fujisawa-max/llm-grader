@@ -10,7 +10,7 @@ WARNING_LABELS = {
     'native_vision_disagreement': 'PDFと画像解析の読み取り結果',
     'ambiguous_parent_assignment': '親設問の対応',
     'duplicate_question_label': '設問番号',
-    'ambiguous_geometric_order': '設問の並び順',
+    'ambiguous_geometric_order': '設問の図表や数値・文字・文章の位置関係',
     'unresolved_vector_evidence': 'ベクトル図の読み取り',
     'inline_subquestion_label': '本文内の小問名と分割範囲',
     'unassigned_content': '設問へ対応付けできなかった読み取り部分',
@@ -31,6 +31,9 @@ def question_source_target(question, *, kind, warning=None, region_id=None, mate
               'source_review_id': document.get('id'),
               'source_sha256': document.get('source_pdf_sha256')}
     if warning:
+        from .source_warning_requirements import SPATIAL_WARNING, SPATIAL_EXPLANATION
+        if warning['code'] == SPATIAL_WARNING:
+            result['source_review_explanation'] = SPATIAL_EXPLANATION
         index = next((i for i, item in enumerate(document.get('warnings', []))
                       if item['id'] == warning['id']), 0) + 1
         result.update(source_review_index=index, warning_id=warning['id'], warning_code=warning['code'],

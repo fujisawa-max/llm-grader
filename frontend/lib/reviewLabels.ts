@@ -57,7 +57,7 @@ const reviewIssues: Record<string, string> = {
   score_scope_ambiguous: "配点の対象となる設問を確認してください",
   ambiguous_parent_assignment: "親設問を確認してください",
   duplicate_question_label: "設問番号が重複しています",
-  ambiguous_geometric_order: "設問の並び順を確認してください",
+  ambiguous_geometric_order: "設問の図表や数値・文字・文章の位置関係を確認してください",
   each_child_without_clear_children: "旧設定の小問範囲を確認してください",
 };
 
@@ -88,6 +88,7 @@ const reviewSaveIssues: Record<string, string> = {
 export const reviewSaveIssueLabel = (code: string) => reviewSaveIssues[code] ?? "保存内容を確認してください。";
 
 const reviewIssueReasons: Record<string, string> = {
+  ambiguous_geometric_order: "本来意図されている位置関係の認識に失敗した可能性があります。元資料と照合してください。",
   ambiguous_score: "配点の読み取り方が一つに定まりません。原問題用紙と照合してください。",
   score_conflict: "親設問の配点と小問の合計が一致しません。配点欄を確認してください。",
   formula_unresolved: "数式の読み取り結果がまだ確定していません。原問題用紙と照合してください。",

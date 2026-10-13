@@ -285,7 +285,7 @@ class QuestionReviewService:
         extraction = self.s.get(QuestionImportExtraction, draft.extraction_id)
         from .question_source_ownership import review_source_regions
         source_regions = review_source_regions(snap['nodes'], value, ir)
-        return {"id": review.id, "draft_id": review.draft_id, "test_id": extraction.test_id,
+        document = {"id": review.id, "draft_id": review.draft_id, "test_id": extraction.test_id,
                 "state": snap["state"], "current_revision": review.current_revision,
                 "revision_number": rev.revision_number, "current_revision_sha256": review.current_revision_sha256,
                 "revision_sha256": rev.revision_sha256, "vision_run_id": review.vision_run_id,
@@ -295,6 +295,11 @@ class QuestionReviewService:
                 "warnings": warning_catalog(value, pin), "regions": regions(value),
                 "automatic_nodes": value["nodes"],
                 "source_regions": source_regions}
+
+        from .source_warning_requirements import warning_requirements
+        document['warnings'] = warning_requirements(document['warnings'],
+            {'document': document}, snap['nodes'])
+        return document
 
     def save(self, rid, payload, *, mark=False):
         review = self._review(rid, lock=True)

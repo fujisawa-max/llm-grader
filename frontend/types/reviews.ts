@@ -47,7 +47,7 @@ export interface Region extends SourceRegion {
   text_fragments?: { native_text: string; element_id: string; bbox: BBox }[];
   routing_evidence?: Json; image_evidence?: Json[];
 }
-export interface ReviewWarning { id: string; code: string; scope: string; source_id: string; owner: string | null; blocking: boolean; }
+export interface ReviewWarning { actionable?: boolean; requirement_kind?: string; coverage?: Record<string, unknown>; id: string; code: string; scope: string; source_id: string; owner: string | null; blocking: boolean; }
 export interface Summary {
   included_questions: number; excluded_questions: number; unresolved_warnings: number;
   formula_reviewed: number; formula_unreviewed: number; figure_reviewed: number; figure_unreviewed: number;

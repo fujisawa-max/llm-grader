@@ -8,9 +8,10 @@ export function WarningPanel({ warnings, states, readonly, confirmed=false, quic
   targetLabel?: (warning: ReviewWarning) => string; onJump?: (warning: ReviewWarning) => void;
   confirmed?: boolean; quickAcknowledge?: boolean;
 }) {
+  const requirements=warnings.filter(warning=>warning.actionable!==false);
   return <section className="panel" aria-label="確認事項一覧"><h3>確認事項</h3>
-    {!warnings.length && <p>確認が必要な項目はありません。</p>}
-    {warnings.map((warning, index) => {
+    {!requirements.length && <p>確認が必要な項目はありません。</p>}
+    {requirements.map((warning, index) => {
       const target = targetLabel?.(warning) || "試験全体";
       const pending = (states[warning.id]?.state || "unreviewed") === "unreviewed";
       return <div id={reviewWarningId(warning.id)} key={warning.id} className={pending ? "review-warning-wrap needs-check" : "review-warning-wrap"}>
@@ -29,7 +30,7 @@ export function WarningPanel({ warnings, states, readonly, confirmed=false, quic
         {onJump && <button type="button" onClick={() => onJump(warning)}>{target}を確認</button>}
       </div>;
     })}
-    {!readonly&&warnings.length>0&&<p className="muted">元PDFと本文・図の対応を確認し、確認状態を選んで保存してください。内容が違う場合は該当箇所を修正してください。</p>}
-    {confirmed&&warnings.some(warning=>(states[warning.id]?.state||"unreviewed")==="unreviewed")&&<p className="muted">確定済みの内容は変更できません。「修正版を作成」して元PDFと本文・図の対応を確認してください。</p>}
+    {!readonly&&requirements.length>0&&<p className="muted">元PDFと本文・図の対応を確認し、確認状態を選んで保存してください。内容が違う場合は該当箇所を修正してください。</p>}
+    {confirmed&&requirements.some(warning=>(states[warning.id]?.state||"unreviewed")==="unreviewed")&&<p className="muted">確定済みの内容は変更できません。「修正版を作成」して元PDFと本文・図の対応を確認してください。</p>}
   </section>;
 }

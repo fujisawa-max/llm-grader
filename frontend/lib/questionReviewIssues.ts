@@ -25,6 +25,7 @@ export function questionReviewIssues(document: ReviewDocument, snapshot: ReviewS
       controlSelector: formula ? '[data-review-confirm-content]' : undefined});
   }
   for (const warning of document.warnings) {
+    if(warning.actionable===false)continue;
     if ((snapshot.warning_states?.[warning.id]?.state || "unreviewed") !== "unreviewed") continue;
     const region = document.regions.find(item => item.region_id === warning.source_id);
     const owner = region && regionOwner(region.region_id) || snapshot.nodes.find(node =>

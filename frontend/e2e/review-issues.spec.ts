@@ -3,6 +3,7 @@ import {canonicalQuestionPath,canonicalQuestionRoot} from "../lib/canonicalQuest
 import {questionBreadcrumb} from "../lib/modelAnswerQuestionNavigation";
 import {buildQuestionPath} from "../lib/reviewValidation";
 import {questionReviewIssues} from "../lib/questionReviewIssues";
+import {reviewIssueLabel,reviewIssueReason} from "../lib/reviewLabels";
 import type {ReviewDocument,ReviewNode} from "../types/reviews";
 const node=(key:string,parent:string|null,label:string):ReviewNode=>({stable_key:key,review_node_id:key,
   parent_key:parent,source_draft_stable_key:"automatic",source_draft_node_id:"native",source_review_owner:"automatic",
@@ -64,4 +65,21 @@ test("diagram guidance scope follows the same major tree, including grandchildre
   expect(canonicalQuestionRoot("q2",nodes)).not.toBe(canonicalQuestionRoot("a",nodes));
   expect(canonicalQuestionRoot("orphan",nodes)).toBeUndefined();
   expect(canonicalQuestionRoot("cycle-a",nodes)).toBeUndefined();
+});
+
+
+test("source spatial warning uses teacher wording and server coverage, not matching codes",()=>{
+ const {nodes,document}=fixture();document.regions=[];
+ const code="ambiguous_geometric_order";
+ expect(reviewIssueLabel(code)).toBe("設問の図表や数値・文字・文章の位置関係を確認してください");
+ expect(reviewIssueReason(code)).toBe("本来意図されている位置関係の認識に失敗した可能性があります。元資料と照合してください。");
+ document.warnings=[
+  {id:"node:q2:"+code,owner:"automatic",scope:"node",source_id:"automatic",code,blocking:true,actionable:true},
+  {id:"draft:document:"+code,owner:null,scope:"draft",source_id:"document",code,blocking:true,actionable:false},
+ ];
+ const make=()=>questionReviewIssues(document,document.snapshot,n=>n.source_review_owner,()=>nodes[2]);
+ expect(make().filter(i=>i.issueType==="warning")).toHaveLength(1);
+ // Same code with independent evidence remains a second requirement when the server says so.
+ document.warnings[1].actionable=true;
+ expect(make().filter(i=>i.issueType==="warning")).toHaveLength(2);
 });

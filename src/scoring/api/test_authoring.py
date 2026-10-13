@@ -879,7 +879,9 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
             except (AuthoringError, ValueError) as exc:
                 raise HTTPException(422, {'error': {'code': getattr(exc, 'code', 'AUTHORING_SOURCE_INVALID'),
                     'message': '編集内容と出典の対応を確認してください。変更は保存されていません。'}}) from exc
-        result = preflight(snapshot)
+        from ..source_warning_requirements import authoring_warning_catalog
+        catalog = authoring_warning_catalog(s, question_root, snapshot)
+        result = preflight(snapshot, question_warnings=catalog)
         if row and row.state == 'confirmed' and 'grading_definition' not in snapshot.get('domains', {}):
             # Historical revisions remain readable, never silently upgraded.
             result['issues'] = [i for i in result['issues'] if i.get('origin') != 'grading_definition']
@@ -982,8 +984,10 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
                 raise HTTPException(409, {'error': {'code': 'AUTHORING_SOURCE_INVALID', 'message': '資料の出典状態を確認してから確定してください。'}})
             if row.baseline_sha256 != baseline_hash(projection(s, test)):
                 raise HTTPException(409, {'error': {'code': 'AUTHORING_BASELINE_CHANGED', 'message': '正式内容が確認時から変更されています。再読み込みしてください。'}})
-            readiness = preflight(saved_snapshot)
-            validated_readiness = preflight(answer_validation)
+            from ..source_warning_requirements import authoring_warning_catalog
+            catalog = authoring_warning_catalog(s, question_root, saved_snapshot)
+            readiness = preflight(saved_snapshot, question_warnings=catalog)
+            validated_readiness = preflight(answer_validation, question_warnings=catalog)
             if not readiness['issues']:
                 readiness = validated_readiness
             if readiness['issues']:

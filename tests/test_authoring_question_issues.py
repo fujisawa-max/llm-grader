@@ -137,3 +137,51 @@ def test_testwide_warning_owner_none_never_attaches_to_split_teacher_child():
     assert all(i['question_key'] is None for i in source)
     assert not any(i['question_key'] == 'accuracy' for i in source)
     assert len({i['warning_id'] for i in source}) == 2
+
+
+def test_legacy_pinned_catalog_attested_readonly_without_rewriting_saved_state(workspace):
+    """Old snapshot lacks coverage, but its immutable parser artifact proves it."""
+    from scoring.db.models import TestAuthoringRevision
+    from scoring.pdf_native import canonical_hash
+    w = workspace
+    base = f'/api/v1/tests/{w.fresh}/authoring'
+    row = w.client.post(base+'/revisions').json()
+    upload = w.client.post(f'/api/v1/tests/{w.fresh}/question-materials',
+        content=Path('testData/SampleQ/sampleQ5.pdf').read_bytes(),
+        headers={'Content-Type': 'application/pdf', 'x-filename': 'sampleQ5.pdf'}).json()
+    material = next(m for m in w.client.get(f'/api/v1/tests/{w.fresh}/materials').json()
+                    if m['id'] == upload['material_id'])
+    registered = deepcopy(row['snapshot'])
+    registered['materials'].append({'id': material['id'], 'role': material['material_type'], 'sha256': material['sha256']})
+    row = w.client.put(base, json={'snapshot': registered, 'expected_edit_version': row['edit_version']}).json()
+    draft = w.client.post(f'/api/v1/question-imports/{upload["id"]}/draft').json()
+    assert w.client.post(f'/api/v1/question-import-drafts/{draft["id"]}/reviews').status_code == 201
+    imported = w.client.post(base+'/source-import', json={'expected_edit_version': row['edit_version'],
+        'analysis_material_id': upload['material_id']})
+    assert imported.status_code == 200, imported.text
+    row = imported.json()
+    agg = 'draft:document:ambiguous_geometric_order'
+    node = 'node:q2:ambiguous_geometric_order'
+    # Test-only construction of an old pinned catalog, never a product migration.
+    saved = deepcopy(row['snapshot'])
+    for warning in saved['domains']['question']['document']['warnings']:
+        for field in ('coverage', 'actionable', 'requirement_kind'):
+            warning.pop(field, None)
+    states = saved['domains']['question']['snapshot']['warning_states']
+    states[agg] = {'state': 'acknowledged', 'note': 'Historical document review'}
+    states[node] = {'state': 'acknowledged', 'note': 'Historical q2 review'}
+    with w.sf() as session:
+        record = session.get(TestAuthoringRevision, row['id'])
+        record.snapshot = saved
+        record.snapshot_sha256 = canonical_hash(saved)
+        session.commit()
+    before = w.client.get(base).json()['revision']
+    result = w.client.get(base+'/review')
+    assert result.status_code == 200, result.text
+    catalog = {warning['id']: warning for warning in result.json()['question_warning_catalog']}
+    assert catalog[agg]['actionable'] is False
+    assert catalog[agg]['coverage']['covered_warning_ids'] == [node]
+    assert not any(i.get('warning_id') in {agg, node} for i in result.json()['issues'])
+    assert w.client.get(base).json()['revision'] == before
+    with w.sf() as session:
+        assert session.get(TestAuthoringRevision, row['id']).snapshot == saved
