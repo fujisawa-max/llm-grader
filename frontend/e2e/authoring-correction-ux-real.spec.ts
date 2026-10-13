@@ -75,7 +75,7 @@ test('unassigned Answer and Rubric queues focus exact candidates and resolve by 
     const entry=page.locator(`[id="authoring-candidate-${id}"]`);await expect(entry).toHaveClass(/authoring-correction-target/);await expect(entry.getByRole('combobox',{name:'対応する設問',exact:true})).toBeFocused();
     await visibleContent(page,entry.locator('.authoring-candidate-resolution'));
     await visibleContent(page,entry.getByLabel('未割当候補の本文',{exact:true}));
-    await expect(page.locator(`#authoring-${section}`)).toContainText('この候補を対応する設問へ割り当てるか、不要な候補として除外してください。');return entry;
+    await expect(page.locator("#authoring-unassigned")).toContainText('この候補を対応する設問へ割り当てるか、不要な候補として除外してください。');return entry;
   }
   let entry=await navigateCandidate(answers[0].id,'answer');await entry.getByRole('combobox',{name:'対応する設問',exact:true}).selectOption(target);
   await saveAuthoring(page);let review=(await(await page.request.get(base+'/review')).json());expect(review.issues.some((i:any)=>i.entry_id===answers[0].id)).toBe(false);

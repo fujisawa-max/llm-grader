@@ -27,6 +27,8 @@ import {DiagramReview, type DiagramSelection} from "@/components/reviews/Diagram
 import {suggestSubquestions, splitQuestionAtCaret, splitQuestionRanges, mapCandidateToSources, type SplitProposal} from "@/lib/questionSplit";
 import {applyQuestionSplit,reviewQuestionSplit,splitDuplicate} from "@/lib/questionSplitApply";
 import {AuthoringCandidates, type AuthoringEntry} from "@/components/reviews/AuthoringCandidates";
+import {UnassignedCandidateQueue, type QueueCandidate} from "@/components/reviews/UnassignedCandidateQueue";
+import {manualClassificationPatch} from "@/lib/authoringClassification";
 import {rubricRows} from "@/lib/rubricEditing";
 import {effectiveQuestionScore} from "@/lib/questionScores";
 import {DisabledActionHint} from "@/components/reviews/DisabledActionHint";
@@ -96,7 +98,7 @@ export default function TestAuthoringPage() {
   const [registrationError,setRegistrationError]=useState("");
   const [deleteMaterial,setDeleteMaterial]=useState<Material|null>(null);
   const [materialRoleChanges,setMaterialRoleChanges]=useState<Record<string,string>>({});
-  const [recoveryTargets,setRecoveryTargets]=useState<Record<string,string>>({});
+
   const [saving,setSaving]=useState(false);
   const [busy,setBusy]=useState(false),[error,setError]=useState("");
   const {notify,view:notificationView}=useAuthoringNotifications();
@@ -187,7 +189,7 @@ export default function TestAuthoringPage() {
     if(section==="source"){setSourceMode("manage");}
     else if(section==="metadata"||section==="publication"){setSelected("all");}
     else {
-      setSelected(issue.question_key||(issue.warning_id?"all":"unassigned"));
+      setSelected(issue.field==="recovery"?"unassigned":issue.question_key||(issue.warning_id?"all":"unassigned"));
       setVisible(v=>({...v,[section]:true}));setEditing(v=>({...v,[section]:issue.field!=="score"}));
       if(section==="question")setQuestionSettings(issue.field==="score");
       if(issue.warning_id)setEditing(v=>({...v,question:false}));
@@ -197,7 +199,7 @@ export default function TestAuthoringPage() {
       if(section==="source")target=document.querySelector<HTMLElement>('.authoring-material-management');
       if(section==="metadata")target=document.querySelector<HTMLElement>('[aria-label="テスト全体確認"] input[type="number"]');
       if(issue.field==="recovery"){
-        const panel=document.querySelector<HTMLDetailsElement>('.authoring-recovery-panel');if(panel)panel.open=true;
+        const panel=document.getElementById("authoring-unassigned");
         target=document.getElementById(`authoring-recovery-${issue.entry_id}`)||panel;
       }else if(issue.criterion_id)target=document.getElementById(`authoring-rubric-${issue.criterion_id}`)||target;
       else if(issue.entry_id){target=document.getElementById(`authoring-candidate-${issue.entry_id}`)||target;}
@@ -441,15 +443,10 @@ export default function TestAuthoringPage() {
   const answerSources=snapshot.domains?.answer?{[snapshot.domains.answer.draft_id]:snapshot.domains.answer,...snapshot.domains.answer.sources}:{};
   const staleAnswerSourceDraftIds=Object.entries(answerSources).filter(([,source])=>supersededMaterialIds.has(source.material_id)||materials.find(m=>m.id===source.material_id)?.material_type!=="model_answer_source").map(([draftId])=>draftId);
   const answerStale=staleAnswerSourceDraftIds.length>0;
-  function updateRecovery(candidateId:string,patch:Record<string,unknown>){
-    if(!snapshot?.domains?.recovery)return;
-    change({...snapshot,domains:{...snapshot.domains,recovery:{...snapshot.domains.recovery,
-      rubric_candidates:snapshot.domains.recovery.rubric_candidates.map(candidate=>candidate.id===candidateId?{...candidate,...patch}:candidate)}}},"rubric");
-  }
-  function promoteRecovery(candidateId:string){
+  function promoteRecovery(candidateId:string,chosenTarget?:string){
     if(!snapshot||!rubricDomain)return;
     const candidate=rubricRecovery.find(item=>item.id===candidateId);if(!candidate)return;
-    const target=recoveryTargets[candidate.id]||candidate.question_key||orderedNodes().find(item=>!nodes.some(child=>child.included&&child.parent_key===item.stable_key))?.stable_key;
+    const target=chosenTarget||candidate.question_key||orderedNodes().find(item=>!nodes.some(child=>child.included&&child.parent_key===item.stable_key))?.stable_key;
     if(!target){setError("採点基準の追加先となる設問を選択してください。");return;}
     const criterionId=`teacher-rubric-${localId()}`;
     const criterion={id:criterionId,description:candidate.text,points:0,levels:[{score:0,condition:"基準を満たしていない。"},{score:null,condition:""}],source_text:candidate.text,segment_ids:[candidate.segment_id],
@@ -466,6 +463,41 @@ export default function TestAuthoringPage() {
     const recovery={...snapshot.domains?.recovery,rubric_candidates:snapshot.domains?.recovery?.rubric_candidates.map(item=>item.id===candidate.id?{...item,promoted:true}:item)||[]};
     const rubrics={...snapshot.rubrics,[target]:[...(snapshot.rubrics[target]||[]),criterion]};
     change({...snapshot,domains:{...snapshot.domains,rubric:{...rubricDomain,entries},recovery},rubrics},"rubric");
+  }
+  const validQuestionKeys=new Set(orderedNodes().map(n=>n.stable_key));
+  const queueCandidates:QueueCandidate[]=[
+    ...(snapshot.domains?.answer?.entries||[]).filter(e=>!e.authoring_question_key||!validQuestionKeys.has(e.authoring_question_key)).map(e=>({key:`answer:${e.id}`,id:e.id,domain:"answer" as const,diagrams:e.diagram_records,text:e.answer_text||e.candidate_text||"",excluded:["ignored","excluded"].includes(e.disposition||""),source:e.source?.kind==="teacher_manual"?"教員作成":`元資料: ${materials.find(m=>m.id===e.source?.material_id)?.original_filename||"模範解答資料"}`})),
+    ...(rubricDomain?.entries||[]).filter(e=>!e.authoring_question_key||!validQuestionKeys.has(e.authoring_question_key)).map(e=>({key:`rubric:${e.id}`,id:e.id,domain:"rubric" as const,text:e.candidate_text||e.criteria.map(c=>c.description).join("\n"),excluded:["ignored","excluded"].includes(e.disposition||""),source:e.source?.kind==="teacher_manual"?"教員作成":`元資料: ${materials.find(m=>m.id===(e.material_id||e.source?.material_id))?.original_filename||(e.material_role==="model_answer_source"?"模範解答資料":"採点基準資料")}`})),
+    ...(snapshot.domains?.recovery?.rubric_candidates||[]).filter(c=>!c.promoted).map(c=>({key:`recovery:${c.id}`,id:c.id,domain:"rubric" as const,text:c.text,excluded:!!c.dismissed,recovery:true,source:c.origin_role==="model_answer_source"?"模範解答資料内で見つかった採点基準候補":"採点基準資料からの候補"}))
+  ];
+  function queueDisposition(candidates:QueueCandidate[],restore=false){
+    if(!snapshot)return;
+    const answerIds=new Set(candidates.filter(c=>c.domain==="answer").map(c=>c.id));
+    const rubricIds=new Set(candidates.filter(c=>c.domain==="rubric"&&!c.recovery).map(c=>c.id));
+    const recoveryIds=new Set(candidates.filter(c=>c.recovery).map(c=>c.id));
+    const disposition=restore?"unassigned" as const:"ignored" as const;
+    const domains={...snapshot.domains};
+    if(domains.answer)domains.answer={...domains.answer,entries:domains.answer.entries.map(e=>answerIds.has(e.id)?{...e,...manualClassificationPatch(e,{disposition})}:e)};
+    if(domains.rubric)domains.rubric={...domains.rubric,entries:domains.rubric.entries.map(e=>rubricIds.has(e.id)?{...e,...manualClassificationPatch({...e,question_id:e.question_id||null,mapping_state:e.mapping_state||"needs_review",answer_text:"",diagram_records:[]},{disposition})}:e)};
+    if(domains.recovery)domains.recovery={...domains.recovery,rubric_candidates:domains.recovery.rubric_candidates.map(c=>recoveryIds.has(c.id)?{...c,dismissed:!restore}:c)};
+    change({...snapshot,domains},candidates.every(c=>c.domain==="answer")?"answer":"rubric");
+    if(answerIds.size&&(rubricIds.size||recoveryIds.size))setDirtyDomains(d=>({...d,answer:true,rubric:true}));
+  }
+  function assignQueueCandidate(candidate:QueueCandidate,key:string){
+    if(!snapshot)return;
+    if(!key)return;
+    if(candidate.recovery){promoteRecovery(candidate.id,key);return;}
+    const patch={authoring_question_key:key,disposition:"include" as const,mapping_state:"manual_mapped"};
+    const domains={...snapshot.domains};
+    if(candidate.domain==="answer"&&domains.answer){
+      domains.answer={...domains.answer,entries:domains.answer.entries.map(e=>e.id===candidate.id?{...e,...manualClassificationPatch(e,patch)}:e)};
+      const current=domains.answer.entries.filter(e=>e.authoring_question_key===key&&(e as AuthoringEntry).material_role!=="rubric_source"&&!["ignored","excluded","unassigned"].includes(e.disposition||""));
+      const primary=current.find(e=>(e.answer_kind||"primary")==="primary"&&(e.answer_text.trim()||e.diagram_records?.some(record=>record.state==="accepted")))||current.find(e=>(e.answer_kind||"primary")==="primary");
+      change({...snapshot,domains,answers:{...snapshot.answers,[key]:{primary:primary?.answer_text||"",alternatives:current.flatMap(e=>[...(e.answer_kind==="alternative"?[e.answer_text]:[]),...(e.manual_alternative_answers||e.semantic_classification?.manual_alternative_answers||e.semantic_classification?.alternative_answers||[]).map(a=>a.text)]),diagram_records:primary?.diagram_records||[]}}},"answer");
+    }else if(domains.rubric){
+      domains.rubric={...domains.rubric,entries:domains.rubric.entries.map(e=>e.id===candidate.id?{...e,...manualClassificationPatch({...e,question_id:e.question_id||null,mapping_state:e.mapping_state||"needs_review",answer_text:"",diagram_records:[]},patch)}:e)};
+      change({...snapshot,domains,rubrics:{...snapshot.rubrics,[key]:domains.rubric.entries.filter(e=>e.authoring_question_key===key&&!["excluded","ignored"].includes(e.disposition||"")).flatMap(e=>e.criteria.filter(c=>!c.excluded))}},"rubric");
+    }
   }
   const viewed=materials.find(m=>m.id===materialId);
   const analysisDomain=viewed?.material_type==="question_sheet"?"question":
@@ -534,17 +566,10 @@ export default function TestAuthoringPage() {
       {sourceMode==="pdf"&&materialId&&<SourcePdfPreview key={materialId} testId={id} material={materials.find(m=>m.id===materialId)} label="利用資料PDF" inline paneZoom diagramSelection={diagramSelection?.record.material_id===materialId?diagramSelection:undefined} targetLocation={diagramSelection?.record.material_id===materialId?{id:diagramSelection.record.id,page:diagramSelection.record.page_index+1,bbox:diagramSelection.record.final_bbox||diagramSelection.record.automatic_bbox}:mappedLocation}/>}
     </>} selector={<><div className="review-toolbar authoring-target-controls">
       <label>対象設問<select aria-label="対象設問" value={selected} onChange={e=>{if(e.target.value==="all")void finalReview(false);else {setFinalReviewMode(false);setSelected(e.target.value);setDiagramSelection(undefined);setRegionId("");}}}>
-        {orderedNodes().map(n=>{const needsCorrection=issuesForQuestion(n.stable_key).length>0;const label=pathFor(n.stable_key);return <option key={n.stable_key} value={n.stable_key} aria-label={needsCorrection?`${label}、要修正あり`:label}>{label}{needsCorrection?" *":""}</option>;})}{(snapshot.domains?.answer?.entries.some(e=>!e.authoring_question_key)||snapshot.domains?.rubric?.entries.some(e=>!e.authoring_question_key))&&<option value="unassigned">設問未割当の候補</option>}<option value="all">テスト全体確認</option>
+        {orderedNodes().map(n=>{const needsCorrection=issuesForQuestion(n.stable_key).length>0;const label=pathFor(n.stable_key);return <option key={n.stable_key} value={n.stable_key} aria-label={needsCorrection?`${label}、要修正あり`:label}>{label}{needsCorrection?" *":""}</option>;})}{queueCandidates.length>0&&<option value="unassigned">設問未割当の候補 ({queueCandidates.filter(c=>!c.excluded).length})</option>}<option value="all">テスト全体確認</option>
       </select></label><span>表示</span>{authoringIssueDomains.map(([key,label])=><label key={key}><input type="checkbox" checked={visible[key]} onChange={e=>{const next={...visible,[key]:e.target.checked};setVisible(next);localStorage.setItem("test-authoring-visible",JSON.stringify(next));}}/>{label}</label>)}
       <span className="authoring-add-question"><button disabled={readonly||saving||analyzing} onClick={()=>{const n=newNode(nodes.length);change({...snapshot,nodes:[...nodes,n]});setBuffers(current=>({...current,[n.stable_key]:""}));setSelected(n.stable_key);}}>設問を追加</button></span>
     </div>{analyzing&&<p className="authoring-analysis-progress" role="status" aria-live="polite"><span className="spinner" aria-hidden="true"/><strong>{analysisProgress}を解析しています…</strong><span className="muted">元資料を確認し、候補を更新しています。</span></p>}
-      {rubricRecovery.length>0&&<details className="authoring-recovery-panel"><summary>未割当の採点基準候補を確認（{rubricRecovery.length}件）</summary><p>候補は採点基準へ自動登録されていません。内容と対応先を確認してください。</p>
-        {rubricRecovery.map(candidate=><article className="panel" key={candidate.id} id={`authoring-recovery-${candidate.id}`}><MarkdownMathText source={candidate.text}/><p>{candidate.origin_role==="model_answer_source"?"模範解答資料内で見つかった採点基準候補":"採点基準資料からの候補"}</p>
-          <label>対象設問<select aria-label="未割当候補の対象設問" value={recoveryTargets[candidate.id]||candidate.question_key||""} onChange={event=>setRecoveryTargets(current=>({...current,[candidate.id]:event.target.value}))}><option value="">設問を選択</option>{orderedNodes().filter(item=>!nodes.some(child=>child.included&&child.parent_key===item.stable_key)).map(item=><option key={item.stable_key} value={item.stable_key}>{pathFor(item.stable_key)}</option>)}</select></label>
-          <button type="button" disabled={readonly||saving||analyzing||!(recoveryTargets[candidate.id]||candidate.question_key)} onClick={()=>promoteRecovery(candidate.id)}>採点基準として追加</button>
-          <button type="button" disabled={readonly||saving||analyzing} onClick={()=>updateRecovery(candidate.id,{dismissed:true})}>無視</button>
-        </article>)}
-      </details>}
     </>} overlay={node&&<QuestionIssueOverlay questionKey={selected} label={pathFor(selected)} issues={issuesForQuestion(selected)} visible={visible} pathFor={pathFor} onAction={navigate}/>}>
       {selected==="all"?<section aria-label="テスト全体確認"><h2>{finalReviewMode?"最終確認":"テスト全体確認"}</h2>{finalReviewMode&&<p>テストを確定する前に、内容と要修正事項を確認してください。</p>}
         <label>テスト名<input disabled={readonly||saving||analyzing} value={snapshot.metadata.name} onChange={e=>change({...snapshot,metadata:{...snapshot.metadata,name:e.target.value}})}/></label>
@@ -572,7 +597,7 @@ export default function TestAuthoringPage() {
           <button disabled={readonly||busy||dirty||!reviewData?.can_confirm} onClick={()=>setConfirmOpen(true)}>この内容でテストを確定</button>
         </>}
 
-      </section>:(node||selected==="unassigned")&&<>
+      </section>:selected==="unassigned"?<UnassignedCandidateQueue candidates={queueCandidates} questions={orderedNodes().filter(n=>!nodes.some(c=>c.included&&c.parent_key===n.stable_key)).map(n=>({key:n.stable_key,label:pathFor(n.stable_key)}))} disabled={readonly||saving||analyzing} onAssign={assignQueueCandidate} onExclude={queueDisposition} onRestore={c=>queueDisposition([c],true)}/>:node&&<>
         {visible.question&&node&&<section id="authoring-question" tabIndex={-1} aria-label="問題"><h2>問題</h2>
 
           <div className="compact-question-editor" aria-label="問題の表示切替"><p className="authoring-question-metadata">{node.parent_key?"小問":"大問"}：{pathFor(node.stable_key)} ／ 配点：{previewScore??"－"}点（{node.score_semantics==="sum_children"?"小問合計":node.score_semantics==="each_child"?"小問ごとの配点":previewScore===null?"未設定":"直接配点"}）</p><button aria-pressed={questionSettings} onClick={()=>setQuestionSettings(v=>!v)}>{questionSettings?"プレビューに戻る":"設問設定の変更"}</button>
