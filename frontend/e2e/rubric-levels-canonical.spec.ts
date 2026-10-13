@@ -102,6 +102,7 @@ test("compact Rubric editor uses local dialogs and keeps score levels canonical"
   await page.getByRole("checkbox",{name:"採点基準",exact:true}).check();
   const addHighest=page.getByRole("region",{name:"採点基準候補",exact:true}).locator(".compact-rubric-criterion").first().locator('details[aria-label="得点段階"]');
   await expect(addHighest).toHaveAttribute("open","");
+  await expect(addHighest.locator("summary")).toHaveAttribute("aria-expanded","true");
   await addHighest.getByRole("button",{name:/得点段階を追加/}).click();
   dialog=page.getByRole("dialog",{name:"得点段階を追加"});
   await dialog.getByLabel("点数").fill("10");await dialog.getByLabel("条件").fill("必要事項をすべて満たしている。");

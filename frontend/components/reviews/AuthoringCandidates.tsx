@@ -1,5 +1,5 @@
 "use client";
-import {useEffect, useRef, useState} from "react";
+import {useEffect, useRef, useState, type ReactNode} from "react";
 import {AuthoringDialog} from "./AuthoringDialog";
 import {testAuthoring} from "@/lib/api/testAuthoring";
 import {MarkdownMathText} from "@/components/MarkdownMathText";
@@ -15,6 +15,13 @@ import {reviewCandidateId} from "@/lib/reviewCandidateId";
 import {webRubricRows, rubricGroupRows, mergeRubricRows, rubricCriterionLabel, rubricSplitOffset} from "@/lib/rubricEditing";
 import {derivedRubricMaximum,initialRubricLevels,withCanonicalRubricMaximum} from "@/lib/rubricLevels";
 import type {ModelAnswerDraftEntry, ModelAnswerContentCategory, RubricCandidateEdit, RubricSplitProposal, RubricConsolidatedGroup} from "@/lib/api/modelAnswerImports";
+
+function RubricScoreDisclosure({label,summary,children,criterionId}:{label:string;summary:ReactNode;children:ReactNode;criterionId:string}) {
+  const [expanded,setExpanded]=useState(false);
+  return <details className="compact-rubric-levels" aria-label="得点段階" data-rubric-levels={criterionId} onToggle={event=>setExpanded(event.currentTarget.open)}>
+    <summary aria-label={label} aria-expanded={expanded}><span className="compact-rubric-chevron" aria-hidden="true">{expanded?"▼":"▶"}</span>{summary}</summary>{children}
+  </details>;
+}
 
 export type AuthoringEntry=ModelAnswerDraftEntry & {source_draft_id?:string;authoring_question_key?:string|null;manual_alternative_answers?:{id:string;text:string}[];material_role?:string;rubric_only_preserved?:boolean};
 export function AuthoringCandidates({testId, draftId, revision, questionKey, entries, savedEntries, questions, disabled, showAnswer, showRubric, staleSourceDraftIds = [], answerEditing, rubricEditing, onAnswerEditing, onRubricEditing, onChange, onSelect}: {
@@ -37,6 +44,7 @@ export function AuthoringCandidates({testId, draftId, revision, questionKey, ent
     canonicalQuestionRoot(candidate.authoring_question_key,questions)===majorKey
   ).map(candidate=>({id:candidate.id,source:candidate.source_draft_id,disposition:candidate.disposition,
     diagrams:candidate.diagram_records?.filter(record=>record.state==="accepted")})));
+  const [expandedExcluded,setExpandedExcluded]=useState<Record<string,boolean>>({});
   const [selected,setSelected]=useState<Record<string,string[]>>({});
   const [error,setError]=useState("");
   const [busy,setBusy]=useState(false);
@@ -70,7 +78,17 @@ export function AuthoringCandidates({testId, draftId, revision, questionKey, ent
     onRubricEditing(value);
   };
   const openCriterionDialog=(entry:AuthoringEntry,item:RubricCandidateEdit,mode:"edit"|"split"="edit")=>{
+    splitTrigger.current=document.activeElement as HTMLElement;
     setCriterionDialog({entryId:entry.id,criterionId:item.id,draft:item.description,mode});
+  };
+  const splitCriterionDialog=()=>{
+    if(!criterionDialog)return;
+    const entry=current.current.find(value=>value.id===criterionDialog.entryId),item=entry&&webRubricRows(entry).find(value=>value.id===criterionDialog.criterionId);
+    if(!entry||!item)return;
+    const updated=current.current.map(value=>value.id===entry.id?{...value,rubric_edits:webRubricRows(value).map(row=>row.id===item.id?{...row,description:criterionDialog.draft}:row)}:value);
+    current.current=updated;changeRef.current(updated,"rubric");
+    void split({...entry,rubric_edits:updated.find(value=>value.id===entry.id)?.rubric_edits},{...item,description:criterionDialog.draft},true);
+    setCriterionDialog(null);
   };
   const completeCriterionDialog=()=>{
     if(!criterionDialog)return;
@@ -205,27 +223,24 @@ export function AuthoringCandidates({testId, draftId, revision, questionKey, ent
           const levels=item.levels||[],sorted=[...levels].sort((a,b)=>(a.score??Number.POSITIVE_INFINITY)-(b.score??Number.POSITIVE_INFINITY));
           const scores=sorted.map(level=>level.score==null?"未設定":`${level.score}点`).join(" / ");
           const maximum=derivedRubricMaximum(item);
-          return <article className={`compact-rubric-criterion${item.excluded?" is-excluded":""}`} key={item.id} id={`authoring-rubric-${item.id}`}>
-            <header className="compact-rubric-criterion-header"><label><input type="checkbox" checked={(selected[entry.id]||[]).includes(item.id)} onChange={e=>setSelected(s=>({...s,[entry.id]:e.target.checked?[...(s[entry.id]||[]),item.id]:(s[entry.id]||[]).filter(id=>id!==item.id)}))}/>{rubricCriterionLabel(index)}本文</label><button type="button" disabled={disabled||busy} onClick={()=>openCriterionDialog(entry,item)}>編集</button></header>
+          return <article className={`compact-rubric-criterion${item.excluded?" is-excluded":""}${item.excluded&&expandedExcluded[item.id]?" is-expanded":""}`} key={item.id} id={`authoring-rubric-${item.id}`}>
+            <header className="compact-rubric-criterion-header"><div className="compact-rubric-title"><input aria-label={`${rubricCriterionLabel(index)}を選択`} type="checkbox" checked={(selected[entry.id]||[]).includes(item.id)} onChange={e=>setSelected(s=>({...s,[entry.id]:e.target.checked?[...(s[entry.id]||[]),item.id]:(s[entry.id]||[]).filter(id=>id!==item.id)}))}/>{item.excluded?<button type="button" className="compact-rubric-excluded-title" aria-expanded={!!expandedExcluded[item.id]} onClick={()=>setExpandedExcluded(value=>({...value,[item.id]:!value[item.id]}))}>{rubricCriterionLabel(index)}本文</button>:<span>{rubricCriterionLabel(index)}本文</span>}</div><div className="compact-rubric-header-actions">{(!item.excluded||expandedExcluded[item.id])&&<button type="button" disabled={disabled||busy} onClick={()=>openCriterionDialog(entry,item)}>編集</button>}<label><input type="checkbox" disabled={disabled||busy} checked={!!item.excluded} onChange={e=>{setExpandedExcluded(value=>({...value,[item.id]:false}));update(entry.id,{rubric_edits:all.map(c=>c.id===item.id?{...c,excluded:e.target.checked}:c)});}}/>対象外</label></div></header>
             <div className="compact-rubric-body"><MarkdownMathText source={item.description||"本文がありません。"}/></div>
-            <LatexNormalizationControl text={item.description} contextType="rubric" disabled={disabled||busy} onApply={text=>update(entry.id,{rubric_edits:all.map(c=>c.id===item.id?{...c,description:text}:c)})}/>
             {item.grouping_confirmed===false&&<p className="notice">基準の分類を確認してください。 <button type="button" onClick={event=>{const content=event.currentTarget.closest("article");update(entry.id,{rubric_edits:all.map(c=>c.id===item.id?{...c,grouping_confirmed:true,provenance:{...c.provenance,teacher_confirmed:true}}:c)});if(content)requestAnimationFrame(()=>scrollReviewContent(content));}}>この採点基準を確認</button></p>}
             {item.points_conflict&&!item.points_confirmed&&<p className="notice">得点段階の最高点に確認が必要です。得点段階を編集すると確認が記録されます。</p>}
-            <details className="compact-rubric-levels" aria-label="得点段階" data-rubric-levels={item.id}>
-              <summary aria-label={`${rubricCriterionLabel(index)}、得点段階 ${levels.length?`${levels.length}段階 ${scores}`:"未設定"}、最高点${maximum}点`}><span>得点段階</span><span>{levels.length?`${levels.length}段階: ${scores}`:"未設定"}</span><span>最高点: {maximum}点</span></summary>
+            <RubricScoreDisclosure criterionId={item.id} label={`${rubricCriterionLabel(index)}、得点段階 ${levels.length?`${levels.length}段階 ${scores}`:"未設定"}、最高点${maximum}点`} summary={<><span>得点段階</span><span>{levels.length?`${levels.length}段階: ${scores}`:"未設定"}</span><span>最高点: {maximum}点</span></>}>
               <div className="compact-rubric-level-table-wrap"><table className="compact-rubric-level-table"><thead><tr><th scope="col">点数</th><th scope="col">条件</th><th scope="col"><span className="visually-hidden">操作</span></th></tr></thead><tbody>
                 {sorted.map(level=>{const originalIndex=levels.indexOf(level);return <tr key={`${originalIndex}:${level.score}`} className="rubric-level-edit"><th scope="row">{level.score==null?"未設定":`${level.score}点`}</th><td><div className="compact-rubric-level-condition"><MarkdownMathText source={level.condition||"条件が未設定です。"}/></div></td><td><button type="button" disabled={disabled||busy} onClick={()=>openLevelDialog(entry,item,originalIndex)}>編集</button></td></tr>;})}
               </tbody></table></div>
               <button type="button" disabled={disabled||busy} onClick={()=>openLevelDialog(entry,item,null)}>+ 得点段階を追加</button>
-            </details>
+            </RubricScoreDisclosure>
             <details className="compact-rubric-criterion-operations"><summary>基準の操作</summary><div className="compact-rubric-actions">
               <button type="button" disabled={disabled||busy} onClick={()=>{const next=[...all];next.splice(index+1,0,{id:reviewCandidateId("teacher-rubric"),description:"",points:0,levels:initialRubricLevels(0,"",true),segment_ids:[],provenance:{source:"teacher_manual",inserted_after:item.id}});rows(entry,next);}}>後に追加</button>
               <button type="button" disabled={disabled||busy} onClick={()=>{const next=[...all];next.splice(index+1,0,{...item,id:reviewCandidateId("teacher-rubric"),provenance:{...item.provenance,manual_duplicate_from:item.id,teacher_confirmed:true}});rows(entry,next);}}>複製</button>
               <button type="button" disabled={disabled||busy||index===0} onClick={()=>{const next=[...all];[next[index-1],next[index]]=[next[index],next[index-1]];rows(entry,next);}}>上へ</button>
               <button type="button" disabled={disabled||busy||index===0} onClick={()=>{const result=mergeRubricRows(entry,[all[index-1].id,item.id],"manual_above",true);if(result)update(entry.id,result);}}>上と結合</button>
-              <button type="button" disabled={disabled||busy} onClick={()=>openCriterionDialog(entry,item,"split")}>カーソル位置で分割</button>
+              <button type="button" disabled={disabled||busy} onClick={()=>openCriterionDialog(entry,item,"split")}>位置を指定して2分割</button>
               <button type="button" disabled={disabled||busy||splitting===`${entry.id}:${item.id}`} aria-busy={splitting===`${entry.id}:${item.id}`} onClick={()=>{splitTrigger.current=document.activeElement as HTMLElement;void split(entry,item,false);}}>{splitting===`${entry.id}:${item.id}`?"分割案を作成中…":"分割案を作成"}</button>
-              <label><input type="checkbox" disabled={disabled||busy} checked={!!item.excluded} onChange={e=>update(entry.id,{rubric_edits:all.map(c=>c.id===item.id?{...c,excluded:e.target.checked}:c)})}/>対象外</label>
             </div></details>
           </article>;
         })}
@@ -234,7 +249,11 @@ export function AuthoringCandidates({testId, draftId, revision, questionKey, ent
     </article>})}
     {showAnswer&&answerVisibleEntries.length===0&&<section aria-label="模範解答候補">{addAnswer}</section>}
     {showRubric&&rubricVisibleEntries.length===0&&<section aria-label="採点基準候補" className="compact-rubric-empty"><p>採点基準はまだありません。</p><button disabled={disabled||busy||questionKey==="unassigned"} onClick={()=>{onRubricEditing(true);onChange([...entries,{id:reviewCandidateId("teacher-entry"),question_id:null,authoring_question_key:questionKey,mapping_state:"manual_mapped",disposition:"include",answer_kind:"alternative",answer_text:"",material_role:"rubric_source",source:{kind:"teacher_manual",material_id:null,source_sha256:null,segments:[]},rubric_edits:[{id:reviewCandidateId("teacher-rubric"),description:"",points:0,levels:initialRubricLevels(0,"",true),segment_ids:[],grouping_confirmed:true,grouping_method:"teacher_manual",provenance:{source:"teacher_manual",manual_add:true}}]}],"rubric");}}>基準を追加</button></section>}
-    {criterionDialog&&<AuthoringDialog title={criterionDialog.mode==="split"?"採点基準を分割":"採点基準本文"} onCancel={()=>setCriterionDialog(null)} actions={<><button type="button" disabled={disabled} onClick={()=>setCriterionDialog(null)}>キャンセル</button>{criterionDialog.mode==="split"&&<button type="button" disabled={disabled||busy} onClick={()=>{const entry=entries.find(value=>value.id===criterionDialog.entryId),item=entry&&webRubricRows(entry).find(value=>value.id===criterionDialog.criterionId);if(!entry||!item)return;const updated=entries.map(value=>value.id===entry.id?{...value,rubric_edits:webRubricRows(value).map(row=>row.id===item.id?{...row,description:criterionDialog.draft}:row)}:value);current.current=updated;changeRef.current(updated,"rubric");void split({...entry,rubric_edits:webRubricRows({...entry,rubric_edits:updated.find(value=>value.id===entry.id)?.rubric_edits})},{...item,description:criterionDialog.draft},true);setCriterionDialog(null);}}>カーソル位置で分割案</button>}<button type="button" disabled={disabled} onClick={completeCriterionDialog}>完了</button></>}>{criterionDialog.mode==="split"&&<p>分割位置にカーソルを置いてください。</p>}<label className="compact-rubric-dialog-field">採点基準本文<textarea disabled={disabled||busy} autoFocus rows={4} ref={element=>{if(element)textareas.current[`${criterionDialog.entryId}:${criterionDialog.criterionId}`]=element;else textareas.current[`${criterionDialog.entryId}:${criterionDialog.criterionId}`]=null;}} onFocus={()=>{activeCriterion.current=`${criterionDialog.entryId}:${criterionDialog.criterionId}`;}} value={criterionDialog.draft} onChange={event=>setCriterionDialog(value=>value?{...value,draft:event.target.value}:value)}/></label></AuthoringDialog>}
+    {criterionDialog&&<AuthoringDialog title={criterionDialog.mode==="split"?"採点基準を分割":"採点基準本文"} onCancel={()=>setCriterionDialog(null)} actions={<><button type="button" disabled={disabled||busy} onClick={()=>setCriterionDialog(null)}>キャンセル</button><button type="button" disabled={disabled||busy} onClick={splitCriterionDialog}>カーソルの位置で分割</button><button type="button" disabled={disabled||busy} onClick={completeCriterionDialog}>完了</button></>}>
+      {criterionDialog.mode==="split"&&<p>分割位置にカーソルを置いてください。</p>}
+      <label className="compact-rubric-dialog-field">採点基準本文<textarea disabled={disabled||busy} autoFocus rows={4} ref={element=>{if(element)textareas.current[`${criterionDialog.entryId}:${criterionDialog.criterionId}`]=element;else textareas.current[`${criterionDialog.entryId}:${criterionDialog.criterionId}`]=null;}} onFocus={()=>{activeCriterion.current=`${criterionDialog.entryId}:${criterionDialog.criterionId}`;}} value={criterionDialog.draft} onChange={event=>setCriterionDialog(value=>value?{...value,draft:event.target.value}:value)}/></label>
+      <div className="compact-rubric-dialog-conversion"><LatexNormalizationControl text={criterionDialog.draft} contextType="rubric" disabled={disabled||busy} onApply={text=>setCriterionDialog(value=>value?{...value,draft:text}:value)}/></div>
+    </AuthoringDialog>}
     {levelDialog&&<AuthoringDialog title={levelDialog.index===null?"得点段階を追加":"得点段階を編集"} onCancel={()=>setLevelDialog(null)} actions={<>{levelDialog.index!==null&&Number(levelDialog.score)!==0&&<button type="button" className="danger" disabled={disabled||busy} onClick={deleteLevelDialog}>得点段階を削除</button>}<button type="button" disabled={disabled||busy} onClick={()=>setLevelDialog(null)}>キャンセル</button><button type="button" disabled={disabled||busy} onClick={completeLevelDialog}>完了</button></>}>{levelDialogError&&<p role="alert">{levelDialogError}</p>}<label className="compact-rubric-dialog-field">点数<input disabled={disabled||busy} autoFocus type="number" min="0" step="1" value={levelDialog.score} onChange={event=>{setLevelDialogError("");setLevelDialog(value=>value?{...value,score:event.target.value}:value);}}/></label><label className="compact-rubric-dialog-field">条件<textarea disabled={disabled||busy} rows={4} value={levelDialog.condition} onChange={event=>setLevelDialog(value=>value?{...value,condition:event.target.value}:value)}/></label></AuthoringDialog>}
     {proposal&&<AuthoringDialog title={`${rubricCriterionLabel(Math.max(0,webRubricRows(entries.find(e=>e.id===proposal.entryId)||{...visible[0],rubric_edits:[]}).findIndex(c=>c.id===proposal.item.id)))}の分割案`} busy={applying} onCancel={cancelProposal} actions={<><button disabled={applying} onClick={cancelProposal}>取消</button><button disabled={disabled||applying||proposalStale} onClick={()=>void applyProposal()}>{applying?"適用中…":"分割案を適用"}</button></>}>
       <h3>元の基準</h3><MarkdownMathText source={proposal.original}/><p>元の最高点: {derivedRubricMaximum(proposal.item)}点</p>
