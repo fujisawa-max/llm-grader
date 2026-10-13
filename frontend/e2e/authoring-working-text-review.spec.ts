@@ -34,6 +34,20 @@ test('only scoped server text receipt supplies saved review; source rebuild reop
  expect(questionTextReviewed(rebuilt,rebuilt,[],'System replacement',undefined)).toBe(false);
 });
 
+test('saved raw Question buffer is the review baseline when source anchors remain unchanged',()=>{
+ const saved=node('Source-mapped text');
+ const teacherText='Teacher-authored text saved in the raw buffer';
+ saved.body_text=teacherText;
+ saved.teacher_correction={text_review:{teacher_confirmed:true,confirmation_origin:'manual_edit'}};
+ // The editor's visible saved value is its persisted buffer, not stale PDF anchors.
+ expect(questionTextReviewed(saved,saved,[],teacherText,undefined,teacherText)).toBe(true);
+ // Without the server receipt, a saved value alone does not imply confirmation.
+ delete saved.teacher_correction;
+ expect(questionTextReviewed(saved,saved,[],teacherText,undefined,teacherText)).toBe(false);
+ // Before Save, a meaningful direct input still supplies only working-state review.
+ expect(questionTextReviewed(saved,saved,[],teacherText+' edited',teacherText+' edited',teacherText)).toBe(true);
+});
+
 test('Sample Q5 working review is immediate, survives failed Save, persists on Save, and reopens after native reanalysis',async({page})=>{
  test.skip(!process.env.RUNTIME_MANAGER_E2E,'requires disposable production-like harness');test.setTimeout(90000);
  await page.setViewportSize({width:1600,height:900});await page.goto('/login');

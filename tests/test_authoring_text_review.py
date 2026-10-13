@@ -77,6 +77,22 @@ def test_unmapped_raw_edit_is_not_silently_attested():
     assert source_warnings(changed)[0]['code'] == 'authoring_text_source_unresolved'
 
 
+def test_saved_manual_question_buffer_gets_text_receipt_while_source_warning_remains():
+    old = sample()
+    changed = deepcopy(old)
+    edited = 'Teacher-edited text that cannot be projected onto the old source anchors'
+    changed['question_text_buffers'] = {'q3-child': edited}
+    changed['nodes'][0]['body_text'] = edited
+    # The old source-anchored ordered content intentionally remains unchanged.
+    confirm_manual_text_edits(changed, old, 2)
+    receipt = changed['nodes'][0]['teacher_correction']['text_review']
+    assert receipt['teacher_confirmed'] is True
+    assert receipt['confirmation_origin'] == 'manual_edit'
+    assert receipt['reviewed_text_sha256']
+    # Text review is satisfied, while source mapping is still an independent issue.
+    assert source_warnings(changed)[0]['code'] == 'authoring_text_source_unresolved'
+
+
 def test_receipts_preserve_history_without_forged_client_confirmation():
     old = sample()
     saved = deepcopy(old)

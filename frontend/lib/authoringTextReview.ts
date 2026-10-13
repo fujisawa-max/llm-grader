@@ -10,8 +10,11 @@ export function meaningfulTextEdit(before:string,after:string) {
 
 /** Last explicit input belongs to the unsaved session, not to source refreshes.
  * After Save, only the server's scoped text receipt supplies durable review. */
-export function questionTextReviewed(node:ReviewNode,savedNode:ReviewNode|undefined,regions:Region[],content:string,lastManualInput:string|undefined) {
-  const savedText=questionContent(savedNode||node,regions).text;
+export function questionTextReviewed(node:ReviewNode,savedNode:ReviewNode|undefined,regions:Region[],content:string,lastManualInput:string|undefined,savedBuffer?:string) {
+  // The editor reopens from question_text_buffers when a teacher's exact text
+  // could not be mapped back onto source-anchored ordered_content. Use that
+  // same saved value as the comparison baseline after reload.
+  const savedText=savedBuffer??questionContent(savedNode||node,regions).text;
   const changed=meaningfulTextEdit(savedText,content);
   if(lastManualInput===content&&changed)return true;
   const receipt=savedNode?.teacher_correction?.text_review;

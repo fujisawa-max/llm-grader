@@ -50,10 +50,16 @@ def confirm_manual_text_edits(snapshot, previous, revision):
         prior = old_nodes.get(node['stable_key'])
         if prior is None:
             continue
-        before, after = source_text(prior, previous), source_text(node, snapshot)
-        # An unresolved raw edit is not a source attestation. Do not conceal
-        # differences between the saved buffer and executable ordered content.
-        if snapshot.get('question_text_buffers', {}).get(node['stable_key'], after) != after:
+        key = node['stable_key']
+        previous_buffer = previous.get('question_text_buffers', {}).get(key)
+        current_buffer = snapshot.get('question_text_buffers', {}).get(key)
+        before = previous_buffer if isinstance(previous_buffer, str) else source_text(prior, previous)
+        after = current_buffer if isinstance(current_buffer, str) else source_text(node, snapshot)
+        # A saved teacher buffer is authoritative editable text even when it
+        # cannot be reconciled into the PDF-anchored ordered content. Require
+        # the buffer and body to agree before recording the scoped text receipt;
+        # source_warnings still reports the separate source-mapping problem.
+        if current_buffer is not None and (not isinstance(current_buffer, str) or node.get('body_text') != current_buffer):
             continue
         correction = deepcopy(node.get('teacher_correction') or {})
         _receipt(correction, prior.get('teacher_correction'), before, after, revision)
