@@ -320,21 +320,37 @@ def router(db, artifact_root=None, allowed_roots=None, grading_visual_config=Non
     @r.post("/tests/{tid}/submissions",status_code=201)
     def submissions(tid,v:SubmissionCreate,s=Depends(db)):
         test = owned_test_or_error(tid, s)
+        revision_roots = {
+            "question_import": artifact_root,
+            "answer_import": visual_options.get("answer_root") or storage_root or artifact_root,
+        }
         try:
             if v.material_ids is not None:
                 from ..source_registration import register_submission
                 x = register_submission(s, storage_root or artifact_root, test,
                                         v.material_ids, v.student_id,
-                                        v.student_identifier, v.display_name)
+                                        v.student_identifier, v.display_name,
+                                        revision_roots=revision_roots)
             else:
                 if not v.material_id or not v.student_id or not v.submission_key:
                     raise ValueError("学生と答案資料を指定してください")
-                x = DomainService(s).submission(tid, **v.model_dump(include={
-                    "student_id", "submission_key", "material_id", "attempt_number"}))
+                x = DomainService(s, artifact_root=artifact_root,
+                                  revision_roots=revision_roots).submission(
+                    tid, **v.model_dump(include={"student_id", "submission_key",
+                                                 "material_id", "attempt_number"}),
+                    require_web_revision=True)
             s.commit()
             return obj(x)
         except ValueError as e:
             s.rollback()
+            if str(e) in {"WEB_GRADING_REVISION_REQUIRED", "WEB_GRADING_REVISION_NOT_FOUND",
+                          "WEB_GRADING_REVISION_TEST_MISMATCH", "WEB_GRADING_AUTHORITY_UNSUPPORTED",
+                          "WEB_GRADING_INTERPRETER_UNSUPPORTED", "GRADING_DEFINITION_LEGACY_INCOMPLETE",
+                          "GRADING_DEFINITION_INCOMPLETE_OR_CHANGED", "GRADING_DEFINITION_SNAPSHOT_HASH_MISMATCH",
+                          "GRADING_DEFINITION_ARTIFACT_UNAVAILABLE", "GRADING_DEFINITION_ARTIFACT_INVALID",
+                          "GRADING_DEFINITION_ARTIFACT_CHANGED"}:
+                raise HTTPException(409, {"error": {"code": str(e),
+                    "message": "採点を開始する前に、問題・模範解答・採点基準を最終確認して確定してください。"}}) from e
             raise HTTPException(422, str(e)) from e
     @r.get("/tests/{tid}/submissions")
     def submissions_list(tid,s=Depends(db)): return [obj(x) for x in s.scalars(select(StudentSubmission).where(StudentSubmission.test_id==tid))]
@@ -353,8 +369,18 @@ def router(db, artifact_root=None, allowed_roots=None, grading_visual_config=Non
     @r.get("/tests/{tid}/submissions/{sid}/grading-input-readiness")
     def mapping_readiness(tid, sid, s=Depends(db)):
         from ..grading_mapping import GradingInputAssembler
+        from ..revision_grading import RevisionGradingInputAssembler
         get(Test, tid, s)
         try:
+            submission = get(StudentSubmission, sid, s)
+            if submission.test_id != tid:
+                raise ContextError("SUBMISSION_NOT_FOUND")
+            if submission.confirmed_authoring_revision_id:
+                return RevisionGradingInputAssembler(s, tid, sid, question_root=artifact_root,
+                    answer_root=visual_options.get("answer_root"), allowed_roots=allowed_roots,
+                    visual_capability=visual_options.get("visual_capability")).evaluate_readiness(sid)
+            if s.get(Test, tid).active_confirmed_revision_id:
+                raise ContextError("WEB_GRADING_REVISION_REQUIRED")
             return GradingInputAssembler(s, tid, root=artifact_root, allowed_roots=allowed_roots).evaluate(sid)
         except ContextError as exc:
             raise HTTPException(404 if exc.code == "SUBMISSION_NOT_FOUND" else 409, exc.code)
@@ -364,10 +390,21 @@ def router(db, artifact_root=None, allowed_roots=None, grading_visual_config=Non
         q = get(TestQuestion, qid, s)
         if q.test_id != tid:
             raise HTTPException(404, "question not found")
-        if not q.is_gradable:
+        submission = get(StudentSubmission, sid, s)
+        if submission.test_id != tid:
+            raise HTTPException(404, "submission not found")
+        if not submission.confirmed_authoring_revision_id and get(Test, tid, s).active_confirmed_revision_id:
+            raise HTTPException(409, {"error": {"code": "WEB_GRADING_REVISION_REQUIRED",
+                "message": "この答案の確定版を確認できないため、現在の問題内容で採点入力を作成できません。"}})
+        if not submission.confirmed_authoring_revision_id and not q.is_gradable:
             raise HTTPException(409, "ANSWER_MAPPED_TO_STRUCTURAL_QUESTION")
         from ..grading_mapping import GradingInputAssembler
         try:
+            if submission.confirmed_authoring_revision_id:
+                from ..revision_grading import RevisionGradingInputAssembler
+                return RevisionGradingInputAssembler(s, tid, sid, question_root=artifact_root,
+                    answer_root=visual_options.get("answer_root"), allowed_roots=allowed_roots,
+                    visual_capability=visual_options.get("visual_capability")).execution_preview(sid, qid)
             return GradingInputAssembler(s, tid, root=artifact_root,
                 allowed_roots=allowed_roots, **visual_options).execution_preview(sid, qid)
         except (ContextError, ValueError) as exc:
@@ -422,8 +459,18 @@ def router(db, artifact_root=None, allowed_roots=None, grading_visual_config=Non
         snapshot = (job.metadata_json or {}).get("grading_execution", {})
         bundle = snapshot.get("bundle", {})
         if (job.test_id != tid or sub.test_id != tid
-                or bundle.get("student_answer", {}).get("submission_id") != sid):
+                or bundle.get("student_answer", {}).get("submission_id") != sid
+                or (sub.confirmed_authoring_revision_id
+                    and job.confirmed_authoring_revision_id != sub.confirmed_authoring_revision_id)
+                or (not sub.confirmed_authoring_revision_id and job.confirmed_authoring_revision_id is not None)):
             raise HTTPException(404, "result_not_found")
+        if sub.confirmed_authoring_revision_id:
+            from ..revision_grading import verify_revision_job_contract
+            try:
+                verify_revision_job_contract(s, job, sub)
+            except ValueError as exc:
+                raise HTTPException(409, {"error": {"code": str(exc),
+                    "message": "この採点結果は紐づく確定版と一致しないため表示できません。"}}) from exc
         item = job.items[0]
         return {"job_id": jid, "item_id": item.id, "state": job.state,
                 "score": item.score, "max_points": item.max_score,
@@ -436,32 +483,44 @@ def router(db, artifact_root=None, allowed_roots=None, grading_visual_config=Non
     @r.post("/tests/{tid}/grading-jobs", status_code=201)
     def grading_job(tid, v: dict, s=Depends(db)):
         get(Test, tid, s)
-        from ..grading_definition import reject_web_legacy_policy, reject_mutable_web_execution
+        from ..grading_definition import reject_web_legacy_policy
         try:
-            if v.get("input_stage") in {"selected_reconstruction", "student_visual_answer"}:
-                reject_mutable_web_execution(s, tid)
-            else:
+            is_web_execution = v.get("input_stage") in {"selected_reconstruction", "student_visual_answer"}
+            if not is_web_execution:
                 reject_web_legacy_policy(s, tid)
         except ValueError as exc:
             raise HTTPException(409, {"error": {"code": str(exc),
                 "message": "この確定版は旧方式では採点できません。版に対応した採点機能が必要です。"}}) from exc
-        if v.get("input_stage") in {"selected_reconstruction", "student_visual_answer"}:
-            from ..grading_execution import create_execution_job
+        if is_web_execution:
+            from ..grading_execution import create_revision_execution_job
             roots = [Path(p).resolve() for p in (allowed_roots or [Path.cwd()])]
             for key in ("run_path", "config_path"):
                 if not isinstance(v.get(key), str) or not any(
                         Path(v[key]).resolve().is_relative_to(root) for root in roots):
                     raise HTTPException(422, "invalid_input_path")
             try:
-                job = create_execution_job(s, tid, v.get("submission_id"), v.get("question_id"),
-                    run_path=v["run_path"], config_path=v["config_path"], root=artifact_root,
-                    allowed_roots=roots, **visual_options)
+                job = create_revision_execution_job(s, tid, v.get("submission_id"), v.get("question_id"),
+                    run_path=v["run_path"], config_path=v["config_path"],
+                    question_root=artifact_root, answer_root=visual_options.get("answer_root"),
+                    reference_root=visual_options.get("reference_root"), allowed_roots=roots,
+                    visual_capability=visual_options.get("visual_capability"))
                 s.add(GradingJobEvent(job_id=job.id, event_type="job_created", new_state="queued"))
                 s.commit()
                 return {"id": job.id, "state": job.state, "test_id": tid,
+                        "confirmed_authoring_revision_id": job.confirmed_authoring_revision_id,
+                        "confirmed_edition_label": job.metadata_json["grading_execution"]["confirmed_edition_label"],
                         "snapshot_sha256": job.metadata_json["grading_execution"]["snapshot_sha256"]}
-            except (ValueError, OSError, KeyError, TypeError):
+            except (ValueError, OSError, KeyError, TypeError) as exc:
                 s.rollback()
+                code = str(exc)
+                if code in {"WEB_GRADING_REVISION_REQUIRED", "WEB_GRADING_REVISION_NOT_FOUND",
+                            "WEB_GRADING_REVISION_TEST_MISMATCH", "WEB_GRADING_AUTHORITY_UNSUPPORTED",
+                            "WEB_GRADING_INTERPRETER_UNSUPPORTED", "GRADING_DEFINITION_LEGACY_INCOMPLETE",
+                            "GRADING_DEFINITION_INCOMPLETE_OR_CHANGED", "GRADING_DEFINITION_SNAPSHOT_HASH_MISMATCH",
+                            "GRADING_DEFINITION_ARTIFACT_UNAVAILABLE", "GRADING_DEFINITION_ARTIFACT_INVALID",
+                            "GRADING_DEFINITION_ARTIFACT_CHANGED", "WEB_GRADING_REVISION_BINDING_MISMATCH"}:
+                    raise HTTPException(409, {"error": {"code": code,
+                        "message": "採点を開始する前に、問題・模範解答・採点基準を最終確認して確定してください。"}}) from exc
                 raise HTTPException(409, "GRADING_EXECUTION_NOT_READY")
         ready = DomainService(s, artifact_root=artifact_root).readiness(tid)
         if not ready["ready"]:

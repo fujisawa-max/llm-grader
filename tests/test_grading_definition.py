@@ -254,17 +254,22 @@ def test_content_context_compilation_preserves_schema_ancestors_and_math(workspa
     assert compile_definition(snapshot)[0] == definition
 
 
-def test_new_web_revision_cannot_enter_mutable_or_legacy_job_paths(workspace):
+def test_new_web_revision_uses_pinned_path_and_cannot_enter_legacy_job_path(workspace, tmp_path):
     w = workspace
     row = begin(w)
     assert confirm(w, row).status_code == 200
-    for body, code in [
-        ({}, "LEGACY_ASSIGNMENT_NOT_ALLOWED_FOR_WEB_TEST"),
-        ({"input_stage": "selected_reconstruction"}, "WEB_GRADING_REVISION_BINDING_REQUIRED"),
-    ]:
-        response = w.client.post(base(w) + "/grading-jobs", json=body)
-        assert response.status_code == 409
-        assert response.json()["error"]["code"] == code
+    legacy = w.client.post(base(w) + "/grading-jobs", json={})
+    assert legacy.status_code == 409
+    assert legacy.json()["error"]["code"] == "LEGACY_ASSIGNMENT_NOT_ALLOWED_FOR_WEB_TEST"
+    config = tmp_path / "grader.json"
+    config.write_text(json.dumps({"models": {"grader": {"model_id": "synthetic"}}}))
+    web = w.client.post(base(w) + "/grading-jobs", json={
+        "input_stage": "selected_reconstruction", "submission_id": "missing",
+        "question_id": w.question, "config_path": str(config),
+        "run_path": str(tmp_path / "run"),
+    })
+    assert web.status_code == 409
+    assert web.json()["error"]["code"] != "WEB_GRADING_REVISION_BINDING_REQUIRED"
 
 
 def test_stable_criterion_identity_survives_executable_identifier_encoding(workspace):

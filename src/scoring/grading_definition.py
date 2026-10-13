@@ -462,6 +462,11 @@ def compile_definition(snapshot, evidence=None):
         questions.append(
             {
                 "question_key": key,
+                # Relational ID is a frozen lookup handle for student-specific
+                # OCR/reconstruction rows.  It is never used as grading policy.
+                # Historical snapshots without this field remain valid and use
+                # the stable-key compatibility resolver.
+                **({"formal_question_id": source["id"]} if isinstance(source.get("id"), str) else {}),
                 "parent_key": node.get("parent_key"),
                 "sort_order": node.get("sort_order"),
                 "label": deepcopy(node.get("label") or {"raw": key}),
@@ -670,6 +675,7 @@ def capture_evidence(session, snapshot, test_id):
                 .order_by(TestQuestionCorrection.correction_version)
             ).all()
             questions[node["stable_key"]] = {
+                "id": row.id,
                 "title": row.title,
                 "content": deepcopy(row.content),
                 "authoring_content": deepcopy(node.get("ordered_content", [])),
@@ -761,9 +767,231 @@ def verify_artifacts(session, snapshot, test_id, question_root, answer_root):
 
 def confirmed_definition(revision):
     """Future grading entry point: attest payload hash before reading policy."""
-    if canonical_hash(revision.snapshot) != revision.snapshot_sha256:
+    if not isinstance(revision.snapshot, dict) or canonical_hash(revision.snapshot) != revision.snapshot_sha256:
         raise ValueError("GRADING_DEFINITION_SNAPSHOT_HASH_MISMATCH")
-    return executable_definition(revision.snapshot)
+    try:
+        return executable_definition(revision.snapshot)
+    except ValueError:
+        raise
+    except (AttributeError, KeyError, TypeError, IndexError) as exc:
+        raise ValueError("GRADING_DEFINITION_INCOMPLETE_OR_CHANGED") from exc
+
+
+def confirmed_revision_for_test(session, test_id, revision_id, *, artifact_roots=None):
+    """Load and verify a same-Test executable confirmed Web grading contract."""
+    from .db.models import ConfirmedAuthoringRevision
+
+    if not revision_id:
+        raise ValueError("WEB_GRADING_REVISION_REQUIRED")
+    revision = session.get(ConfirmedAuthoringRevision, revision_id)
+    if revision is None:
+        raise ValueError("WEB_GRADING_REVISION_NOT_FOUND")
+    if revision.test_id != test_id:
+        raise ValueError("WEB_GRADING_REVISION_TEST_MISMATCH")
+    definition = confirmed_definition(revision)
+    if definition.get("authority") != "web_authoring":
+        raise ValueError("WEB_GRADING_AUTHORITY_UNSUPPORTED")
+    if definition.get("schema_version") != SCHEMA or definition.get("interpreter_version") != "discrete-integer-sum.v1":
+        raise ValueError("WEB_GRADING_INTERPRETER_UNSUPPORTED")
+    if not definition.get("complete"):
+        raise ValueError("GRADING_DEFINITION_INCOMPLETE_OR_CHANGED")
+    verify_frozen_reference_assets(definition, artifact_roots or {})
+    return revision, definition
+
+
+def verify_frozen_reference_assets(definition, artifact_roots):
+    """Verify all frozen reference bytes without consulting current authoring rows."""
+    references = [
+        ref
+        for question in definition.get("questions", [])
+        for ref in question.get("visual_references", [])
+    ]
+    for reference in references:
+        # A visual reference in an executable definition must be content-bound.
+        if not isinstance(reference.get("immutable_artifact"), dict):
+            raise ValueError("GRADING_DEFINITION_ARTIFACT_UNAVAILABLE")
+        read_reference_asset(reference, artifact_roots)
+
+
+def revision_question_identity_map(session, test_id, definition):
+    """Resolve snapshot Question keys to frozen FK handles.
+
+    New grading definitions carry the formal row ID captured at confirmation,
+    so normal Web grading never queries mutable Question authoring rows. A
+    narrow stable-key lookup remains only for older immutable snapshots that
+    predate the frozen handle; ambiguous or missing mappings fail closed.
+    """
+    from sqlalchemy import select
+    from .db.models import TestQuestion
+
+    questions = definition.get("questions")
+    if not isinstance(questions, list) or not questions:
+        raise ValueError("GRADING_DEFINITION_QUESTION_NOT_FOUND")
+    result = {}
+    used_ids = set()
+    needs_legacy_lookup = any(q.get("formal_question_id") is None for q in questions)
+    rows = (list(session.scalars(select(TestQuestion).where(TestQuestion.test_id == test_id)))
+            if needs_legacy_lookup else [])
+    by_key = {}
+    for row in rows:
+        key = (row.provenance or {}).get("authoring_stable_key") or row.stable_question_key
+        if key:
+            by_key.setdefault(key, []).append(row)
+    for question in questions:
+        key = question.get("question_key")
+        frozen_id = question.get("formal_question_id")
+        if isinstance(frozen_id, str) and frozen_id:
+            row_id = frozen_id
+        elif frozen_id is not None:
+            raise ValueError("GRADING_DEFINITION_QUESTION_IDENTITY_MISSING")
+        else:
+            matches = by_key.get(key, [])
+            if len(matches) != 1:
+                raise ValueError("GRADING_DEFINITION_QUESTION_IDENTITY_AMBIGUOUS")
+            row_id = matches[0].id
+        if row_id in used_ids:
+            raise ValueError("GRADING_DEFINITION_QUESTION_IDENTITY_AMBIGUOUS")
+        used_ids.add(row_id)
+        result[key] = row_id
+    return result
+
+
+def revision_question_number_map(definition):
+    by_key = {q["question_key"]: q for q in definition.get("questions", [])}
+    result = {}
+    for key, question in by_key.items():
+        labels, seen, current = [], set(), question
+        while current:
+            current_key = current["question_key"]
+            if current_key in seen:
+                raise ValueError("GRADING_DEFINITION_HIERARCHY_INVALID")
+            seen.add(current_key)
+            labels.append(str(current.get("label", {}).get("raw") or current_key))
+            parent = current.get("parent_key")
+            current = by_key.get(parent) if parent else None
+        number = " ".join(reversed(labels))[:32]
+        if number in result and result[number] != key:
+            raise ValueError("GRADING_DEFINITION_QUESTION_IDENTITY_AMBIGUOUS")
+        result[number] = key
+    return result
+
+
+def resolve_revision_question_key(definition, ids_by_key, identity):
+    """Resolve student answer identity against one frozen hierarchy."""
+    questions = {q["question_key"] for q in definition.get("questions", [])}
+    reverse_ids = {value: key for key, value in ids_by_key.items()}
+    number_map = revision_question_number_map(definition)
+    resolved = []
+    if "stable_question_key" in identity:
+        key = identity["stable_question_key"]
+        if key not in questions:
+            raise ValueError("QUESTION_MAPPING_NOT_FOUND")
+        resolved.append(key)
+    for field in ("question_id", "test_question_id"):
+        if field not in identity:
+            continue
+        value = identity[field]
+        key = value if value in questions else reverse_ids.get(value)
+        if key is None:
+            raise ValueError("QUESTION_MAPPING_NOT_FOUND")
+        resolved.append(key)
+    if "question_number" in identity:
+        key = number_map.get(identity["question_number"])
+        if key is None:
+            raise ValueError("QUESTION_MAPPING_NOT_FOUND")
+        resolved.append(key)
+    if not resolved:
+        raise ValueError("QUESTION_MAPPING_NOT_FOUND")
+    if len(set(resolved)) != 1:
+        raise ValueError("QUESTION_IDENTITY_MISMATCH")
+    return resolved[0]
+
+
+def active_revision_for_submission(session, test_id, *, artifact_roots=None):
+    """Serialize Submission binding against confirmation/activation of editions."""
+    from sqlalchemy import select
+    from .db.models import Test
+
+    test = session.scalar(select(Test).where(Test.id == test_id).with_for_update().execution_options(populate_existing=True))
+    if test is None:
+        raise ValueError("TEST_NOT_FOUND")
+    revision, definition = confirmed_revision_for_test(
+        session, test.id, test.active_confirmed_revision_id, artifact_roots=artifact_roots
+    )
+    return test, revision, definition
+
+
+def confirmed_edition_label(session, revision):
+    """Use the same confirmed lineage ordering as authoring history."""
+    from sqlalchemy import select
+    from .db.models import ConfirmedAuthoringRevision
+
+    ordered = list(session.scalars(select(ConfirmedAuthoringRevision).where(
+        ConfirmedAuthoringRevision.test_id == revision.test_id
+    ).order_by(ConfirmedAuthoringRevision.revision, ConfirmedAuthoringRevision.id)))
+    for index, value in enumerate(ordered, start=1):
+        if value.id == revision.id:
+            return f"第{index}版"
+    raise ValueError("WEB_GRADING_REVISION_NOT_FOUND")
+
+
+def revision_safe_grading_history(session, test_id, *, artifact_roots=None):
+    """Return whether every existing Web grading artifact is explicitly pinned.
+
+    Legacy CLI jobs and historical null-pin records remain readable but keep
+    activation fail-safe in place because their policy basis is not auditable.
+    """
+    from sqlalchemy import select
+    from .db.models import ConfirmedAuthoringRevision, GradingJob, StudentSubmission
+    from .grading_execution import snapshot_hash
+
+    submissions = list(session.scalars(select(StudentSubmission).where(
+        StudentSubmission.test_id == test_id)))
+    by_submission = {}
+    for submission in submissions:
+        if not submission.confirmed_authoring_revision_id:
+            return False
+        try:
+            revision, _ = confirmed_revision_for_test(
+                session, test_id, submission.confirmed_authoring_revision_id,
+                artifact_roots=artifact_roots,
+            )
+        except ValueError:
+            return False
+        by_submission[submission.id] = revision.id
+    for job in session.scalars(select(GradingJob).where(GradingJob.test_id == test_id)):
+        snapshot = (job.metadata_json or {}).get("grading_execution")
+        bundle = (snapshot or {}).get("bundle") or {}
+        submission_id = (bundle.get("student_answer") or {}).get("submission_id")
+        expected = by_submission.get(submission_id)
+        if (not expected or job.confirmed_authoring_revision_id != expected
+                or (snapshot or {}).get("confirmed_authoring_revision_id") != expected
+                or bundle.get("identity", {}).get("confirmed_authoring_revision_id") != expected
+                or not isinstance((snapshot or {}).get("snapshot_sha256"), str)
+                or snapshot_hash(snapshot) != snapshot.get("snapshot_sha256")
+                or canonical_hash({k: v for k, v in bundle.items() if k != "bundle_sha256"})
+                != bundle.get("bundle_sha256")
+                or len(job.items) != 1):
+            return False
+        item_metadata = job.items[0].metadata_json or {}
+        if (item_metadata.get("submission_id") != submission_id
+                or item_metadata.get("question_id") != bundle.get("identity", {}).get("question_id")
+                or item_metadata.get("confirmed_authoring_revision_id") != expected
+                or item_metadata.get("bundle_sha256") != bundle.get("bundle_sha256")):
+            return False
+        try:
+            revision = session.get(ConfirmedAuthoringRevision, expected)
+            if revision is None:
+                return False
+            definition = confirmed_definition(revision)
+            if definition.get("complete") is not True:
+                return False
+            question_ids = revision_question_identity_map(session, test_id, definition)
+            from .revision_grading import validate_revision_bound_bundle
+            validate_revision_bound_bundle(bundle, revision, question_ids)
+        except ValueError:
+            return False
+    return True
 
 
 def reject_mutable_web_execution(session, test_id):
@@ -782,7 +1010,8 @@ def read_reference_asset(reference, roots):
     from .pdf_native import sha256_file
 
     artifact = reference.get("immutable_artifact")
-    if not isinstance(artifact, dict) or artifact.get("namespace") not in roots:
+    if (not isinstance(artifact, dict) or artifact.get("namespace") not in roots
+            or roots.get(artifact.get("namespace")) is None):
         raise ValueError("GRADING_DEFINITION_ARTIFACT_UNAVAILABLE")
     root = Path(roots[artifact["namespace"]]).resolve()
     relative = artifact.get("artifact_ref")
@@ -804,11 +1033,18 @@ def read_reference_asset(reference, roots):
 
 def snapshot_evidence(snapshot, test_id=None):
     """Complete a legacy fork from its own saved evidence, never current rows."""
-    sources = {q["id"]: q for q in snapshot.get("source_provenance", {}).get("questions", [])}
+    source_rows = snapshot.get("source_provenance", {}).get("questions", [])
+    sources = {}
+    for item in source_rows:
+        provenance = item.get("provenance") or {}
+        key = provenance.get("authoring_stable_key") or item.get("stable_question_key") or item.get("id")
+        if key:
+            sources[key] = item
     return {
         "test_id": test_id,
         "questions": {
             n["stable_key"]: {
+                "id": sources.get(n["stable_key"], {}).get("id"),
                 "title": sources.get(n["stable_key"], {}).get("title"),
                 "content": deepcopy(sources.get(n["stable_key"], {}).get("content")),
                 "authoring_content": deepcopy(n.get("ordered_content", [])),

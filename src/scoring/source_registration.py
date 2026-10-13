@@ -110,15 +110,22 @@ def reuse_source(session, root, test_id, material_id, role, allowed_roots=None):
 
 
 def register_submission(session, root, test, material_ids, student_id=None,
-                        student_identifier=None, display_name=None):
+                        student_identifier=None, display_name=None, *, revision_roots=None):
     """Combine explicitly ordered pages into the existing source manifest contract."""
+    # Use the same lock order as authoring confirmation so the active edition
+    # is sampled at the Submission creation transaction boundary.
+    from .db.models import Test
+    locked_test = session.scalar(select(Test).where(Test.id == test.id).with_for_update()
+                                  .execution_options(populate_existing=True))
+    if locked_test is None:
+        raise ValueError("TEST_NOT_FOUND")
     if not material_ids or len(material_ids) != len(set(material_ids)):
         raise ValueError("答案資料を選択し、重複するページを除いてください")
     materials = [session.get(TestMaterial, i) for i in material_ids]
     if any(m is None or m.test_id != test.id or m.material_type != "student_answer_source"
            for m in materials):
         raise ValueError("この試験の学生答案資料を選択してください")
-    service = DomainService(session)
+    service = DomainService(session, artifact_root=root, revision_roots=revision_roots)
     # This lock protects both student number creation and attempt allocation.
     from .db.models import CourseOffering
     session.scalar(select(CourseOffering).where(
@@ -145,6 +152,10 @@ def register_submission(session, root, test, material_ids, student_id=None,
         StudentSubmission.test_id == test.id, StudentSubmission.submission_key == key))
     if previous:
         return previous
+    # Replayed registration requests return the original immutable pin above.
+    # Only a genuinely new Submission samples the current confirmed edition.
+    from .grading_definition import active_revision_for_submission
+    active_revision_for_submission(session, test.id, artifact_roots=revision_roots or {})
     directory = Path(root).resolve() / "submissions" / test.id / key
     pages = []
     for material in materials:
@@ -185,4 +196,5 @@ def register_submission(session, root, test, material_ids, student_id=None,
     attempts = list(session.scalars(select(StudentSubmission.attempt_number).where(
         StudentSubmission.test_id == test.id, StudentSubmission.student_id == student.id)))
     return service.submission(test.id, student.id, material_id=material.id,
-                              submission_key=key, attempt_number=max(attempts, default=0)+1)
+                              submission_key=key, attempt_number=max(attempts, default=0)+1,
+                              require_web_revision=True)

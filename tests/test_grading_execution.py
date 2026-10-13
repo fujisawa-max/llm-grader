@@ -361,7 +361,7 @@ class ExecutionTests(unittest.TestCase):
         self.assertIsNone(self.worker().run_once(job.id))
         self.assertEqual(len(self.calls), 2)
 
-    def test_api_guard_result_isolation_and_snapshot_answer(self):
+    def test_web_api_rejects_legacy_submission_without_revision_pin(self):
         from fastapi.testclient import TestClient
         from scoring.api.app import create_app
         with patch.dict(os.environ, {"LLM_GRADER_ARTIFACT_ROOT": str(self.root)}):
@@ -374,19 +374,7 @@ class ExecutionTests(unittest.TestCase):
         self.s.commit()
         with TestClient(app) as raw:
             client = authenticate_fixture(raw, self.s, self.f["user"])
-            self.assertEqual(client.post(prefix+'/grading-jobs', json=body).status_code, 409)
-            self.assertEqual(len(self.s.scalars(select(GradingJob)).all()), 0)
-            self.f['questions']['A1'].max_points = 10
-            self.s.commit()
             result = client.post(prefix+'/grading-jobs', json=body)
-            self.assertEqual(result.status_code, 201, result.text)
-            jid = result.json()['id']
-            self.output = response(self.bundle())
-            self.worker().run_once(jid)
-            url = prefix+f"/submissions/{self.f['submission'].id}/grading-jobs/{jid}/result"
-            result = client.get(url)
-            self.assertEqual(result.status_code, 200, result.text)
-            self.assertEqual(result.json()['score'], 0)
-            self.assertEqual(result.json()['bundle']['student_answer']['answer_text'], '2 + 2 = 5')
-            self.assertNotIn(str(self.root), result.text)
-            self.assertEqual(client.get(url.replace(self.f['submission'].id, 'other')).status_code, 404)
+            self.assertEqual(result.status_code, 409, result.text)
+            self.assertEqual(result.json()['error']['code'], 'WEB_GRADING_REVISION_REQUIRED')
+            self.assertEqual(len(self.s.scalars(select(GradingJob)).all()), 0)

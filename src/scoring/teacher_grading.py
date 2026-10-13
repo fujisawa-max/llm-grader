@@ -65,8 +65,35 @@ def _validate_decision(*, session, job, snapshot: dict, criterion_scores: list[d
         job.rubric_version_id is not None and job.rubric_version_id != rubric_version_id
     ):
         raise ValueError("TEACHER_GRADING_JOB_IDENTITY_MISMATCH")
-    rubric = session.get(m.RubricVersion, rubric_version_id)
-    if rubric is None or rubric.status != "approved":
+    revision_id = job.confirmed_authoring_revision_id
+    submission = session.get(m.StudentSubmission, submission_id)
+    # A revision-bound decision reads no mutable RubricVersion content or state.
+    # The nullable legacy FK is carried by the verified job bundle; the DB FK
+    # validates its identity when the decision row is persisted.
+    rubric = None if revision_id else session.get(m.RubricVersion, rubric_version_id)
+    bundle_revision_id = identity.get("confirmed_authoring_revision_id")
+    if revision_id:
+        if (not rubric_version_id or submission is None or submission.test_id != test_id
+                or submission.confirmed_authoring_revision_id != revision_id
+                or bundle_revision_id != revision_id
+                or snapshot.get("confirmed_authoring_revision_id") != revision_id):
+            raise ValueError("WEB_GRADING_REVISION_BINDING_MISMATCH")
+        from .db.models import ConfirmedAuthoringRevision
+        from .grading_definition import confirmed_definition
+        revision = session.get(ConfirmedAuthoringRevision, revision_id)
+        if revision is None or revision.test_id != test_id:
+            raise ValueError("WEB_GRADING_REVISION_NOT_FOUND")
+        definition = confirmed_definition(revision)
+        if (snapshot.get("confirmed_snapshot_sha256") != revision.snapshot_sha256
+                or bundle.get("identity", {}).get("confirmed_snapshot_sha256") != revision.snapshot_sha256
+                or definition.get("complete") is not True):
+            raise ValueError("WEB_GRADING_REVISION_BINDING_MISMATCH")
+        from .grading_definition import revision_question_identity_map
+        from .revision_grading import validate_revision_bound_bundle
+        validate_revision_bound_bundle(
+            bundle, revision, revision_question_identity_map(session, test_id, definition)
+        )
+    elif bundle_revision_id or rubric is None or rubric.status != "approved":
         raise ValueError("TEACHER_GRADING_RUBRIC_NOT_APPROVED")
     entry = bundle.get("rubric", {}).get("entry", {})
     if entry.get("question_id") != question_id or int(entry.get("max_points", -1)) != max_score:

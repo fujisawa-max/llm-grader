@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from ..adapters import StageRequest, RunArtifactAdapter
 from ..orchestration.execution import build_orchestrator
-from .models import DomainEvent
+from .models import DomainEvent, StudentSubmission, Test
 from .repository import JobRepository
 
 
@@ -35,6 +35,22 @@ class JobWorker:
                     domain_inputs=(job.metadata_json or {}).get("domain_inputs")
                 )
                 selected_answer = bool((job.metadata_json or {}).get("grading_execution"))
+                if selected_answer:
+                    grading_snapshot = (job.metadata_json or {}).get("grading_execution") or {}
+                    bundle = grading_snapshot.get("bundle") or {}
+                    binding_id = job.confirmed_authoring_revision_id
+                    if binding_id:
+                        submission_id = (bundle.get("student_answer") or {}).get("submission_id")
+                        submission = session.get(StudentSubmission, submission_id)
+                        if not submission:
+                            raise ValueError("WEB_GRADING_REVISION_BINDING_MISMATCH")
+                        from ..revision_grading import verify_revision_job_contract
+                        verify_revision_job_contract(session, job, submission)
+                    else:
+                        test = session.get(Test, job.test_id) if job.test_id else None
+                        if (bundle.get("identity", {}).get("confirmed_authoring_revision_id")
+                                or (test and test.active_confirmed_revision_id)):
+                            raise ValueError("WEB_GRADING_REVISION_REQUIRED")
                 regrade_request_id = (job.metadata_json or {}).get("regrade_request_id")
                 if selected_answer:
                     from ..grading_execution import GradingExecutionRunner

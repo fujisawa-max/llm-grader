@@ -2,9 +2,13 @@
 
 ## Result
 
-**PARTIAL — stopped at the specified information-integrity boundary before product implementation.** Current confirmed snapshots do not necessarily contain the discrete scoring levels required by supported grading paths. A local counterexample proves that identical authoring snapshots can produce different effective grading policies through an external assignment. Inferring missing levels would change scoring policy, which this phase forbids.
+**READY_FOR_PRODUCTION_VALIDATION.** After J.GRADING.0 and J.GRADING.0a made the confirmed Web snapshot a complete executable grading contract, this phase binds new Web Submissions and all derived grading jobs to that contract. The full backend suite and focused revision-binding suite pass. No migration is needed; Alembic remains at `0018_revision_lineage`.
 
-No binding-only patch, migration, automatic backfill or activation-guard relaxation was made. No production connection, model execution, deployment, commit or push. Existing completed authoring phases remain COMPLETE; their authoring snapshot integrity was not changed. This is a grading-definition completeness dependency, not a claim that their immutable snapshots mutated.
+No production grading or model inference was run. The revision-binding tests use disposable local databases, isolated files, and a synthetic grader. No production data, deployment, commit, or push was involved. This report retains the initial PARTIAL investigation below as historical context, then records the resumed implementation and final validation in detail.
+
+## Historical initial PARTIAL diagnosis
+
+The following sections preserve the original stop-condition report from before the J.GRADING.0/0a authority decision and implementation. Statements such as “After architecture unchanged” and “Required decision before resuming” describe that earlier point in time; they are superseded by the completed implementation and validation section at the end of this report.
 
 ## Baseline
 
@@ -130,3 +134,130 @@ Only this internal report is added. No source/test/migration changes, commit or 
 ```text
 ?? docs/internal/reports/j-grading-1-confirmed-revision-binding.md
 ```
+
+## Resumed implementation and architecture
+
+J.GRADING.0/0a resolved the completeness boundary: newly confirmed Web revisions now carry `domains.grading_definition`, with `authority=web_authoring`, `schema_version=web-grading-definition.v1`, a supported interpreter version, complete executable levels, and content-bound visual references. J.GRADING.1 consumes that frozen definition. It does not combine it with current formal rows, `RubricVersion.rubric_json`, or external assignment files.
+
+No columns were added. The existing nullable `StudentSubmission.confirmed_authoring_revision_id` and `GradingJob.confirmed_authoring_revision_id` fields are used. SQLAlchemy flush validation rejects later changes to either pin with `CONFIRMED_AUTHORING_REVISION_BINDING_IMMUTABLE`.
+
+### Binding and pipeline
+
+| Stage | Implemented behavior |
+|---|---|
+| New Web Submission | `POST /tests/{id}/submissions` uses `active_revision_for_submission`, which locks/refreshes the Test row, reads its active revision at that transaction boundary, verifies same-Test ownership, canonical snapshot hash, Web authority/interpreter, completeness, and frozen asset bytes, then stores the revision ID on creation. Missing or invalid definitions fail closed with stable error codes and teacher-facing Japanese guidance. |
+| Registration retry | `source_registration.register_submission` checks the existing source/student identity first. An idempotent retry returns the original Submission and pin even if another edition is now active. A genuinely new registration takes the current verified active revision. |
+| OCR and reconstruction | OCR/extraction still creates student-specific content. Reconstruction context and Question hierarchy are taken from the Submission’s revision definition. Registered page manifests and files are identity/hash checked; multi-page selection must identify a page explicitly. A later active edition or mutated formal Question content does not change the reconstruction context. Unsafe identity mapping fails closed. |
+| GradingJob creation | The Web `/tests/{id}/grading-jobs` route selects `create_revision_execution_job`. That service locks and reloads the Submission, requires its pin, validates that revision and builds the bundle from the pinned snapshot. `job.confirmed_authoring_revision_id` is copied from the Submission. It never reads `Test.active_confirmed_revision_id` to choose a job edition. Delayed jobs and retries therefore retain the Submission’s original edition. |
+| Job execution | The worker checks Submission/Job/revision IDs, snapshot and bundle hashes, item metadata, executable completeness, and the expected frozen package before invoking the grader. Rehashed-but-mutated bundles are also rejected by recomputing their contents from the confirmed snapshot. |
+| Teacher review and finalize | Review verifies the persisted job contract and projects Question, answer, rubric levels, maximum score, and edition label from the bound revision/job. It does not display newer mutable Question/Answer/Rubric content as the grading basis. Per-Submission totals use that revision’s frozen maximums; mixed-edition Test overviews do not pretend to have one shared total. Finalization validates the same contract and reports the edition label. |
+
+The immutable adapter is `src/scoring/revision_grading.py`. It projects Question context and hierarchy, stable authoring identity, accepted ModelAnswer and alternatives, Rubric criterion IDs and levels/conditions, derived criterion maxima, source provenance, and visual references from `domains.grading_definition`. J.GRADING.0 confirmation compilation now freezes each formal Question row ID as an identity handle in the grading definition. New revisions resolve that handle without querying current Question rows. Older immutable snapshots that predate the handle use a unique stable-key compatibility lookup; ambiguity or a missing row fails closed. Neither path reads mutable Question text, score, answer, hierarchy order, or grading policy.
+
+Criterion maxima come from `max(level.score)`, not the mutable compatibility `points` projection. Visual references are loaded through the frozen immutable artifact reference and SHA validation. A missing root, missing object, or mismatched bytes fails closed; a newer current diagram is never substituted. The existing `GradingJob.rubric_version_id` remains a compatibility/audit FK. To populate it, the assembler selects only the linked `RubricVersion.id` and `generation_metadata` matching this authoring revision; it never loads `rubric_json` or uses that row to construct scoring inputs. Revision-bound teacher review and decisions likewise validate the pinned bundle and do not load current Rubric state.
+
+The Web/legacy boundary remains explicit. Web grading jobs are routed through the revision-bound factory. The former mutable Web execution factory remains guarded with `WEB_GRADING_REVISION_BINDING_REQUIRED` so it cannot bypass the new route. Standalone CLI/filesystem grading remains its existing explicit legacy path; it does not supply Web grading policy.
+
+### Errors and compatibility
+
+The new Submission/API and grading-job/API paths return structured 409 errors for absent pins, cross-Test revision IDs, unsupported authority/interpreter, legacy-incomplete revisions, bad snapshot hashes, incomplete definitions, and invalid/changed immutable assets. The user-facing Submission guidance is: `採点を開始する前に、問題・模範解答・採点基準を最終確認して確定してください。`
+
+Existing historical null-pin records are not backfilled or attached to the newest revision. They remain identifiable/readable through existing paths where safe, but they cannot enter revision-required Web grading. `revision_safe_grading_history()` checks every existing Submission and job against its revision and frozen bundle. The authoring activation guard is relaxed only when all existing history passes that check; any null pin, legacy job, invalid snapshot/asset, missing Submission relationship, or content mismatch keeps the blocker in place. No historical score or result is regraded or rewritten.
+
+New grading responses expose `confirmed_authoring_revision_id` and the server-derived edition label (`第1版`, `第2版`, …). The ordering uses the same confirmed revision lineage as authoring history.
+
+### A/B isolation and API/service regressions
+
+The focused integration flow confirms edition A, creates S1 and a job, confirms edition B with different Question/ModelAnswer text and Rubric levels (`[0, 10]` versus `[0, 5, 10]`), then creates S2. It verifies:
+
+- S1 and its early job remain pinned to A; S2 and its job pin B.
+- A delayed S1 job created after B activation still uses A.
+- Retrying S1 creation returns S1’s original ID and A pin.
+- After deliberate drift in current formal Question, ModelAnswer, and Rubric rows, A and B bundles still contain their own immutable text and levels, and the synthetic grader receives those same inputs.
+- A SQL guard around the real delayed-job API/assembler rejects reads of current `test_questions` and `model_answers` tables and of Rubric policy columns (`rubric_json` / `rubric_text`). The only Rubric table read is the linked ID and `generation_metadata` needed to populate the legacy FK; this metadata does not contribute scoring content.
+- A student reconstruction run after B activation still uses A’s frozen Question context.
+- Review displays `第1版`/`第2版` and the corresponding frozen Question, answer, and levels. Finalizing A after B activation preserves A’s label and 10-point total.
+- ORM attempts to change an existing Submission or Job pin fail.
+- A frozen visual-reference test proves the two revision packages retain their own SHA and geometry.
+- Missing active revision, invalid snapshot hash, missing/incomplete definition, and cross-Test revision are rejected. A fully rehashed bundle that disagrees with the pinned snapshot is rejected by the worker and is not considered safe history.
+
+The integration suite uses the actual FastAPI submission/job/review/finalize APIs plus the worker and assembler, not a detached helper-only path. The local TestClient fixture and files are disposable. No production job was created.
+
+### Activation, retry, and historical policy
+
+The old activation safety check is now conditional rather than removed globally. A Test with fully pinned and verified history can activate a later edition for future Submissions; old Submissions/jobs remain pinned. The regression covers A history followed by B confirmation and activation. If any history is legacy or unverifiable, the existing fail-closed activation issue remains.
+
+No automatic association/backfill is attempted for historical null-pin rows. Their former active revision cannot be inferred safely from current state or timestamp proximity. Explicit legacy workflows continue to use their existing contracts.
+
+## Final validation
+
+- Focused backend integration/regression group: **143 passed, 3 warnings**. It covered revision binding, grading-definition verification, Submission/Job API flows, reconstruction, grading review/finalize, legacy execution boundaries, and authoring activation/history checks.
+- Full backend suite: **1,056 passed, 2 skipped, 23 warnings** in **261.79 seconds** on the final code.
+- `ruff check` over every changed Python source and test: **passed**.
+- `python -m compileall -q src/scoring`: **passed**.
+- `git diff --check`: **passed**.
+- Alembic head: **`0018_revision_lineage`**. No migration was added.
+- Frontend files were not changed, so TypeScript, ESLint, Next build, and Chromium were not applicable to this backend-only change.
+- Grading: the focused A/A/B integration uses **3 synthetic grader client requests**. Real model calls: **0**. Production grading jobs: **0**. OCR/classifier/model services are not invoked by the binding tests; extraction/reconstruction dependencies are controlled stubs.
+
+## Files changed in this implementation
+
+Modified source files:
+
+```text
+src/scoring/api/app.py
+src/scoring/api/domain.py
+src/scoring/api/student_answers.py
+src/scoring/api/test_authoring.py
+src/scoring/authoring_confirmation.py
+src/scoring/db/worker.py
+src/scoring/domain.py
+src/scoring/grading_actions.py
+src/scoring/grading_definition.py
+src/scoring/grading_execution.py
+src/scoring/grading_review.py
+src/scoring/source_registration.py
+src/scoring/student_answer.py
+src/scoring/teacher_grading.py
+src/scoring/revision_grading.py
+```
+
+Modified/new tests:
+
+```text
+tests/test_grading_definition.py
+tests/test_grading_execution.py
+tests/test_teacher_preparation.py
+tests/test_test_authoring.py
+tests/test_revision_grading.py
+```
+
+No production or local Codex-only files were added. No frontend or migration file changed.
+
+## Exact git status after implementation
+
+```text
+ M docs/internal/reports/j-grading-1-confirmed-revision-binding.md
+ M src/scoring/api/app.py
+ M src/scoring/api/domain.py
+ M src/scoring/api/student_answers.py
+ M src/scoring/api/test_authoring.py
+ M src/scoring/authoring_confirmation.py
+ M src/scoring/db/worker.py
+ M src/scoring/domain.py
+ M src/scoring/grading_actions.py
+ M src/scoring/grading_definition.py
+ M src/scoring/grading_execution.py
+ M src/scoring/grading_review.py
+ M src/scoring/source_registration.py
+ M src/scoring/student_answer.py
+ M src/scoring/teacher_grading.py
+ M tests/test_grading_definition.py
+ M tests/test_grading_execution.py
+ M tests/test_teacher_preparation.py
+ M tests/test_test_authoring.py
+?? src/scoring/revision_grading.py
+?? tests/test_revision_grading.py
+```
+
+No commit or push was made. Production acceptance remains outstanding.

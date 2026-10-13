@@ -49,7 +49,10 @@ def validate_rubric(data, test=None):
     return data
 
 class DomainService:
-    def __init__(self, session, *, artifact_root=None): self.s = session; self.artifact_root = artifact_root
+    def __init__(self, session, *, artifact_root=None, revision_roots=None):
+        self.s = session
+        self.artifact_root = artifact_root
+        self.revision_roots = revision_roots or {}
     def _event(self, entity_type, entity_id, event_type, actor_user_id=None, payload=None):
         self.s.add(DomainEvent(entity_type=entity_type, entity_id=entity_id, event_type=event_type,
                                actor_user_id=actor_user_id, payload=payload or {}))
@@ -114,18 +117,27 @@ class DomainService:
         x.status="approved"; x.approved_at=now(); x.approved_by_user_id=user_id; self.s.flush(); self._event("rubric",x.id,"rubric_approved",actor_user_id=user_id); return x
     def student(self, offering_id, **v):
         x=Student(id=str(uuid4()), course_offering_id=offering_id, **v); self.s.add(x); self.s.flush(); self._event("student",x.id,"student_created"); return x
-    def submission(self, test_id, student_id, **v):
+    def submission(self, test_id, student_id, *, require_web_revision=False, **v):
         from .test_authoring import latest
         draft = latest(self.s, test_id)
         if draft and draft.state != 'confirmed' and not self.s.scalar(
                 select(TestQuestion.id).where(TestQuestion.test_id == test_id).limit(1)):
             raise ValueError("AUTHORING_TEST_NOT_CONFIRMED")
-        t=self.s.get(Test,test_id); st=self.s.get(Student,student_id)
+        if require_web_revision:
+            from .grading_definition import active_revision_for_submission
+            t, pinned_revision, _definition = active_revision_for_submission(
+                self.s, test_id, artifact_roots=self.revision_roots
+            )
+        else:
+            t=self.s.get(Test,test_id)
+            pinned_revision = None
+        st=self.s.get(Student,student_id)
         material=self.s.get(TestMaterial,v.get("material_id"))
         if not t or not st or st.course_offering_id != t.course_offering_id: raise ValueError("student/test offering mismatch")
         if not material or material.test_id != test_id: raise ValueError("material/test mismatch")
         x=StudentSubmission(id=str(uuid4()), test_id=test_id, student_id=student_id,
-            confirmed_authoring_revision_id=t.active_confirmed_revision_id if t else None, **v)
+            confirmed_authoring_revision_id=(pinned_revision.id if pinned_revision else
+                t.active_confirmed_revision_id if t else None), **v)
         self.s.add(x); self.s.flush(); self._event("submission",x.id,"submission_created"); return x
     def sample_answer(self, test_id, **v):
         material_id=v.get("material_id")

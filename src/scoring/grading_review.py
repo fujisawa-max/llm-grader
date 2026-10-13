@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
+from copy import deepcopy
 from typing import Any
 
 from sqlalchemy import select
@@ -24,6 +26,7 @@ from .db.models import (
     StudentAnswerExtractionRun,
     StudentAnswerReconstruction,
     StudentSubmission,
+    ConfirmedAuthoringRevision,
     Test,
     TestQuestion,
     TestQuestionAsset,
@@ -217,11 +220,24 @@ class GradingReviewService:
 
     def _jobs(self, test_id: str, submission_id: str, question_id: str) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
+        submission = self.s.get(StudentSubmission, submission_id)
+        if submission is None or submission.test_id != test_id:
+            return rows
         for job in self.s.scalars(select(GradingJob).where(
             GradingJob.test_id == test_id).order_by(GradingJob.created_at)):
-            for item in job.items:
-                if _item_target(item, job, submission_id, question_id):
-                    rows.append(_model_record(job, item, _target(test_id, submission_id, question_id)))
+            targets = [item for item in job.items
+                       if _item_target(item, job, submission_id, question_id)]
+            if not targets:
+                continue
+            if submission.confirmed_authoring_revision_id:
+                if job.confirmed_authoring_revision_id != submission.confirmed_authoring_revision_id:
+                    raise ValueError("WEB_GRADING_REVISION_BINDING_MISMATCH")
+                from .revision_grading import verify_revision_job_contract
+                verify_revision_job_contract(self.s, job, submission)
+            elif job.confirmed_authoring_revision_id is not None:
+                raise ValueError("WEB_GRADING_REVISION_BINDING_MISMATCH")
+            for item in targets:
+                rows.append(_model_record(job, item, _target(test_id, submission_id, question_id)))
         return rows
 
     def _resolve(self, test_id: str, submission_id: str, question_id: str, jobs: list[dict[str, Any]]):
@@ -289,7 +305,8 @@ class GradingReviewService:
             "created_at": _iso(row.created_at),
         }
 
-    def _question_detail(self, test: Test, sub: StudentSubmission, q: TestQuestion, rubric, context_builder):
+    def _question_detail(self, test: Test, sub: StudentSubmission, q: TestQuestion, rubric, context_builder,
+                         frozen_question=None, revision_label=None):
         current_recon, recon_history = self._reconstruction(sub.id, q.id)
         jobs = self._jobs(test.id, sub.id, q.id)
         result, decision, model, decisions = self._resolve(test.id, sub.id, q.id, jobs)
@@ -299,18 +316,32 @@ class GradingReviewService:
         # target.  Keep those model warnings in the audit trail, but do not
         # block finalization after the teacher has adjudicated the question.
         review_flags = [] if decision else [code for code in warning_codes if code in REVIEW_CODES]
-        model_answer = self.s.scalar(select(ModelAnswer).where(
-            ModelAnswer.test_id == test.id, ModelAnswer.question_id == q.id,
-            ModelAnswer.is_current.is_(True)).order_by(ModelAnswer.version.desc()))
-        entry = None
-        if rubric and isinstance(rubric.rubric_json, dict):
-            entry = next((value for value in rubric.rubric_json.get("questions", [])
-                          if isinstance(value, dict) and value.get("question_id") == q.id), None)
-        try:
-            context = context_builder.build(q.id)
-        except (ContextError, ValueError):
-            context = {"question_id": q.id, "test_id": test.id, "effective_text": q.question_text or "",
-                       "context_sha256": q.content_sha256, "max_points": q.max_points, "assets": []}
+        if frozen_question is not None:
+            answer = frozen_question.get("answer") or {}
+            model_answer = SimpleNamespace(id=f"revision-answer:{frozen_question['question_key']}",
+                version=None, answer_text=answer.get("primary", ""),
+                alternatives=deepcopy(answer.get("alternatives", [])))
+            entry = {"question_id": q.id, "max_points": int(frozen_question["max_points"]),
+                "aggregation": frozen_question.get("rubric", {}).get("aggregation", "sum"),
+                "criteria": [{"id": c["executable_id"],
+                    "authoring_criterion_id": c["criterion_id"],
+                    "description": c["description"], "points": int(c["max_score"]),
+                    "levels": deepcopy(c["levels"])}
+                    for c in frozen_question.get("rubric", {}).get("criteria", [])]}
+            context = deepcopy(frozen_question["context"])
+        else:
+            model_answer = self.s.scalar(select(ModelAnswer).where(
+                ModelAnswer.test_id == test.id, ModelAnswer.question_id == q.id,
+                ModelAnswer.is_current.is_(True)).order_by(ModelAnswer.version.desc()))
+            entry = None
+            if rubric and isinstance(rubric.rubric_json, dict):
+                entry = next((value for value in rubric.rubric_json.get("questions", [])
+                              if isinstance(value, dict) and value.get("question_id") == q.id), None)
+            try:
+                context = context_builder.build(q.id)
+            except (ContextError, ValueError):
+                context = {"question_id": q.id, "test_id": test.id, "effective_text": q.question_text or "",
+                           "context_sha256": q.content_sha256, "max_points": q.max_points, "assets": []}
         normalized_result = (model or {}).get("result") or {}
         criteria = (decision or {}).get("criterion_scores") if decision else normalized_result.get("criteria", [])
         feedback = normalized_result.get("feedback") or normalized_result.get("reasoning") or normalized_result.get("review_reasons") or []
@@ -359,8 +390,11 @@ class GradingReviewService:
         return {
             "question": {"id": q.id, "label": q.display_label or q.question_number,
                          "question_number": q.question_number, "title": q.title,
-                         "text": q.question_text, "stable_key": q.stable_question_key,
-                         "max_points": q.max_points, "context": context},
+                         "text": frozen_question.get("own_text", "") if frozen_question is not None else q.question_text,
+                         "stable_key": frozen_question.get("question_key") if frozen_question is not None else q.stable_question_key,
+                         "max_points": int(frozen_question["max_points"]) if frozen_question is not None else q.max_points,
+                         "confirmed_revision_label": revision_label,
+                         "context": context},
             "authoritative": ({"score": result.score, "max_score": result.max_score,
                                 "source": result.source, "result_id": result.result_id,
                                 "notes": list(result.notes)} if result else None),
@@ -370,9 +404,13 @@ class GradingReviewService:
             "student_feedback_override": feedback_override,
             "model_answer": ({"id": model_answer.id, "version": model_answer.version,
                               "content": model_answer.answer_text,
+                              "alternatives": getattr(model_answer, "alternatives", []),
                               "sha256": canonical_hash(model_answer.answer_text)} if model_answer else None),
-            "rubric": ({"id": rubric.id, "version": rubric.version, "status": rubric.status,
-                        "entry": entry, "entry_sha256": canonical_hash(entry) if entry else None} if rubric else None),
+            "rubric": ({"id": rubric.id if rubric else None,
+                        "version": rubric.version if rubric else None,
+                        "status": "confirmed_revision" if frozen_question is not None else rubric.status,
+                        "entry": entry, "entry_sha256": canonical_hash(entry) if entry else None}
+                       if rubric or frozen_question is not None else None),
             "student_answer": {"submission_id": (bundle.get("student_answer") or {}).get("submission_id") or sub.id,
                                "reconstruction": self._reconstruction_public(current_recon),
                                "source": (bundle.get("student_answer") or {}).get("source"),
@@ -404,9 +442,41 @@ class GradingReviewService:
             raise KeyError("NOT_FOUND")
         student = self.s.get(Student, sub.student_id)
         identity = self._student_identity(sub)
-        rubric = self._rubric(test_id)
-        builder = self._context_builder(test_id)
-        questions = [self._question_detail(test, sub, q, rubric, builder) for q in self._questions(test_id)]
+        pinned_revision = None
+        if sub.confirmed_authoring_revision_id:
+            from .grading_definition import (confirmed_definition, confirmed_edition_label,
+                                             revision_question_identity_map)
+            pinned_revision = self.s.get(ConfirmedAuthoringRevision, sub.confirmed_authoring_revision_id)
+            if pinned_revision is None or pinned_revision.test_id != test_id:
+                raise ValueError("WEB_GRADING_REVISION_TEST_MISMATCH")
+            definition = confirmed_definition(pinned_revision)
+            ids = revision_question_identity_map(self.s, test_id, definition)
+            by_key = {value["question_key"]: value for value in definition["questions"]}
+            revision_label = confirmed_edition_label(self.s, pinned_revision)
+            questions = []
+            for question in definition["questions"]:
+                if not question.get("gradable"):
+                    continue
+                key = question["question_key"]
+                question_id = ids[key]
+                row = self.s.get(TestQuestion, question_id)
+                if row is None or row.test_id != test_id:
+                    raise ValueError("GRADING_DEFINITION_QUESTION_IDENTITY_MISSING")
+                pseudo = SimpleNamespace(id=question_id,
+                    display_label=question["label"]["raw"], question_number=question["label"]["raw"],
+                    title=question.get("title"), question_text=question.get("own_text", ""),
+                    stable_question_key=key, max_points=question["max_points"],
+                    content_sha256=canonical_hash(question["content"]))
+                questions.append(self._question_detail(test, sub, pseudo, None, None,
+                    frozen_question=by_key[key], revision_label=revision_label))
+            test_name = pinned_revision.snapshot.get("metadata", {}).get("name") or test.name
+            total_points = int(definition["total_points"])
+        else:
+            rubric = self._rubric(test_id)
+            builder = self._context_builder(test_id)
+            questions = [self._question_detail(test, sub, q, rubric, builder) for q in self._questions(test_id)]
+            test_name = test.name
+            total_points = test.total_points
         score = sum(row["authoritative"]["score"] for row in questions if row["authoritative"])
         review = sorted({code for row in questions for code in row["review_flags"]})
         teacher_count = sum(bool(row["authoritative"] and row["authoritative"]["source"] == "TEACHER_ADJUDICATION") for row in questions)
@@ -456,14 +526,16 @@ class GradingReviewService:
                                       "created_at": _iso(event.created_at),
                                       "payload": payload})
         audit_history.sort(key=lambda entry: str(entry.get("created_at") or ""))
-        return {"test": {"id": test.id, "name": test.name, "total_points": test.total_points},
+        return {"test": {"id": test.id, "name": test_name, "total_points": total_points},
                 "submission": {"id": sub.id, "student_ref": student.student_identifier if student else None,
                                "student_number": identity.get("student_number", ""),
                                "student_name": identity.get("student_name", ""),
                                "student_display_label": identity.get("display_label", "学生情報未確認"),
                                "student_identity_review_required": bool(identity.get("review_required")),
-                               "status": sub.status, "score": score, "max": test.total_points,
-                               "percentage": round(score / test.total_points * 100, 2) if test.total_points else None,
+                               "status": sub.status, "score": score, "max": total_points,
+                               "confirmed_authoring_revision_id": pinned_revision.id if pinned_revision else None,
+                               "confirmed_revision_label": revision_label if pinned_revision else None,
+                               "percentage": round(score / total_points * 100, 2) if total_points else None,
                                "warnings": sorted({code for row in questions for code in row["warnings"]}),
                 "review_flags": review, "teacher_adjudicated_count": teacher_count,
                 "finalized": finalized, "regrade_requests": regrade_requests},
@@ -482,7 +554,7 @@ class GradingReviewService:
             StudentSubmission.test_id == test_id).order_by(StudentSubmission.created_at, StudentSubmission.id)):
             detail = self.detail(test_id, sub.id)
             warnings = detail["submission"]["review_flags"]
-            complete = sum(1 for q in detail["questions"] if q["authoritative"] is not None) == len(questions)
+            complete = sum(1 for q in detail["questions"] if q["authoritative"] is not None) == len(detail["questions"])
             source_teacher = detail["submission"]["teacher_adjudicated_count"]
             pending_regrade = any(
                 request.get("status") == "REGRADING_REQUESTED"
@@ -494,7 +566,9 @@ class GradingReviewService:
                          "student_name": detail["submission"].get("student_name", ""),
                          "student_display_label": detail["submission"].get("student_display_label", "学生情報未確認"),
                          "student_identity_review_required": detail["submission"].get("student_identity_review_required", True),
-                         "score": detail["submission"]["score"], "max": test.total_points,
+                         "score": detail["submission"]["score"], "max": detail["test"]["total_points"],
+                         "confirmed_authoring_revision_id": detail["submission"].get("confirmed_authoring_revision_id"),
+                         "confirmed_revision_label": detail["submission"].get("confirmed_revision_label"),
                          "percentage": detail["submission"]["percentage"],
                          "status": "REGRADING_REQUESTED" if pending_regrade else "REVIEW_REQUIRED" if warnings else "COMPLETE" if complete else "INCOMPLETE",
                          "review_flags": warnings, "teacher_adjudicated_count": source_teacher,
@@ -508,7 +582,9 @@ class GradingReviewService:
             row.get("student_number") or "",
             row.get("submission_id") or "",
         ))
-        return {"test": {"id": test.id, "name": test.name, "total_points": test.total_points},
+        max_values = {row["max"] for row in rows}
+        return {"test": {"id": test.id, "name": test.name,
+                          "total_points": next(iter(max_values)) if len(max_values) == 1 else None},
                 "totals": {"question_count": len(questions), "student_count": len(rows),
                            "completed_students": sum(row["status"] == "COMPLETE" for row in rows),
                            "review_required_count": sum(bool(row["review_flags"]) for row in rows),

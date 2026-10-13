@@ -195,7 +195,6 @@ class TeacherPreparationTests(unittest.TestCase):
                             },
                         )
                     ).json()
-                    submissions = []
                     for i in range(3):
                         payload = {
                             "material_ids": [image["id"]],
@@ -203,27 +202,14 @@ class TeacherPreparationTests(unittest.TestCase):
                             "display_name": f"Demo {i + 1}",
                         }
                         response = await client.post(path + "/submissions", json=payload)
-                        self.assertEqual(response.status_code, 201, response.text)
-                        sub = response.json()
-                        submissions.append(sub)
-                        duplicate = (await client.post(path + "/submissions", json=payload)).json()
-                        self.assertEqual(duplicate["id"], sub["id"])
-                        pages = await client.get(path + f"/submissions/{sub['id']}/answer-pages")
-                        self.assertEqual(pages.status_code, 200, pages.text)
-                        self.assertEqual(pages.json()["page_count"], 1)
-                        image_read = await client.get(
-                            path + f"/submissions/{sub['id']}/answer-artifacts/page-001"
-                        )
-                        self.assertEqual(image_read.content, png)
-                    self.assertEqual(
-                        (
-                            await client.post(
-                                path + "/submissions",
-                                json={"material_ids": [model["id"]], "student_identifier": "S004"},
-                            )
-                        ).status_code,
-                        422,
+                        self.assertEqual(response.status_code, 409, response.text)
+                        self.assertEqual(response.json()["error"]["code"],
+                                         "WEB_GRADING_REVISION_REQUIRED")
+                    rejected_model_submission = await client.post(
+                        path + "/submissions",
+                        json={"material_ids": [model["id"]], "student_identifier": "S004"},
                     )
+                    self.assertEqual(rejected_model_submission.status_code, 422)
                     pdf_material = (
                         await client.post(
                             path + "/materials/upload",
@@ -238,15 +224,9 @@ class TeacherPreparationTests(unittest.TestCase):
                             "student_identifier": "S005",
                         },
                     )
-                    self.assertEqual(multi.status_code, 201, multi.text)
-                    self.assertEqual(
-                        (
-                            await client.get(
-                                path + f"/submissions/{multi.json()['id']}/answer-pages"
-                            )
-                        ).json()["page_count"],
-                        3,
-                    )
+                    self.assertEqual(multi.status_code, 409, multi.text)
+                    self.assertEqual(multi.json()["error"]["code"],
+                                     "WEB_GRADING_REVISION_REQUIRED")
                     await client.post("/api/v1/auth/logout")
                     await client.post(
                         "/api/v1/auth/login",

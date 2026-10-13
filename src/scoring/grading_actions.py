@@ -37,7 +37,15 @@ class GradingActionService:
 
     def _target_rows(self, test_id, submission_id, question_id):
         rows = []
+        submission = self.s.get(m.StudentSubmission, submission_id)
+        if submission is None or submission.test_id != test_id:
+            return rows
         for job in self.s.scalars(select(m.GradingJob).where(m.GradingJob.test_id == test_id)):
+            if submission.confirmed_authoring_revision_id:
+                if job.confirmed_authoring_revision_id != submission.confirmed_authoring_revision_id:
+                    continue
+            elif job.confirmed_authoring_revision_id is not None:
+                continue
             for item in job.items:
                 if _item_target(item, job, submission_id, question_id):
                     rows.append((job, item))
@@ -65,6 +73,16 @@ class GradingActionService:
         if ((bundle.get("identity") or {}).get("question_id") != question_id
                 or (bundle.get("student_answer") or {}).get("submission_id") != submission_id):
             raise ValueError("GRADING_INPUT_SNAPSHOT_IDENTITY_MISMATCH")
+        submission = self.s.get(m.StudentSubmission, submission_id)
+        if (submission is None or submission.test_id != test_id
+                or (submission.confirmed_authoring_revision_id
+                    and job.confirmed_authoring_revision_id != submission.confirmed_authoring_revision_id)
+                or (not submission.confirmed_authoring_revision_id
+                    and job.confirmed_authoring_revision_id is not None)):
+            raise ValueError("WEB_GRADING_REVISION_BINDING_MISMATCH")
+        if submission.confirmed_authoring_revision_id:
+            from .revision_grading import verify_revision_job_contract
+            verify_revision_job_contract(self.s, job, submission)
         rubric_id = (bundle.get("rubric") or {}).get("id") or job.rubric_version_id
         if not rubric_id:
             raise ValueError("GRADING_INPUT_RUBRIC_MISSING")
@@ -76,7 +94,8 @@ class GradingActionService:
         question = self.s.get(m.TestQuestion, question_id)
         submission = self.s.get(m.StudentSubmission, submission_id)
         if (question is None or submission is None or question.test_id != test_id
-                or submission.test_id != test_id or not question.is_gradable):
+                or submission.test_id != test_id
+                or (not submission.confirmed_authoring_revision_id and not question.is_gradable)):
             raise ValueError("GRADING_TARGET_NOT_FOUND")
         if not isinstance(criterion_scores, list) or not criterion_scores:
             raise ValueError("TEACHER_GRADING_CRITERIA_REQUIRED")
@@ -94,12 +113,18 @@ class GradingActionService:
         score = sum(row["score"] for row in normalized)
         job, _item, snapshot, bundle, rubric_id, previous_jobs = self._source_snapshot(
             test_id, submission_id, question_id)
-        if int(bundle.get("question", {}).get("max_points", question.max_points)) != int(question.max_points):
+        frozen_max = int(bundle.get("question", {}).get("max_points", question.max_points))
+        if submission.confirmed_authoring_revision_id:
+            if job.confirmed_authoring_revision_id != submission.confirmed_authoring_revision_id:
+                raise ValueError("WEB_GRADING_REVISION_BINDING_MISMATCH")
+        elif job.confirmed_authoring_revision_id is not None:
+            raise ValueError("WEB_GRADING_REVISION_BINDING_MISMATCH")
+        if not submission.confirmed_authoring_revision_id and frozen_max != int(question.max_points):
             raise ValueError("TEACHER_GRADING_MAX_POINTS_MISMATCH")
         row, created = create_teacher_grading_decision(
             self.s, artifact_root=self.artifact_root, source_grading_job_id=job.id,
             test_id=test_id, submission_id=submission_id, question_id=question_id,
-            rubric_version_id=rubric_id, score=score, max_score=int(question.max_points),
+            rubric_version_id=rubric_id, score=score, max_score=frozen_max,
             criterion_scores=normalized, teacher_reason=str(teacher_reason or ""),
             teacher_note=teacher_note, teacher_user_id=teacher_user_id,
             previous_job_ids=previous_jobs,
@@ -185,19 +210,33 @@ class GradingActionService:
             request_test_id, submission_id, question_id)
         config_path = self.grading_config_path or Path(source_job.config_path or "").resolve()
         factory = self.execution_job_factory
+        submission = self.s.get(m.StudentSubmission, submission_id)
+        revision_factory = factory is None and submission and submission.confirmed_authoring_revision_id
         if factory is None and not config_path.is_file():
             raise ValueError("GRADING_CONFIG_MISSING")
         run_path = self.artifact_root / "regrades" / request_id
-        if factory is None:
+        if revision_factory:
+            from .grading_execution import create_revision_execution_job
+            factory = create_revision_execution_job
+        elif factory is None:
             from .grading_execution import create_execution_job
             factory = create_execution_job
         try:
-            job = factory(
-                self.s, request_test_id, submission_id, question_id,
-                run_path=str(run_path), config_path=str(config_path), root=self.mapping_root,
-                allowed_roots=self.allowed_roots, answer_root=self.answer_root,
-                reference_root=self.reference_root, visual_capability=self.visual_capability,
-            )
+            if revision_factory:
+                job = factory(
+                    self.s, request_test_id, submission_id, question_id,
+                    run_path=str(run_path), config_path=str(config_path),
+                    question_root=self.mapping_root, allowed_roots=self.allowed_roots,
+                    answer_root=self.answer_root, reference_root=self.reference_root,
+                    visual_capability=self.visual_capability,
+                )
+            else:
+                job = factory(
+                    self.s, request_test_id, submission_id, question_id,
+                    run_path=str(run_path), config_path=str(config_path), root=self.mapping_root,
+                    allowed_roots=self.allowed_roots, answer_root=self.answer_root,
+                    reference_root=self.reference_root, visual_capability=self.visual_capability,
+                )
         except (ContextError, OSError, KeyError, TypeError, ValueError) as exc:
             raise ValueError(str(exc)) from exc
         sealed_bundle = (job.metadata_json or {}).get("grading_execution", {}).get("bundle", {})
@@ -292,6 +331,8 @@ class GradingActionService:
                         "source": row["authoritative"]["source"]}
                        for row in detail["questions"]],
                    "total_points": detail["test"]["total_points"],
+                   "confirmed_authoring_revision_id": detail["submission"].get("confirmed_authoring_revision_id"),
+                   "confirmed_revision_label": detail["submission"].get("confirmed_revision_label"),
                    "status": "FINALIZED", "created_at": _now().isoformat()}
         self.s.add(m.DomainEvent(entity_type="grading_finalization", entity_id=payload["finalization_id"],
                                  event_type="grading_finalized", actor_user_id=actor_user_id,
@@ -307,17 +348,23 @@ class GradingActionService:
             raise ValueError("FINALIZE_NO_SUBMISSIONS")
         details = [(sub, self._validate_finalizable(test_id, sub.id)) for sub in submissions]
         existing = [self._finalized_event(test_id, sub.id) for sub, _detail in details]
-        refs = [{"submission_id": sub.id, "authoritative_result_refs": [
+        refs = [{"submission_id": sub.id, "total_points": detail["test"]["total_points"],
+                 "confirmed_authoring_revision_id": detail["submission"].get("confirmed_authoring_revision_id"),
+                 "confirmed_revision_label": detail["submission"].get("confirmed_revision_label"),
+                 "authoritative_result_refs": [
             {"question_id": row["question"]["id"], "result_id": row["authoritative"]["result_id"],
              "source": row["authoritative"]["source"]} for row in detail["questions"]]}
                 for sub, detail in details]
+        totals = {detail["test"]["total_points"] for _sub, detail in details}
         if all(existing):
             return {"status": "FINALIZED", "test_id": test_id,
                     "submission_ids": [sub.id for sub, _detail in details]}, False
         payload = {"schema_version": "i2-grading-finalization.v1", "finalization_id": str(uuid4()),
                    "test_id": test_id, "submission_ids": [sub.id for sub, _detail in details],
                    "authoritative_result_refs": refs,
-                   "total_points": self.s.get(m.Test, test_id).total_points,
+                   "total_points": next(iter(totals)) if len(totals) == 1 else None,
+                   "submission_totals": {sub.id: detail["test"]["total_points"]
+                                         for sub, detail in details},
                    "status": "FINALIZED", "created_at": _now().isoformat()}
         self.s.add(m.DomainEvent(entity_type="grading_finalization", entity_id=payload["finalization_id"],
                                  event_type="test_grading_finalized", actor_user_id=actor_user_id,

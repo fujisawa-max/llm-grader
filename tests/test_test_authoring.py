@@ -14,7 +14,7 @@ from scoring.auth import hash_password
 from scoring.db import create_session_factory, init_database
 from scoring.db.models import (TestQuestion as Question, ModelAnswer, RubricVersion,
     TestAuthoringRevision as Revision, TestArchive as Archive, GradingJob, Test as Exam,
-    ConfirmedAuthoringRevision)
+    ConfirmedAuthoringRevision, StudentSubmission)
 from scoring.domain import DomainService
 from scoring.test_authoring import validate_snapshot, AuthoringError
 
@@ -314,8 +314,8 @@ def test_confirmation_failure_rolls_back_formal_projection_and_basis(workspace,m
     row=begin(w)
     import scoring.authoring_confirmation as confirmation
     project=confirmation.project_confirmed_snapshot
-    def fail_after_projection(session,test,snapshot,actor):
-        project(session,test,snapshot,actor)
+    def fail_after_projection(session,test,snapshot,actor,**kwargs):
+        project(session,test,snapshot,actor,**kwargs)
         raise RuntimeError('injected confirmation failure')
     monkeypatch.setattr(confirmation,'project_confirmed_snapshot',fail_after_projection)
     response=w.client.post(base(w)+'/authoring/confirm',json={'revision_id':row['id'],
@@ -868,7 +868,7 @@ def test_revised_confirmation_rollback_preserves_active_parent(workspace, monkey
     assert history['revisions'][0]['snapshot'] == first['snapshot']
 
 
-def test_historical_submission_allows_fork_but_blocks_activation(workspace):
+def test_revision_bound_submission_allows_safe_later_edition_activation(workspace):
     w = workspace
     row = begin(w)
     first_response = w.client.post(base(w)+'/authoring/confirm',json={'revision_id':row['id'],
@@ -880,14 +880,20 @@ def test_historical_submission_allows_fork_but_blocks_activation(workspace):
         student = service.student(w.offering, student_identifier='REVISION-HISTORY-SAFETY')
         material = service.material(w.legacy,material_type='student_answer_source',storage_ref='/unused/student.pdf',
             original_filename='student.pdf',mime_type='application/pdf',sha256='a'*64)
-        service.submission(w.legacy,student.id,submission_key='revision-history',material_id=material.id)
+        submission = service.submission(w.legacy,student.id,submission_key='revision-history',material_id=material.id)
+        assert submission.confirmed_authoring_revision_id == first['id']
+        submission_id = submission.id
         session.commit()
     fork_response = w.client.post(base(w)+'/authoring/revisions',json={'confirmed_revision_id':first['id']})
     assert fork_response.status_code == 200
     fork = fork_response.json()
     review = w.client.get(base(w)+'/authoring/review').json()
-    assert not review['can_confirm']
+    assert review['can_confirm']
     response = w.client.post(base(w)+'/authoring/confirm',json={'revision_id':fork['id'],
         'expected_edit_version':fork['edit_version'],'expected_snapshot_sha256':fork['snapshot_sha256']})
-    assert response.status_code == 409
-    assert w.client.get(base(w)+'/authoring/history').json()['active_confirmed_revision_id'] == first['id']
+    assert response.status_code == 200, response.text
+    second = response.json()
+    assert second['id'] != first['id']
+    assert w.client.get(base(w)+'/authoring/history').json()['active_confirmed_revision_id'] == second['id']
+    with w.sf() as session:
+        assert session.get(StudentSubmission, submission_id).confirmed_authoring_revision_id == first['id']

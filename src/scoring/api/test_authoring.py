@@ -72,6 +72,7 @@ class ConfirmAuthoring(BaseModel):
 
 def router(db, question_root=None, answer_root=None, classifier=None, answer_create=None):
     r = APIRouter(prefix='/api/v1')
+    revision_artifact_roots = {"question_import": question_root, "answer_import": answer_root}
 
     def owned(test_id, s, allow_archived=False):
         test = s.get(Test, test_id)
@@ -915,9 +916,13 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
             __import__('scoring.db.models', fromlist=['TestQuestion']).TestQuestion.test_id == test_id)) or 0
         submissions = s.scalar(select(func.count()).select_from(StudentSubmission).where(StudentSubmission.test_id == test_id)) or 0
         jobs = s.scalar(select(func.count()).select_from(GradingJob).where(GradingJob.test_id == test_id)) or 0
-        if formal_questions and (submissions or jobs):
+        from ..grading_definition import revision_safe_grading_history
+        history_has_safe_pins = not (submissions or jobs) or revision_safe_grading_history(
+            s, test_id, artifact_roots=revision_artifact_roots)
+        if formal_questions and (submissions or jobs) and not history_has_safe_pins:
             result['issues'].append({'question_key': None, 'section': 'publication',
-                'message': '過去の採点履歴があるため、正式内容を安全に更新できません。'})
+                'code': 'AUTHORING_HISTORICAL_GRADING_BASIS_UNSUPPORTED',
+                'message': '旧方式または版未固定の採点履歴があるため、正式内容を安全に更新できません。'})
         from ..authoring_issue_guidance import issue_guidance
         result['issues'] = [issue_guidance(snapshot, item, result['total_points']) for item in result['issues']]
         if row and row.state == 'confirmed':
@@ -999,7 +1004,9 @@ def router(db, question_root=None, answer_root=None, classifier=None, answer_cre
             verify_artifacts(s, saved_snapshot, test_id, question_root, answer_root)
             from ..authoring_confirmation import project_confirmed_snapshot
             s.info['authoring_confirmation_projection'] = True
-            project_confirmed_snapshot(s, test, deepcopy(saved_snapshot), s.info['auth_user'].id)
+            project_confirmed_snapshot(s, test, deepcopy(saved_snapshot), s.info['auth_user'].id,
+                                        authoring_revision_id=row.id,
+                                        artifact_roots=revision_artifact_roots)
             # Formal rows now realize the attested snapshot. Reconcile only
             # mutable freshness metadata, from flushed DB-normalized values;
             # the saved/confirmed payload and edit version remain untouched.

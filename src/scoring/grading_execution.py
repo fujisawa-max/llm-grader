@@ -43,8 +43,16 @@ def validate_bundle(bundle):
         raise ValueError('ANSWER_RECONSTRUCTION_MISSING')
     context = bundle['question']['context']
     checked_hash(context, 'context_sha256', 'CONTEXT_HASH_MISMATCH')
-    if context['question_id'] != qid or context['test_id'] != tid or not context['is_gradable']:
+    stable_key = identity.get('stable_question_key')
+    expected_context_id = stable_key if identity.get('confirmed_authoring_revision_id') else qid
+    if context['question_id'] != expected_context_id or context['test_id'] != tid or not context['is_gradable']:
         raise ValueError('QUESTION_IDENTITY_MISMATCH')
+    if identity.get('confirmed_authoring_revision_id'):
+        revision_id = identity['confirmed_authoring_revision_id']
+        if (bundle.get('revision', {}).get('confirmed_authoring_revision_id') != revision_id
+                or bundle.get('revision', {}).get('snapshot_sha256') != identity.get('confirmed_snapshot_sha256')
+                or answer.get('stable_question_key') != stable_key):
+            raise ValueError('WEB_GRADING_REVISION_BINDING_MISMATCH')
     if (answer['question_id'] != qid or not answer.get('submission_id')
             or answer.get('test_id') != tid or not answer.get('student_id')):
         raise ValueError('RECONSTRUCTION_IDENTITY_MISMATCH')
@@ -59,6 +67,9 @@ def validate_bundle(bundle):
                           for c in rubric['entry'].get('criteria', [])):
         raise ValueError('STUDENT_VISUAL_ASSET_MISSING')
     if bundle['model_answer']['sha256'] != canonical_hash(bundle['model_answer']['content']):
+        raise ValueError('MODEL_ANSWER_HASH_MISMATCH')
+    if ('alternatives' in bundle['model_answer'] and
+            bundle['model_answer'].get('alternatives_sha256') != canonical_hash(bundle['model_answer']['alternatives'])):
         raise ValueError('MODEL_ANSWER_HASH_MISMATCH')
     if visual:
         from .grading_visual import validate_visual_bundle
@@ -93,11 +104,17 @@ def validate_bundle(bundle):
 def execution_rubric(bundle):
     """Translate approved criterion names only; never manufacture score levels."""
     entry = bundle['rubric']['entry']
+    web_revision = bool(bundle.get('identity', {}).get('confirmed_authoring_revision_id'))
+    criteria = []
+    for criterion in entry['criteria']:
+        levels = deepcopy(criterion.get('levels', []))
+        maximum = (max((int(level['score']) for level in levels), default=0)
+                   if web_revision else criterion['points'])
+        criteria.append({'criterion_id': criterion['id'], 'authoring_criterion_id':
+                         criterion.get('authoring_criterion_id'), 'max_score': maximum,
+                         'description': criterion['description'], 'levels': levels})
     result = {'question_id': entry['question_id'], 'max_score': entry['max_points'],
-              'aggregation': 'sum', 'criteria': [
-                  {'criterion_id': c['id'], 'max_score': c['points'],
-                   'description': c['description'], 'levels': deepcopy(c.get('levels', []))}
-                  for c in entry['criteria']]}
+              'aggregation': entry.get('aggregation', 'sum'), 'criteria': criteria}
     if result['max_score'] != bundle['question']['max_points']:
         raise ValueError('RUBRIC_SCORE_MISMATCH')
     validate_rubric(result)
@@ -206,6 +223,83 @@ def create_execution_job(session, test_id, submission_id, question_id, *, run_pa
     return job
 
 
+def create_revision_execution_job(session, test_id, submission_id, question_id, *, run_path,
+                                  config_path, question_root=None, answer_root=None,
+                                  reference_root=None, allowed_roots=None,
+                                  visual_capability=None, prompt=None,
+                                  prompt_version=None):
+    """Create a Web grading job whose complete input comes from Submission's pin."""
+    from sqlalchemy import select
+    from .db.models import ConfirmedAuthoringRevision, StudentSubmission
+    from .grading_definition import confirmed_edition_label, confirmed_revision_for_test
+    from .revision_grading import RevisionGradingInputAssembler, immutable_asset_rows
+
+    submission = session.scalar(select(StudentSubmission).where(
+        StudentSubmission.id == submission_id).with_for_update().execution_options(populate_existing=True))
+    if submission is None or submission.test_id != test_id:
+        raise ValueError("SUBMISSION_NOT_FOUND")
+    if not submission.confirmed_authoring_revision_id:
+        raise ValueError("WEB_GRADING_REVISION_REQUIRED")
+    roots = {"question_import": question_root, "answer_import": answer_root,
+             "student_visual_answer": answer_root}
+    revision, definition = confirmed_revision_for_test(
+        session, test_id, submission.confirmed_authoring_revision_id,
+        artifact_roots=roots)
+    if revision.test_id != test_id:
+        raise ValueError("WEB_GRADING_REVISION_TEST_MISMATCH")
+    if session.get(ConfirmedAuthoringRevision, revision.id) is None:
+        raise ValueError("WEB_GRADING_REVISION_NOT_FOUND")
+    assembler = RevisionGradingInputAssembler(session, test_id, submission_id,
+        question_root=question_root, answer_root=answer_root,
+        allowed_roots=allowed_roots, visual_capability=visual_capability)
+    preview = assembler.execution_preview(submission_id, question_id)
+    row = next((value for value in preview.get("questions", [])
+                if value.get("question_id") == question_id), None)
+    if row is None or row.get("execution_state") != "READY" or not row.get("bundle"):
+        raise ValueError("GRADING_INPUT_MAPPING_BLOCKED")
+    bundle = deepcopy(row["bundle"])
+    validate_bundle(bundle)
+    execution_rubric(bundle)
+    config = json.loads(Path(config_path).read_text())
+    settings = deepcopy(config['models']['grader'])
+    generation = {**DEFAULT_GENERATION, **config.get('generation', {}), **settings.get('generation', {})}
+    for name in ('temperature', 'top_p', 'min_p', 'repeat_penalty'):
+        import math
+        if not math.isfinite(generation[name]):
+            raise ValueError('INVALID_GENERATION_CONFIG')
+    if not 0 < generation['max_output_tokens'] <= 8192:
+        raise ValueError('INVALID_OUTPUT_BUDGET')
+    snapshot = {'schema_version': SCHEMA, 'bundle': bundle,
+        'prompt': prompt or PROMPT, 'prompt_version': prompt_version or PROMPT_VERSION,
+        'model_settings': settings, 'generation': generation,
+        'confirmed_authoring_revision_id': revision.id,
+        'confirmed_snapshot_sha256': revision.snapshot_sha256,
+        'confirmed_edition_label': confirmed_edition_label(session, revision),
+        'assets': immutable_asset_rows(bundle, roots)}
+    if bundle.get('visual_assets'):
+        from .grading_visual import validate_capability
+        validate_capability(visual_capability, settings['model_id'])
+        snapshot['visual_capability'] = deepcopy(visual_capability)
+    snapshot['snapshot_sha256'] = snapshot_hash(snapshot)
+    folder = Path(run_path).resolve()
+    if folder.exists() and any(folder.iterdir()):
+        raise ValueError('RUN_PATH_NOT_EMPTY')
+    job = GradingJob(external_id=str(uuid4()), execution_mode='phased_auto',
+        assignment_path='', run_path=str(folder), config_path=str(config_path),
+        test_id=test_id, rubric_version_id=bundle['rubric']['id'], total_items=1,
+        confirmed_authoring_revision_id=submission.confirmed_authoring_revision_id,
+        metadata_json={'grading_execution': snapshot})
+    session.add(job)
+    session.flush()
+    session.add(GradingJobItem(job_id=job.id, item_key=submission.submission_key,
+        metadata_json={'question_id': question_id, 'stable_question_key': bundle['identity']['stable_question_key'],
+            'submission_id': submission_id, 'confirmed_authoring_revision_id': revision.id,
+            'confirmed_snapshot_sha256': revision.snapshot_sha256,
+            'bundle_sha256': bundle['bundle_sha256']}))
+    session.flush()
+    return job
+
+
 def snapshot_hash(snapshot):
     value = deepcopy(snapshot)
     value.pop('snapshot_sha256', None)
@@ -235,8 +329,18 @@ class GradingExecutionRunner:
         snapshot = deepcopy(job.metadata_json['grading_execution'])
         bundle = snapshot['bundle']
         validate_bundle(bundle)
+        if job.confirmed_authoring_revision_id:
+            revision_id = job.confirmed_authoring_revision_id
+            item_meta = job.items[0].metadata_json or {} if len(job.items) == 1 else {}
+            if (snapshot.get('confirmed_authoring_revision_id') != revision_id
+                    or bundle.get('identity', {}).get('confirmed_authoring_revision_id') != revision_id
+                    or item_meta.get('confirmed_authoring_revision_id') != revision_id
+                    or item_meta.get('confirmed_snapshot_sha256') != snapshot.get('confirmed_snapshot_sha256')):
+                raise ValueError('WEB_GRADING_REVISION_BINDING_MISMATCH')
+        elif bundle.get('identity', {}).get('confirmed_authoring_revision_id'):
+            raise ValueError('WEB_GRADING_REVISION_BINDING_MISMATCH')
         if (len(job.items) != 1 or job.test_id != bundle['identity']['test_id']
-                or job.rubric_version_id != bundle['rubric']['id']
+                or (not job.confirmed_authoring_revision_id and job.rubric_version_id != bundle['rubric']['id'])
                 or job.items[0].metadata_json.get('submission_id') != bundle['student_answer']['submission_id']
                 or job.items[0].metadata_json.get('question_id') != bundle['identity']['question_id']):
             raise ValueError('JOB_SNAPSHOT_IDENTITY_MISMATCH')
@@ -287,6 +391,10 @@ class GradingExecutionRunner:
             'rubric': rubric, 'reference_answer': bundle['model_answer']['content'],
             'ocr': {pid: {} for pid in answer['page_ids']},
             'grading_input_bundle_hash': bundle['bundle_sha256']}
+        if bundle['identity'].get('confirmed_authoring_revision_id'):
+            materials['stable_question_key'] = bundle['identity'].get('stable_question_key')
+            materials['accepted_answer_alternatives'] = bundle['model_answer'].get('alternatives', [])
+            materials['confirmed_edition'] = snapshot.get('confirmed_edition_label')
         if snapshot.get('prompt_version') == 'partial-credit-decision.v1':
             materials['require_level_selection'] = True
         if bundle.get('visual_assets'):

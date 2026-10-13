@@ -8,8 +8,10 @@ tests can prove the contract without starting a model.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from copy import deepcopy
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable
 from uuid import uuid4
 
@@ -104,16 +106,57 @@ def validate_reconstruction_output(value: Any, question_id: str) -> dict:
 class StudentAnswerReconstructionInputBuilder:
     """Resolve identity before OCR and build only reconstruction evidence."""
 
-    def __init__(self, session, submission_id: str, *, root: str | Path):
+    def __init__(self, session, submission_id: str, *, root: str | Path, question_root=None):
         self.session = session
         self.submission = session.get(StudentSubmission, submission_id)
         if self.submission is None:
             raise StudentAnswerError("SUBMISSION_NOT_FOUND")
         self.root = Path(root).resolve()
-        self.test_questions = list(session.scalars(select(TestQuestion).where(
-            TestQuestion.test_id == self.submission.test_id)))
-        self.questions = {q.id: q for q in self.test_questions}
-        self.resolver = QuestionIdentityResolver(self.test_questions)
+        self.revision_definition = None
+        self.revision_question_ids = None
+        if self.submission.confirmed_authoring_revision_id:
+            from .grading_definition import confirmed_revision_for_test, revision_question_identity_map
+            try:
+                _revision, self.revision_definition = confirmed_revision_for_test(
+                    session, self.submission.test_id,
+                    self.submission.confirmed_authoring_revision_id,
+                    artifact_roots={"question_import": question_root or self.root,
+                                    "answer_import": self.root})
+                self.revision_question_ids = revision_question_identity_map(
+                    session, self.submission.test_id, self.revision_definition)
+            except ValueError as exc:
+                raise StudentAnswerError(str(exc)) from exc
+            question_by_key = {q["question_key"]: q for q in self.revision_definition["questions"]}
+            self.test_questions = []
+            for key, definition in question_by_key.items():
+                parent_key = definition.get("parent_key")
+                row = session.get(TestQuestion, self.revision_question_ids[key])
+                if row is None or row.test_id != self.submission.test_id:
+                    raise StudentAnswerError("GRADING_DEFINITION_QUESTION_IDENTITY_MISSING")
+                self.test_questions.append(SimpleNamespace(
+                    id=row.id, test_id=self.submission.test_id, stable_question_key=key,
+                    question_number="", display_label=definition["label"]["raw"],
+                    sort_order=definition.get("sort_order", 0),
+                    parent_id=self.revision_question_ids.get(parent_key),
+                    is_gradable=bool(definition.get("gradable")),
+                    max_points=definition.get("max_points"),
+                    question_text=definition.get("own_text", ""),
+                    content=deepcopy(definition.get("content")),
+                    node_type="subquestion" if parent_key else "major_question"))
+            self.questions = {q.id: q for q in self.test_questions}
+            self.resolver = None
+            self.revision_questions_by_id = {
+                self.revision_question_ids[key]: value for key, value in question_by_key.items()
+            }
+        else:
+            from .db.models import Test
+            test = session.get(Test, self.submission.test_id)
+            if test and test.active_confirmed_revision_id:
+                raise StudentAnswerError("WEB_GRADING_REVISION_REQUIRED")
+            self.test_questions = list(session.scalars(select(TestQuestion).where(
+                TestQuestion.test_id == self.submission.test_id)))
+            self.questions = {q.id: q for q in self.test_questions}
+            self.resolver = QuestionIdentityResolver(self.test_questions)
         material = session.get(TestMaterial, self.submission.material_id)
         if material is None or material.test_id != self.submission.test_id:
             raise StudentAnswerError("CROSS_TEST_ANSWER_MAPPING")
@@ -136,9 +179,10 @@ class StudentAnswerReconstructionInputBuilder:
             raise
         except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
             raise StudentAnswerError("STUDENT_ANSWER_MAPPING_UNAVAILABLE") from exc
-        assets = session.scalars(select(TestQuestionAsset).join(TestQuestion).where(
-            TestQuestion.test_id == self.submission.test_id)).all()
-        self.contexts = EffectiveQuestionContextBuilder(self.test_questions, assets, root=root)
+        if self.revision_definition is None:
+            assets = session.scalars(select(TestQuestionAsset).join(TestQuestion).where(
+                TestQuestion.test_id == self.submission.test_id)).all()
+            self.contexts = EffectiveQuestionContextBuilder(self.test_questions, assets, root=root)
 
     def build(self, question_id: str) -> ReconstructionInput:
         question = self.questions.get(question_id)
@@ -147,14 +191,31 @@ class StudentAnswerReconstructionInputBuilder:
         if not question.is_gradable:
             raise StudentAnswerError("ANSWER_MAPPED_TO_STRUCTURAL_QUESTION")
         matches = []
-        for answer in self.answers:
-            resolved, method, warnings = self.resolver.resolve(answer["identity"])
-            if resolved.id == question_id:
-                matches.append((answer, method, warnings))
+        if self.revision_definition is not None:
+            from .grading_definition import resolve_revision_question_key
+            for answer in self.answers:
+                try:
+                    key = resolve_revision_question_key(self.revision_definition,
+                        self.revision_question_ids, answer["identity"])
+                except ValueError as exc:
+                    raise StudentAnswerError(str(exc)) from exc
+                if self.revision_question_ids[key] == question_id:
+                    matches.append((answer, "pinned_revision_identity", []))
+        else:
+            for answer in self.answers:
+                resolved, method, warnings = self.resolver.resolve(answer["identity"])
+                if resolved.id == question_id:
+                    matches.append((answer, method, warnings))
         if len(matches) != 1:
             raise StudentAnswerError("DUPLICATE_STUDENT_ANSWER" if len(matches) > 1 else "MISSING_STUDENT_ANSWER")
         answer, method, warnings = matches[0]
-        context = _without_grading_fields(self.contexts.build(question_id))
+        if self.revision_definition is not None:
+            definition = self.revision_questions_by_id[question_id]
+            context = _without_grading_fields(deepcopy(definition["context"]))
+            stable_key = definition["question_key"]
+        else:
+            context = _without_grading_fields(self.contexts.build(question_id))
+            stable_key = question.stable_question_key
         source = {
             "submission_id": self.submission.id,
             "submission_key": self.submission.submission_key,
@@ -168,7 +229,7 @@ class StudentAnswerReconstructionInputBuilder:
         }
         return ReconstructionInput(
             question={"test_id": question.test_id, "question_id": question.id,
-                      "stable_question_key": question.stable_question_key,
+                      "stable_question_key": stable_key,
                       "context": context, "context_sha256": context["context_sha256"]},
             source_answer=source,
             ricoh_evidence=[], formula_evidence=[],
@@ -178,13 +239,15 @@ class StudentAnswerReconstructionInputBuilder:
 class StudentAnswerExtractionPipeline:
     """Run injected observation/reconstruction stages and persist append-only records."""
 
-    def __init__(self, session, *, artifact_root: str | Path):
+    def __init__(self, session, *, artifact_root: str | Path, question_root=None):
         self.session = session
         self.root = Path(artifact_root).resolve()
+        self.question_root = Path(question_root).resolve() if question_root else self.root
 
     def run(self, submission_id: str, *, ricoh: Callable, unimumer: Callable,
             ornith_reconstruction: Callable, config: dict | None = None):
-        builder = StudentAnswerReconstructionInputBuilder(self.session, submission_id, root=self.root)
+        builder = StudentAnswerReconstructionInputBuilder(
+            self.session, submission_id, root=self.root, question_root=self.question_root)
         source_sha = sha256_file(builder.source)
         config = config or {}
         config_sha = canonical_hash(config)
@@ -349,26 +412,83 @@ class SelectedImageStudentAnswerReconstruction:
 
     def run(self, submission_id: str, question_id: str, *, ricoh: Callable,
             unimumer: Callable, ornith_reconstruction: Callable,
-            config: dict | None = None):
+            config: dict | None = None, page_id: str | None = None):
         submission = self.session.get(StudentSubmission, submission_id)
         if submission is None:
             raise StudentAnswerError("SUBMISSION_NOT_FOUND")
         question = self.session.get(TestQuestion, question_id)
         if question is None or question.test_id != submission.test_id:
             raise StudentAnswerError("QUESTION_MAPPING_NOT_FOUND")
-        if not question.is_gradable:
-            raise StudentAnswerError("ANSWER_MAPPED_TO_STRUCTURAL_QUESTION")
+        stable_key = question.stable_question_key
+        frozen_context = None
+        if submission.confirmed_authoring_revision_id:
+            from .grading_definition import confirmed_revision_for_test, revision_question_identity_map
+            try:
+                _revision, definition = confirmed_revision_for_test(
+                    self.session, submission.test_id, submission.confirmed_authoring_revision_id,
+                    artifact_roots={"question_import": self.question_root,
+                                    "answer_import": self.root})
+                ids = revision_question_identity_map(self.session, submission.test_id, definition)
+            except ValueError as exc:
+                raise StudentAnswerError(str(exc)) from exc
+            stable_key = next((key for key, value in ids.items() if value == question_id), None)
+            frozen_question = next((value for value in definition["questions"]
+                                    if value["question_key"] == stable_key), None)
+            if frozen_question is None:
+                raise StudentAnswerError("QUESTION_MAPPING_NOT_FOUND")
+            if not frozen_question.get("gradable"):
+                raise StudentAnswerError("ANSWER_MAPPED_TO_STRUCTURAL_QUESTION")
+            frozen_context = frozen_question["context"]
+        else:
+            from .db.models import Test
+            test = self.session.get(Test, submission.test_id)
+            if test and test.active_confirmed_revision_id:
+                raise StudentAnswerError("WEB_GRADING_REVISION_REQUIRED")
+            if not question.is_gradable:
+                raise StudentAnswerError("ANSWER_MAPPED_TO_STRUCTURAL_QUESTION")
         material = self.session.get(TestMaterial, submission.material_id)
         if material is None or material.test_id != submission.test_id:
             raise StudentAnswerError("CROSS_TEST_ANSWER_MAPPING")
         source = Path(material.storage_ref).resolve()
         if not source.is_relative_to(self.root) or not source.is_file():
             raise StudentAnswerError("SOURCE_ANSWER_UNAVAILABLE")
-        if source.suffix.lower() not in {".png", ".jpg", ".jpeg"}:
-            raise StudentAnswerError("STUDENT_ANSWER_SOURCE_UNSUPPORTED")
-        source_sha = sha256_file(source)
-        if material.sha256 and source_sha != material.sha256:
-            raise StudentAnswerError("SOURCE_ANSWER_HASH_MISMATCH")
+        if source.suffix.lower() == ".json":
+            if material.sha256 and sha256_file(source) != material.sha256:
+                raise StudentAnswerError("SOURCE_ANSWER_HASH_MISMATCH")
+            try:
+                manifest = json.loads(source.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError) as exc:
+                raise StudentAnswerError("STUDENT_ANSWER_MAPPING_UNAVAILABLE") from exc
+            if (manifest.get("registration_only") is not True
+                    or manifest.get("test_id") != submission.test_id
+                    or manifest.get("student_id") != submission.student_id
+                    or manifest.get("submission_id") != submission.submission_key):
+                raise StudentAnswerError("STUDENT_ANSWER_MAPPING_UNAVAILABLE")
+            pages = manifest.get("pages")
+            if not isinstance(pages, list) or not pages:
+                raise StudentAnswerError("STUDENT_ANSWER_MAPPING_UNAVAILABLE")
+            matches = [page for page in pages if page.get("page_id") == page_id] if page_id else pages
+            if len(matches) != 1:
+                raise StudentAnswerError("STUDENT_ANSWER_PAGE_SELECTION_REQUIRED")
+            selected_page = matches[0]
+            page_id = selected_page.get("page_id")
+            page_name = selected_page.get("image")
+            if (not isinstance(page_name, str) or Path(page_name).name != page_name
+                    or Path(page_name).suffix.lower() not in {".png", ".jpg", ".jpeg"}):
+                raise StudentAnswerError("STUDENT_ANSWER_MAPPING_UNAVAILABLE")
+            source = (source.parent / page_name).resolve()
+            if not source.is_relative_to(self.root) or not source.is_file():
+                raise StudentAnswerError("SOURCE_ANSWER_UNAVAILABLE")
+            source_sha = sha256_file(source)
+            if source_sha != selected_page.get("sha256"):
+                raise StudentAnswerError("SOURCE_ANSWER_HASH_MISMATCH")
+        else:
+            if source.suffix.lower() not in {".png", ".jpg", ".jpeg"}:
+                raise StudentAnswerError("STUDENT_ANSWER_SOURCE_UNSUPPORTED")
+            source_sha = sha256_file(source)
+            if material.sha256 and source_sha != material.sha256:
+                raise StudentAnswerError("SOURCE_ANSWER_HASH_MISMATCH")
+            page_id = page_id or f"submission-source-{source_sha[:16]}"
         config = config or {}
         if config.get('protect_selected'):
             selected = self.session.scalar(select(StudentAnswerReconstruction).join(
@@ -397,15 +517,17 @@ class SelectedImageStudentAnswerReconstruction:
                 if path.is_file():
                     return existing, json.loads(path.read_text(encoding="utf-8"))
 
-        assets = self.session.scalars(select(TestQuestionAsset).join(TestQuestion).where(
-            TestQuestion.test_id == submission.test_id)).all()
-        contexts = EffectiveQuestionContextBuilder(
-            list(self.session.scalars(select(TestQuestion).where(
-                TestQuestion.test_id == submission.test_id))), assets, root=self.question_root)
-        context = _without_grading_fields(contexts.build(question_id))
-        page_id = f"submission-source-{source_sha[:16]}"
+        if frozen_context is not None:
+            context = _without_grading_fields(deepcopy(frozen_context))
+        else:
+            assets = self.session.scalars(select(TestQuestionAsset).join(TestQuestion).where(
+                TestQuestion.test_id == submission.test_id)).all()
+            contexts = EffectiveQuestionContextBuilder(
+                list(self.session.scalars(select(TestQuestion).where(
+                    TestQuestion.test_id == submission.test_id))), assets, root=self.question_root)
+            context = _without_grading_fields(contexts.build(question_id))
         page = {"page_id": page_id, "sha256": source_sha,
-                "mime_type": material.mime_type or "image/png"}
+                "mime_type": "image/png" if source.suffix.lower() == ".png" else "image/jpeg"}
         source_answer = {
             "submission_id": submission.id,
             "submission_key": submission.submission_key,
@@ -418,9 +540,9 @@ class SelectedImageStudentAnswerReconstruction:
             "source_sha256": source_sha,
         }
         question_payload = {
-            "test_id": question.test_id,
+            "test_id": submission.test_id,
             "question_id": question.id,
-            "stable_question_key": question.stable_question_key,
+            "stable_question_key": stable_key,
             "context": context,
             "context_sha256": context["context_sha256"],
         }

@@ -25,7 +25,7 @@ class ReconstructionRunRequest(BaseModel):
     execute: bool = False
 
 
-def router(db, artifact_root):
+def router(db, artifact_root, question_root=None):
     r = APIRouter(prefix="/api/v1")
 
     def submission_or_404(test_id, submission_id, session):
@@ -42,7 +42,7 @@ def router(db, artifact_root):
             raise HTTPException(404, "question_not_found")
         try:
             return StudentAnswerReconstructionInputBuilder(
-                s, submission_id, root=artifact_root).build(question_id).as_dict()
+                s, submission_id, root=artifact_root, question_root=question_root).build(question_id).as_dict()
         except StudentAnswerError as exc:
             raise HTTPException(409, {"error": {"code": exc.code, "message": str(exc)}})
 
@@ -61,7 +61,8 @@ def router(db, artifact_root):
     def answer_artifact(test_id, submission_id, page_id, s=Depends(db)):
         submission_or_404(test_id, submission_id, s)
         try:
-            builder = StudentAnswerReconstructionInputBuilder(s, submission_id, root=artifact_root)
+            builder = StudentAnswerReconstructionInputBuilder(s, submission_id, root=artifact_root,
+                                                               question_root=question_root)
             document = json.loads(builder.source.read_text(encoding="utf-8"))
             page = next((v for v in document.get("pages", []) if v.get("page_id") == page_id), None)
             if page is None:
@@ -104,7 +105,8 @@ def router(db, artifact_root):
                 return {"submission_id": submission_id, "source_sha256": material.sha256,
                         "page_count": 1, "pages": [{"page_id": "source", "sha256": material.sha256,
                         "mime_type": material.mime_type or "image/png"}]}
-            builder = StudentAnswerReconstructionInputBuilder(s, submission_id, root=artifact_root)
+            builder = StudentAnswerReconstructionInputBuilder(s, submission_id, root=artifact_root,
+                                                               question_root=question_root)
             document = json.loads(builder.source.read_text(encoding="utf-8"))
             pages = []
             for page in document.get("pages", []):

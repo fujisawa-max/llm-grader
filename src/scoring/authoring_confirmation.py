@@ -66,9 +66,13 @@ def prevent_mutating_confirmed_formal_state(session, _flush_context, _instances)
     """Keep the mutable legacy grading projection aligned with its active pin."""
     if session.info.get("authoring_confirmation_projection"):
         return
-    from .db.models import Test, TestQuestionAsset, TestQuestionCorrection, ConfirmedAuthoringRevision
+    from .db.models import (Test, TestQuestionAsset, TestQuestionCorrection,
+        ConfirmedAuthoringRevision, StudentSubmission, GradingJob)
     if any(isinstance(obj, ConfirmedAuthoringRevision) for obj in (*session.dirty, *session.deleted)):
         raise ValueError("CONFIRMED_AUTHORING_REVISION_IMMUTABLE")
+    for obj in session.dirty:
+        if isinstance(obj, (StudentSubmission, GradingJob)) and sa_inspect(obj).attrs.confirmed_authoring_revision_id.history.has_changes():
+            raise ValueError("CONFIRMED_AUTHORING_REVISION_BINDING_IMMUTABLE")
     test_ids = set()
     for obj in (*session.new, *session.dirty, *session.deleted):
         if isinstance(obj, Test):
@@ -91,15 +95,21 @@ def prevent_mutating_confirmed_formal_state(session, _flush_context, _instances)
             raise ValueError("TEST_CONFIRMED_REVISION_READ_ONLY")
 
 
-def project_confirmed_snapshot(session, test, snapshot, actor_id):
+def project_confirmed_snapshot(session, test, snapshot, actor_id, *, authoring_revision_id=None,
+                               artifact_roots=None):
     """Project the exact reviewed snapshot into legacy grading tables.
 
-    Existing graded/submitted Tests are deliberately rejected: the legacy
-    grading pipeline reads mutable formal rows and cannot select a historical
-    whole-Test revision. This prevents confirmation from rewriting history.
+    Tests with a complete pinned history may be reprojected because Web grading
+    resolves its policy from the immutable Submission revision. Legacy/unbound
+    history remains protected by the activation fail-safe.
     """
-    if (session.scalar(select(func.count()).select_from(StudentSubmission).where(StudentSubmission.test_id == test.id))
-            or session.scalar(select(func.count()).select_from(GradingJob).where(GradingJob.test_id == test.id))):
+    from .grading_definition import revision_safe_grading_history
+    has_history = bool(
+        session.scalar(select(func.count()).select_from(StudentSubmission).where(StudentSubmission.test_id == test.id))
+        or session.scalar(select(func.count()).select_from(GradingJob).where(GradingJob.test_id == test.id))
+    )
+    if has_history and not revision_safe_grading_history(
+            session, test.id, artifact_roots=artifact_roots):
         raise ValueError("AUTHORING_HISTORICAL_GRADING_BASIS_UNSUPPORTED")
 
     existing = list(session.scalars(select(TestQuestion).where(TestQuestion.test_id == test.id)))
@@ -187,7 +197,8 @@ def project_confirmed_snapshot(session, test, snapshot, actor_id):
         RubricVersion.test_id == test.id, RubricVersion.status == "approved").values(status="superseded"))
     version = (session.scalar(select(func.max(RubricVersion.version)).where(RubricVersion.test_id == test.id)) or 0) + 1
     session.add(RubricVersion(test_id=test.id, version=version, status="approved", source_type="authoring_confirmation",
-        rubric_json=rubric_json, rubric_text=None, generation_metadata={"authoring_stable_keys": list(keys)},
+        rubric_json=rubric_json, rubric_text=None, generation_metadata={"authoring_stable_keys": list(keys),
+            **({"authoring_revision_id": authoring_revision_id} if authoring_revision_id else {})},
         approved_at=__import__("scoring.db.models", fromlist=["now"]).now(), approved_by_user_id=actor_id))
     test.name = snapshot["metadata"]["name"]
     test.description = snapshot["metadata"].get("description") or None
