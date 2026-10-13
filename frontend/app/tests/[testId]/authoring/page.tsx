@@ -23,6 +23,7 @@ import {reviewFieldId} from "@/lib/reviewValidation";
 import {scrollReviewContent,reviewWarningId} from "@/lib/reviewIssues";
 import {localId} from "@/lib/localId";
 import {editQuestionContent, questionContent} from "@/lib/questionContent";
+import {AuthoringFigure} from "@/components/reviews/AuthoringFigure";
 import {DiagramReview, type DiagramSelection} from "@/components/reviews/DiagramReview";
 import {suggestSubquestions, splitQuestionAtCaret, splitQuestionRanges, mapCandidateToSources, type SplitProposal} from "@/lib/questionSplit";
 import {applyQuestionSplit,reviewQuestionSplit,splitDuplicate} from "@/lib/questionSplitApply";
@@ -214,8 +215,10 @@ export default function TestAuthoringPage() {
         const details=target?.querySelector<HTMLDetailsElement>('[data-authoring-classification]');if(details){details.open=true;target=details;}
       }
       if(issue.field==="diagram"){
+        const figure=target?.querySelector<HTMLDetailsElement>("[data-authoring-figure-operations]");if(figure)figure.open=true;
         const card=Array.from(target?.querySelectorAll<HTMLElement>('[data-diagram-id]')||[]).find(element=>element.dataset.diagramId===issue.diagram_id);
         target=card||target?.querySelector<HTMLElement>('.diagram-review')||target;
+        if(target)for(let parent=target.parentElement;parent;parent=parent.parentElement)if(parent instanceof HTMLDetailsElement)parent.open=true;
       }
       if(issue.field==="levels"||issue.field==="points"){
         const levels=target?.querySelector<HTMLDetailsElement>('details[aria-label="得点段階"]');
@@ -628,12 +631,12 @@ export default function TestAuthoringPage() {
             onCaret={offset=>{questionCaret.current=offset;}} onContentChange={(text,proposal,manual=!proposal)=>{setSplitProposal(null);markDirty();setDirtyDomains(d=>({...d,question:true}));setBuffers(current=>({...current,[selected]:text}));setManualQuestionText(current=>{const next={...current};if(manual)next[selected]=text;else delete next[selected];return next;});if(proposal?.apply_provenance)updateNode({...node,math_ocr_edits:[...(node.math_ocr_edits||[]),proposal.apply_provenance].slice(-16)});}}
             onConfirmContent={confirm=>{const next=editQuestionContent(node,regions,buffers[selected]??node.body_text);if(next)updateNode(confirm(next));else setError("問題文と元資料の対応を確認してください。");}} onChange={updateNode}
             onParent={parent=>reparentNode(node,parent)} onMove={direction=>moveNode(node,direction)} onRegion={setRegionId}/>
-          <div hidden={questionSettings}><AcceptedDiagramPreview records={questionStale?[]:node.diagram_records} path={questionDomain?`/tests/${id}/authoring/nodes/${selected}/diagrams`:undefined}/>
+          <div hidden={questionSettings}><AuthoringFigure reviewRequired={issues.some(issue=>issue.question_key===selected&&issue.section==="question"&&["diagram","figure"].includes(issue.field||""))} scopeKey={selected} records={node.diagram_records} sourceStale={questionStale} path={questionDomain?`/tests/${id}/authoring/nodes/${selected}/diagrams`:undefined}>
           {questionDomain&&revision&&<DiagramReview path={`/tests/${id}/authoring/nodes/${selected}/diagrams`} revision={revision.edit_version}
             records={node.diagram_records} sourceStale={questionStale} disabled={readonly||saving||analyzing} label="図の確認" onSelect={setDiagramSelection}
             onChange={records=>{markDirty();setDirtyDomains(d=>({...d,diagram:true}));setSnapshot(current=>current?{...current,nodes:current.nodes.map(n=>{if(n.stable_key!==node.stable_key)return n;const decisions={...n.figure_decisions};for(const record of records)for(const rid of record.legacy_region_ids||(record.legacy_region_id?[record.legacy_region_id]:[]))decisions[rid]={decision:record.state==="accepted"?"accepted_as_evidence":record.state==="excluded"?"excluded":"unreviewed"};return {...n,diagram_records:records,figure_decisions:decisions};})}:current);}}/>}
 
-          </div>
+          </AuthoringFigure></div>
         </div>
           {questionDomain&&questionWarnings.length>0&&<WarningPanel quickAcknowledge warnings={questionWarnings} targetLabel={()=>pathFor(selected)} states={questionDomain.snapshot.warning_states||{}} readonly={readonly||saving||analyzing} confirmed={readonly}
             onChange={(key,resolution)=>change({...snapshot,domains:{...snapshot.domains,question:{...questionDomain,snapshot:{...questionDomain.snapshot,warning_states:{...questionDomain.snapshot.warning_states,[key]:resolution}}}}})}/>}
@@ -642,7 +645,7 @@ export default function TestAuthoringPage() {
           {snapshot.domains?.answer&&revision?<AuthoringCandidates key={`answer:${snapshot.domains.answer.draft_id}`} testId={id} draftId={snapshot.domains.answer.draft_id} revision={revision.edit_version} questionKey={selected}
             staleSourceDraftIds={staleAnswerSourceDraftIds} entries={snapshot.domains.answer.entries as AuthoringEntry[]} savedEntries={(revision.snapshot.domains?.answer?.entries||[]) as AuthoringEntry[]} disabled={readonly||saving||analyzing}
             answerEditing={editing.answer} rubricEditing={false} onAnswerEditing={value=>setEditing(v=>({...v,answer:value}))} onRubricEditing={()=>{}}
-            compactAnswer showAnswer showRubric={false} questions={orderedNodes().map(n=>({key:n.stable_key,parentKey:n.parent_key,label:pathFor(n.stable_key),gradable:!nodes.some(c=>c.included&&c.parent_key===n.stable_key),sourceId:snapshot.source_provenance.authoring_origins?.identities[n.stable_key]?.formal_question_id||n.stable_key}))}
+            compactAnswer figureReviewEntryIds={issues.filter(issue=>issue.section==="answer"&&issue.field==="diagram"&&issue.entry_id).map(issue=>issue.entry_id!)} showAnswer showRubric={false} questions={orderedNodes().map(n=>({key:n.stable_key,parentKey:n.parent_key,label:pathFor(n.stable_key),gradable:!nodes.some(c=>c.included&&c.parent_key===n.stable_key),sourceId:snapshot.source_provenance.authoring_origins?.identities[n.stable_key]?.formal_question_id||n.stable_key}))}
             onSelect={selection=>{if(selection.record.source_type==="manual_pdf_crop"&&selection.record.material_id){setMaterialId(String(selection.record.material_id));setSourceMode("pdf");}setDiagramSelection(selection);}} onChange={entries=>{
               const answerDomain=snapshot.domains?.answer;
               if(!answerDomain)return;
@@ -653,7 +656,7 @@ export default function TestAuthoringPage() {
                 answers[key]={primary:primary?.answer_text||"",alternatives:current.flatMap(e=>[...(e.answer_kind==="alternative"?[e.answer_text]:[]),...(e.manual_alternative_answers||e.semantic_classification?.manual_alternative_answers||e.semantic_classification?.alternative_answers||[]).map(a=>a.text)]),diagram_records:primary?.diagram_records||[]};
               }
               change({...snapshot,domains:{...snapshot.domains,answer:{...answerDomain,entries}},answers},"answer");
-            }}/>:<><CompactModelAnswerText key={`${revision?.id}:${selected}`} label="模範解答1" addLabel="模範解答を追加" text={answer.primary} alternatives={answer.alternatives.map((text,index)=>({id:`legacy-alternative-${index}`,text}))} disabled={readonly||saving||analyzing} onText={text=>change({...snapshot,answers:{...snapshot.answers,[selected]:{...answer,primary:text}}},"answer")} onAlternatives={values=>change({...snapshot,answers:{...snapshot.answers,[selected]:{...answer,alternatives:values.map(a=>a.text)}}},"answer")}/><AcceptedDiagramPreview records={answer.diagram_records}/></>}
+            }}/>:<><CompactModelAnswerText key={`${revision?.id}:${selected}`} label="模範解答1" addLabel="模範解答を追加" text={answer.primary} alternatives={answer.alternatives.map((text,index)=>({id:`legacy-alternative-${index}`,text}))} disabled={readonly||saving||analyzing} onText={text=>change({...snapshot,answers:{...snapshot.answers,[selected]:{...answer,primary:text}}},"answer")} onAlternatives={values=>change({...snapshot,answers:{...snapshot.answers,[selected]:{...answer,alternatives:values.map(a=>a.text)}}},"answer")}/><AuthoringFigure reviewRequired={issues.some(issue=>issue.question_key===selected&&issue.section==="answer"&&issue.field==="diagram")} scopeKey={selected} records={answer.diagram_records}/></>}
 
         </section>}
         {visible.rubric&&<section id="authoring-rubric" tabIndex={-1} aria-label="採点基準"><h2>採点基準</h2>

@@ -69,7 +69,7 @@ export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange
   const errors = (key: string) => fieldIssues(key).map((issue, index) => <small key={index} className="review-field-error" role="alert">{issue}</small>);
   const needsCheck = (key: string) => fieldIssues(key).length ? <span className="review-required">要確認</span> : null;
   return <article className={`panel review-field-target${compact?" compact-question-node":""}`} id={reviewFieldId(node.stable_key, "node")} aria-label="選択問題エディタ">
-    <h3>{node.label.raw || "名称未設定の設問"} {(modified || contentChanged) && <span className="badge badge-rubric_review">自動解析から変更あり</span>}</h3>
+    {!compact&&<h3>{node.label.raw || "名称未設定の設問"} {(modified || contentChanged) && <span className="badge badge-rubric_review">自動解析から変更あり</span>}</h3>}
     {errors("node")}
     <fieldset disabled={readonly} className="review-fields"><legend>設問の編集</legend>
       <div className="review-node-mode" style={editorMode==="all"?{display:"contents"}:undefined} hidden={editorMode==="body"}><label id={reviewFieldId(node.stable_key, "label")} className={fieldIssues("label").length ? "review-field-target has-error" : "review-field-target"}>設問番号・見出し <span className="review-required" aria-label="必須">*</span>{needsCheck("label")}<input maxLength={200} value={node.label.raw} aria-invalid={!!fieldIssues("label").length} onChange={e => onChange({ ...node, label: { raw: e.target.value, normalized: e.target.value } })} />{errors("label")}</label>

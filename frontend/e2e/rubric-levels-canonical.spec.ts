@@ -39,7 +39,7 @@ test("compact Rubric editor uses local dialogs and keeps score levels canonical"
   await editAnswerText(page,"x = 1");
   await page.getByRole("checkbox",{name:"採点基準",exact:true}).check();
   await page.getByRole("button",{name:"基準を追加",exact:true}).click();
-  const rubric=page.getByRole("region",{name:"採点基準候補",exact:true});
+  const rubric=page.getByRole("region",{name:"採点基準の一覧",exact:true});
   const criterion=rubric.locator(".compact-rubric-criterion").first();
   await expect(criterion.getByRole("button",{name:"編集",exact:true})).toBeVisible();
   await expect(rubric.getByLabel("基準1の配点",{exact:true})).toHaveCount(0);
@@ -90,7 +90,7 @@ test("compact Rubric editor uses local dialogs and keeps score levels canonical"
   expect(removedCriterion.points).toBe(5);
   expect(Math.max(...removedCriterion.levels!.map((level:{score:number|null})=>level.score||0))).toBe(5);
   await page.reload();
-  await expect(page.getByRole("region",{name:"採点基準候補",exact:true}).locator(".compact-rubric-criterion").first().locator('details[aria-label="得点段階"] summary')).toContainText("最高点: 5点");
+  await expect(page.getByRole("region",{name:"採点基準の一覧",exact:true}).locator(".compact-rubric-criterion").first().locator('details[aria-label="得点段階"] summary')).toContainText("最高点: 5点");
   await page.getByRole("button",{name:"最終確認へ",exact:true}).click();
   await expect(page.getByRole("button",{name:"この内容でテストを確定",exact:true})).toBeDisabled();
   const rubricIssue=page.locator(".authoring-issue-cards article").filter({hasText:"得点段階"}).first();
@@ -100,7 +100,7 @@ test("compact Rubric editor uses local dialogs and keeps score levels canonical"
   const selector=page.getByLabel("対象設問",{exact:true});
   await expect(selector).toHaveValue((await(await page.request.get(base+"/authoring")).json()).revision.snapshot.nodes[0].stable_key);
   await page.getByRole("checkbox",{name:"採点基準",exact:true}).check();
-  const addHighest=page.getByRole("region",{name:"採点基準候補",exact:true}).locator(".compact-rubric-criterion").first().locator('details[aria-label="得点段階"]');
+  const addHighest=page.getByRole("region",{name:"採点基準の一覧",exact:true}).locator(".compact-rubric-criterion").first().locator('details[aria-label="得点段階"]');
   await expect(addHighest).toHaveAttribute("open","");
   await expect(addHighest.locator("summary")).toHaveAttribute("aria-expanded","true");
   await addHighest.getByRole("button",{name:/得点段階を追加/}).click();

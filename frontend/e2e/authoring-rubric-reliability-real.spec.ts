@@ -16,7 +16,7 @@ test("compact authoring criteria split at the cursor, undo merge, and survive Sa
  const errors:string[]=[];page.on("pageerror",e=>errors.push(e.message));page.on("console",e=>{if(e.type()==="error"&&!e.text().includes("503 (Service Unavailable)"))errors.push(e.text());});
  const seed=await(await page.request.get(`/api/v1/tests/${process.env.MODEL_ANSWER_CLASSIFICATION_TEST_ID}`)).json();const created=await page.request.post(`/api/v1/offerings/${seed.course_offering_id}/tests`,{data:{name:"Rubric reliability "+Date.now(),total_points:10}});expect(created.status()).toBe(201);const tid=(await created.json()).id,base=`/api/v1/tests/${tid}/authoring`;
  await page.goto(`/tests/${tid}/authoring`);await page.getByRole("button",{name:"設問を追加",exact:true}).click();await page.getByRole("button",{name:"保存",exact:true}).first().click();await expect(page.getByText("未保存の変更があります",{exact:true})).toHaveCount(0);
- await page.getByRole("checkbox",{name:"採点基準",exact:true}).check();const rubric=page.getByRole("region",{name:"採点基準候補",exact:true});await rubric.getByRole("button",{name:"基準を追加",exact:true}).click();
+ await page.getByRole("checkbox",{name:"採点基準",exact:true}).check();const rubric=page.getByRole("region",{name:"採点基準の一覧",exact:true});await rubric.getByRole("button",{name:"基準を追加",exact:true}).click();
  const cards=()=>rubric.locator(".compact-rubric-criterion"),card=()=>cards().first();
  await card().locator(".compact-rubric-criterion-header").getByRole("button",{name:"編集",exact:true}).click();let dialog=page.getByRole("dialog",{name:"採点基準本文"});await dialog.getByLabel("採点基準本文").fill("First condition. Second condition.");await dialog.getByRole("button",{name:"完了",exact:true}).click();
  const levels=card().locator('details[aria-label="得点段階"]');await levels.locator("summary").click();await levels.locator("tbody tr").nth(1).getByRole("button",{name:"編集",exact:true}).click();dialog=page.getByRole("dialog",{name:"得点段階を編集"});await dialog.getByLabel("点数").fill("10");await dialog.getByLabel("条件").fill("Full credit");await dialog.getByRole("button",{name:"完了",exact:true}).click();
@@ -51,7 +51,7 @@ test("middle Japanese criterion proposal is immediately visible, keyboard-safe a
  const seed=await(await page.request.get(`/api/v1/tests/${process.env.MODEL_ANSWER_CLASSIFICATION_TEST_ID}`)).json();const created=await page.request.post(`/api/v1/offerings/${seed.course_offering_id}/tests`,{data:{name:"Middle criterion dialog",total_points:10}});const tid=(await created.json()).id,base=`/api/v1/tests/${tid}/authoring`;
  await page.goto(`/tests/${tid}/authoring`);await page.getByRole("button",{name:"設問を追加",exact:true}).click();
  await saveAuthoring(page);
- await page.getByRole("checkbox",{name:"採点基準",exact:true}).check();const rubric=page.getByRole("region",{name:"採点基準候補",exact:true});
+ await page.getByRole("checkbox",{name:"採点基準",exact:true}).check();const rubric=page.getByRole("region",{name:"採点基準の一覧",exact:true});
  const first="過学習の説明：学習データに過度に適合する状態であることが説明されている。",second="未知データ・テストデータでは性能が低下することが説明されている。";
  for(const text of ["任意の別基準",first+second,"末尾の別基準"]){await rubric.getByRole("button",{name:"基準を追加",exact:true}).click();const card=rubric.locator(".compact-rubric-criterion").last();await card.locator(".compact-rubric-criterion-header").getByRole("button",{name:"編集",exact:true}).click();const edit=page.getByRole("dialog",{name:"採点基準本文"});await edit.getByLabel("採点基準本文").fill(text);await edit.getByRole("button",{name:"完了",exact:true}).click();}
  await saveAuthoring(page);await page.setViewportSize({width:1000,height:560});

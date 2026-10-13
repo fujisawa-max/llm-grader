@@ -2,6 +2,7 @@ import type {Page,Locator} from "@playwright/test";
 /** Editing regressions explicitly enter the authoring screen's default previews. */
 export async function openAuthoringEditors(page:Page){
   await page.locator("#authoring-answer").waitFor();
+  await page.locator("[data-authoring-figure-operations]").evaluateAll(els=>els.forEach(el=>(el as HTMLDetailsElement).open=true));
   await page.locator("[data-answer-operations]").evaluateAll(els=>els.forEach(el=>(el as HTMLDetailsElement).open=true));
   const buttons=page.locator(".authoring-preview-editor").getByRole("button",{name:/^(編集する|本文編集)$/});
   while(await buttons.count())await buttons.first().click();
