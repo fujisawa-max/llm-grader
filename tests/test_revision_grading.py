@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import fitz
@@ -29,6 +30,10 @@ from scoring.grading_execution import GradingExecutionRunner, execution_rubric, 
 from scoring.pdf_native import canonical_hash, sha256_file
 from scoring.db.worker import JobWorker
 from tests.test_test_authoring import base, begin, workspace as authoring_workspace
+from tests.synthetic_validation import (
+    IsolatedSyntheticValidationWorker,
+    create_synthetic_validation_job,
+)
 
 
 @pytest.fixture
@@ -687,3 +692,319 @@ def test_worker_rejects_rehashed_bundle_that_disagrees_with_pinned_revision(work
     with pytest.raises(ValueError, match="WEB_GRADING_REVISION_BUNDLE_MISMATCH"):
         worker.run_once(job.id)
     assert requests == []
+
+
+def test_isolated_synthetic_execution_review_and_finalize_never_touch_runtime(
+        workspace, tmp_path, monkeypatch):
+    """Run the real JobWorker/review/finalize path inside a separate test DB."""
+    from fastapi.testclient import TestClient
+    from scoring.db.models import DomainEvent, Test as TestRow
+    from scoring.grading_execution import GradingClient, RuntimeManagerClient
+    w = workspace
+    validation_db = Path(w.engine.url.database)
+    normal_root = tmp_path / "normal-worker-db"
+    normal_root.mkdir()
+    normal_generator = authoring_workspace.__wrapped__(normal_root)
+    normal = next(normal_generator)
+    normal_job_id = None
+    try:
+        # Edition A and S1 are created first. S1 deliberately receives its Job
+        # only after edition B is active, exercising delayed-job binding.
+        edition_a_working = set_edition_values(
+            w, begin(w), question_text="Question edition A",
+            answer_text="ModelAnswer edition A", levels=[
+                {"score": 0, "condition": "A: no credit"},
+                {"score": 10, "condition": "A: full credit"},
+            ])
+        response_a = confirm(w, edition_a_working)
+        assert response_a.status_code == 200, response_a.text
+        edition_a = response_a.json()
+        submission_a = create_submission(w, tmp_path, "ISOLATED-SYNTHETIC-A")
+        assert submission_a["confirmed_authoring_revision_id"] == edition_a["id"]
+
+        revised = w.client.post(base(w) + "/authoring/revisions", json={
+            "confirmed_revision_id": edition_a["id"],
+        })
+        assert revised.status_code == 200, revised.text
+        edition_b_working = set_edition_values(
+            w, revised.json(), question_text="Question edition B",
+            answer_text="ModelAnswer edition B", levels=[
+                {"score": 0, "condition": "B: no credit"},
+                {"score": 5, "condition": "B: partial credit"},
+                {"score": 10, "condition": "B: full credit"},
+            ])
+        response_b = confirm(w, edition_b_working)
+        assert response_b.status_code == 200, response_b.text
+        edition_b = response_b.json()
+        submission_b = create_submission(w, tmp_path, "ISOLATED-SYNTHETIC-B")
+        assert submission_b["confirmed_authoring_revision_id"] == edition_b["id"]
+        assert edition_a["id"] != edition_b["id"]
+
+        answer_a = "Synthetic validation answer for edition A"
+        answer_b = "Synthetic validation answer for edition B"
+        preview_a = preview_package(w, submission_a, w.question,
+                                    synthetic_answer_text=answer_a)
+        preview_b = preview_package(w, submission_b, w.question,
+                                    synthetic_answer_text=answer_b)
+        assert preview_a.status_code == preview_b.status_code == 200
+
+        # Deliberately drift mutable formal projections after both confirmations.
+        # Package creation and review must continue to use the sealed editions.
+        with w.sf() as session:
+            session.execute(update(FormalQuestion).where(
+                FormalQuestion.id == w.question).values(question_text="MUTABLE QUESTION DRIFT"))
+            session.execute(update(ModelAnswer).where(
+                ModelAnswer.test_id == w.legacy).values(answer_text="MUTABLE ANSWER DRIFT"))
+            rubric = session.scalar(select(RubricVersion).where(
+                RubricVersion.test_id == w.legacy).order_by(RubricVersion.version.desc()))
+            changed = deepcopy(rubric.rubric_json)
+            changed["questions"][0]["criteria"][0]["levels"] = [
+                {"score": 0, "condition": "mutable zero"},
+                {"score": 2, "condition": "mutable partial"},
+                {"score": 10, "condition": "mutable full"},
+            ]
+            session.execute(update(RubricVersion).where(
+                RubricVersion.id == rubric.id).values(rubric_json=changed))
+            assert session.scalar(select(func.count()).select_from(GradingJob)) == 0
+            job_a, package_a = create_synthetic_validation_job(
+                session, disposable_root=tmp_path, validation_database_path=validation_db,
+                allowlisted_test_id=w.legacy,
+                test_id=w.legacy, submission_id=submission_a["id"],
+                question_id=w.question, synthetic_answer_text=answer_a, job_name="edition-a")
+            job_b, package_b = create_synthetic_validation_job(
+                session, disposable_root=tmp_path, validation_database_path=validation_db,
+                allowlisted_test_id=w.legacy,
+                test_id=w.legacy, submission_id=submission_b["id"],
+                question_id=w.question, synthetic_answer_text=answer_b, job_name="edition-b")
+            job_a_id, job_b_id = job_a.id, job_b.id
+            snapshot_a = deepcopy(job_a.metadata_json["grading_execution"])
+            snapshot_b = deepcopy(job_b.metadata_json["grading_execution"])
+            session.commit()
+
+        assert preview_a.json()["canonical_package_hash"] == package_a["bundle"]["bundle_sha256"]
+        assert preview_b.json()["canonical_package_hash"] == package_b["bundle"]["bundle_sha256"]
+        assert snapshot_a["bundle"]["question"]["context"]["effective_text"] == "Question edition A"
+        assert snapshot_a["bundle"]["model_answer"]["content"] == "ModelAnswer edition A"
+        assert [level["score"] for level in snapshot_a["bundle"]["rubric"]["entry"]["criteria"][0]["levels"]] == [0, 10]
+        assert snapshot_b["bundle"]["question"]["context"]["effective_text"] == "Question edition B"
+        assert snapshot_b["bundle"]["model_answer"]["content"] == "ModelAnswer edition B"
+        assert [level["score"] for level in snapshot_b["bundle"]["rubric"]["entry"]["criteria"][0]["levels"]] == [0, 5, 10]
+        assert job_a.confirmed_authoring_revision_id == edition_a["id"]
+        assert job_b.confirmed_authoring_revision_id == edition_b["id"]
+        assert snapshot_a["snapshot_sha256"] != snapshot_b["snapshot_sha256"]
+
+        # The synthetic answer exists only in the validation Job's sealed bundle,
+        # never in the regular Submission reconstruction tables.
+        with w.sf() as session:
+            assert session.scalar(select(func.count()).select_from(StudentAnswerReconstruction).where(
+                StudentAnswerReconstruction.submission_id.in_([submission_a["id"], submission_b["id"]]))) == 0
+            assert session.scalar(select(func.count()).select_from(GradingJobItem)) == 2
+            assert session.scalar(select(func.count()).select_from(GradingJobEvent)) == 2
+
+        # Another real SQLite database represents the ordinary worker domain.
+        # It has a normal queued Job, but cannot see either validation Job ID.
+        with normal.sf() as session:
+            regular_test = session.get(TestRow, normal.legacy)
+            regular_job = GradingJob(
+                external_id="normal-job-isolation-fixture", execution_mode="phased_auto",
+                assignment_path="", run_path=str(normal_root / "ordinary-run"),
+                config_path=str(normal_root / "ordinary-config.json"),
+                test_id=regular_test.id, total_items=1, metadata_json={},
+            )
+            session.add(regular_job)
+            session.flush()
+            regular_job_id = regular_job.id
+            session.add(GradingJobItem(job_id=regular_job.id, item_key="normal-item", metadata_json={}))
+            session.commit()
+            normal_job_id = regular_job.id
+
+        # A normal worker cannot see/claim synthetic IDs because they are in a
+        # different physical database. The validation worker refuses unmarked
+        # normal Jobs and Jobs from a Test outside its explicit allowlist.
+        synthetic_worker = IsolatedSyntheticValidationWorker(
+            w.sf, disposable_root=tmp_path, validation_database_path=validation_db,
+            allowed_test_ids={w.legacy})
+        normal_worker = JobWorker(normal.sf,
+            grading_runner_factory=lambda: pytest.fail("normal worker reached grader"),
+            orchestrator_factory=lambda *_args: pytest.fail("normal worker reached orchestrator"))
+        assert normal_worker.run_once(job_a_id) is None
+        assert synthetic_worker.run_once(regular_job_id) is None
+        assert synthetic_worker.run_once("job-id-not-in-validation-db") is None
+
+        # An ordinary, unmarked job inside the disposable DB is also denied.
+        with w.sf() as session:
+            unmarked = GradingJob(
+                external_id="unmarked-validation-db-job", execution_mode="phased_auto",
+                assignment_path="", run_path=str(tmp_path / "ordinary-in-validation-db"),
+                config_path=str(tmp_path / "ordinary-config.json"),
+                test_id=w.legacy, total_items=1, metadata_json={},
+            )
+            session.add(unmarked)
+            session.flush()
+            unmarked_id = unmarked.id
+            session.add(GradingJobItem(job_id=unmarked.id, item_key="ordinary", metadata_json={}))
+            session.commit()
+        assert synthetic_worker.run_once(unmarked_id) is None
+
+        # Claim arbitration is still the normal atomic queued-state transition.
+        # Two concurrent claimers cannot both acquire the same queued Job.
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+        from scoring.db.repository import JobRepository
+        barrier = Barrier(2)
+
+        def claim_once():
+            with w.sf() as session:
+                barrier.wait(timeout=5)
+                claimed = JobRepository(session).claim(unmarked_id)
+                session.commit()
+                return claimed
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            claims = list(pool.map(lambda _index: claim_once(), range(2)))
+        assert sorted(claims) == [False, True]
+        with w.sf() as session:
+            claimed_job = session.get(GradingJob, unmarked_id)
+            claimed_job.state = "queued"
+            session.delete(claimed_job)
+            session.commit()
+
+        from scoring.student_answer import SelectedImageStudentAnswerReconstruction
+
+        def forbidden(*_args, **_kwargs):
+            pytest.fail("synthetic validation touched a model, OCR, or reconstruction runtime")
+
+        monkeypatch.setattr(RuntimeManagerClient, "__init__", forbidden)
+        monkeypatch.setattr(GradingClient, "__init__", forbidden)
+        monkeypatch.setattr(GradingClient, "chat", forbidden)
+        monkeypatch.setattr(SelectedImageStudentAnswerReconstruction, "run", forbidden)
+
+        # Review auth remains mandatory; no special synthetic bypass exists.
+        anonymous = TestClient(w.client.app)
+        try:
+            denied = anonymous.get(base(w) + f"/grading/{submission_a['id']}")
+            assert denied.status_code in {401, 403}
+        finally:
+            anonymous.close()
+
+        # A fixed expected A/B response is derived only from each frozen policy.
+        outcome_a = synthetic_worker.run_once(job_a_id)
+        outcome_b = synthetic_worker.run_once(job_b_id)
+        assert outcome_a.state == outcome_b.state == "completed"
+        assert synthetic_worker.run_once(job_a_id) is None  # duplicate execution is idempotent
+
+        with w.sf() as session:
+            completed_a = session.get(GradingJob, job_a_id)
+            completed_b = session.get(GradingJob, job_b_id)
+            assert completed_a.state == completed_b.state == "completed"
+            assert completed_a.items[0].score == 10
+            assert completed_a.items[0].max_score == 10
+            assert completed_b.items[0].score == 5
+            assert completed_b.items[0].max_score == 10
+            result_a = completed_a.items[0].metadata_json["result"]
+            result_b = completed_b.items[0].metadata_json["result"]
+            assert result_a["criteria"][0]["criterion_id"] == "c1"
+            assert result_b["criteria"][0]["criterion_id"] == "c1"
+            assert "合成検証結果" in result_a["criteria"][0]["reason"]
+            assert "合成検証結果" in result_b["criteria"][0]["reason"]
+            assert completed_a.metadata_json["grading_execution"]["snapshot_sha256"] == snapshot_a["snapshot_sha256"]
+            assert completed_b.metadata_json["grading_execution"]["snapshot_sha256"] == snapshot_b["snapshot_sha256"]
+
+        detail_a = w.client.get(base(w) + f"/grading/{submission_a['id']}")
+        detail_b = w.client.get(base(w) + f"/grading/{submission_b['id']}")
+        assert detail_a.status_code == detail_b.status_code == 200
+        review_a, review_b = detail_a.json(), detail_b.json()
+        assert review_a["submission"]["confirmed_revision_label"] == "第1版"
+        assert review_b["submission"]["confirmed_revision_label"] == "第2版"
+        question_review_a = review_a["questions"][0]
+        question_review_b = review_b["questions"][0]
+        assert question_review_a["question"]["text"] == "Question edition A"
+        assert question_review_a["model_answer"]["content"] == "ModelAnswer edition A"
+        assert [level["score"] for level in question_review_a["rubric"]["entry"]["criteria"][0]["levels"]] == [0, 10]
+        assert question_review_b["question"]["text"] == "Question edition B"
+        assert question_review_b["model_answer"]["content"] == "ModelAnswer edition B"
+        assert [level["score"] for level in question_review_b["rubric"]["entry"]["criteria"][0]["levels"]] == [0, 5, 10]
+        assert question_review_a["authoritative"]["score"] == 10
+        assert question_review_b["authoritative"]["score"] == 5
+        assert "合成検証結果" in question_review_a["criteria"][0]["reason"]
+
+        finalize_a = w.client.post(base(w) + f"/grading/{submission_a['id']}/finalize", json={})
+        finalize_b = w.client.post(base(w) + f"/grading/{submission_b['id']}/finalize", json={})
+        assert finalize_a.status_code == finalize_b.status_code == 200
+        assert finalize_a.json()["confirmed_revision_label"] == "第1版"
+        assert finalize_b.json()["confirmed_revision_label"] == "第2版"
+        assert finalize_a.json()["total_points"] == finalize_b.json()["total_points"] == 10
+        assert w.client.post(base(w) + f"/grading/{submission_a['id']}/finalize", json={}).json()["created"] is False
+        assert w.client.post(base(w) + f"/grading/{submission_b['id']}/finalize", json={}).json()["created"] is False
+
+        # A stale-job recovery retry revalidates the existing artifact manifest;
+        # it neither regenerates the score nor resolves the current edition.
+        with w.sf() as session:
+            retried = session.get(GradingJob, job_a_id)
+            retried.state = "preparing"
+            retried.updated_at = datetime.now(timezone.utc) - timedelta(hours=1)
+            session.commit()
+        retry = synthetic_worker.run_once(job_a_id)
+        assert retry.state == "completed"
+        with w.sf() as session:
+            retried = session.get(GradingJob, job_a_id)
+            assert retried.confirmed_authoring_revision_id == edition_a["id"]
+            assert retried.items[0].score == 10
+            assert retried.items[0].metadata_json["manifest_sha256"]
+            assert session.scalar(select(func.count()).select_from(StudentAnswerReconstruction).where(
+                StudentAnswerReconstruction.submission_id.in_([submission_a["id"], submission_b["id"]]))) == 0
+            assert session.scalar(select(func.count()).select_from(DomainEvent).where(
+                DomainEvent.event_type.in_(["results_published", "results_unpublished"]))) == 0
+            from scoring.publishing import ResultPublicationService
+            publication = ResultPublicationService(session, root=tmp_path / "artifacts").publication_state(
+                w.legacy, submission_a["id"])
+            assert publication["published"] is False
+
+        # Allowlist denial is an authorization failure before Job creation.
+        with w.sf() as session:
+            before = session.scalar(select(func.count()).select_from(GradingJob))
+            with pytest.raises(PermissionError, match="SYNTHETIC_VALIDATION_TEST_NOT_ALLOWLISTED"):
+                create_synthetic_validation_job(
+                    session, disposable_root=tmp_path, validation_database_path=validation_db,
+                    allowlisted_test_id=w.fresh,
+                    test_id=w.legacy, submission_id=submission_a["id"],
+                    question_id=w.question, synthetic_answer_text="denied", job_name="denied")
+            assert session.scalar(select(func.count()).select_from(GradingJob)) == before
+
+        # Historical null-pin rows remain legacy and cannot enter this path.
+        unconfirmed_pdf = tmp_path / "artifacts" / "legacy-null-pin.pdf"
+        with fitz.open() as pdf:
+            pdf.new_page()
+            pdf.save(unconfirmed_pdf)
+        with w.sf() as session:
+            fresh_test = session.get(TestRow, w.fresh)
+            service = DomainService(session)
+            material = service.material(w.fresh, material_type="student_answer_source",
+                storage_ref=str(unconfirmed_pdf), original_filename=unconfirmed_pdf.name,
+                mime_type="application/pdf", sha256=sha256_file(unconfirmed_pdf))
+            student = service.student(fresh_test.course_offering_id,
+                student_identifier="SYNTHETIC-LEGACY-NULL-PIN", display_name="Synthetic Legacy")
+            legacy_submission = service.submission(w.fresh, student.id,
+                submission_key="synthetic-legacy-null-pin", material_id=material.id)
+            assert legacy_submission.confirmed_authoring_revision_id is None
+            session.commit()
+            with pytest.raises(Exception, match="WEB_GRADING_REVISION_REQUIRED"):
+                create_synthetic_validation_job(
+                    session, disposable_root=tmp_path, validation_database_path=validation_db,
+                    allowlisted_test_id=w.fresh,
+                    test_id=w.fresh, submission_id=legacy_submission.id,
+                    question_id=w.question, synthetic_answer_text="legacy must fail closed",
+                    job_name="legacy-null-pin")
+    finally:
+        if normal_job_id:
+            with normal.sf() as session:
+                job = session.get(GradingJob, normal_job_id)
+                if job:
+                    session.delete(job)
+                    session.commit()
+        normal.client.close()
+        normal.engine.dispose()
+        try:
+            next(normal_generator)
+        except StopIteration:
+            pass
