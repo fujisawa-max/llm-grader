@@ -8,11 +8,13 @@ import { effectiveQuestionScore } from "@/lib/questionScores";
 import { LatexNormalizationControl } from "@/components/LatexNormalizationControl";
 import { questionMathSource, questionMathReference } from "@/lib/questionMathSource";
 import type { LatexProposal } from "@/lib/api/textTools";
+import {editQuestionContent} from "@/lib/questionContent";
 
-export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange, onParent, onMove, onRegion, activeRegionId, renderEvidence, issues = {}, mathContext, content, contentChanged, onContentChange, onConfirmContent, onCaret, inlinePreview = true, editorMode = "all" }: {
+export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange, onParent, onMove, onRegion, activeRegionId, renderEvidence, issues = {}, mathContext, content, contentChanged, textReviewed = false, onContentChange, onConfirmContent, onCaret, inlinePreview = true, editorMode = "all" }: {
   editorMode?: "all"|"body"|"settings";
   inlinePreview?: boolean;
   content: string; contentChanged: boolean;
+  textReviewed?: boolean;
   onCaret?: (offset:number)=>void;
   onContentChange: (text: string, proposal?: LatexProposal) => void;
   onConfirmContent: (confirm: (node: ReviewNode) => ReviewNode) => void;
@@ -33,6 +35,10 @@ export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange
   const contentDiagnostics = useMemo(() => JSON.stringify(node.ordered_content, null, 2), [node.ordered_content]);
   const reviewId = mathContext?.reviewId, revision = mathContext?.revision, savedNode = mathContext?.savedNode;
   const authoringTestId = mathContext?.authoringTestId;
+  const formulaReviewPending=useMemo(()=>{
+    const current=editQuestionContent(node,regions,content);
+    return regions.some(r=>r.region_type==="formula"&&(!current||!formulaIsConfirmed(current.formula_decisions[r.region_id])));
+  },[node,regions,content]);
   const source = useMemo(() => {
     const value = reviewId && revision !== undefined ? questionMathSource(reviewId, revision, node, savedNode) : undefined;
     return value && authoringTestId ? {...value, authoringTestId} : value;
@@ -96,9 +102,9 @@ export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange
           {!source && <p className="muted" role="status">{!mathContext.savedNode || JSON.stringify(node.ordered_content.map(questionMathReference)) !== JSON.stringify(mathContext.savedNode.ordered_content.map(questionMathReference))
             ? "構成の変更を保存すると、元PDFとの対応を確認して数式OCRを利用できます。"
             : "この設問には利用できる元PDFの対応情報がありません。"}</p>}</>}
-        {regions.some(r => r.region_type === "formula") && <div className="review-toolbar">
-          <button type="button" data-review-confirm-content onClick={confirmContent}>問題文を確認</button>
-          <span className="muted">{!contentChanged && regions.filter(r => r.region_type === "formula").every(r => formulaIsConfirmed(node.formula_decisions[r.region_id]))
+        {regions.some(r => r.region_type === "formula") && (!textReviewed||formulaReviewPending) && <div className="review-toolbar">
+          <button type="button" data-review-confirm-content onClick={confirmContent}>{textReviewed?"数式を確認":"問題文を確認"}</button>
+          <span className="muted">{textReviewed?"数式の内容を元資料と照合してください。":!contentChanged && regions.filter(r => r.region_type === "formula").every(r => formulaIsConfirmed(node.formula_decisions[r.region_id]))
             ? "元資料との照合済み" : "元資料と問題文を照合してください。編集後は再確認が必要です。"}</span>
         </div>}
         {Object.entries(issues).filter(([key]) => key.startsWith("text:") || key.startsWith("formula:")).flatMap(([key, messages]) =>

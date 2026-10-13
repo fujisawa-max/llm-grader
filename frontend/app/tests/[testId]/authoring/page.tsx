@@ -4,6 +4,7 @@ import {useParams} from "next/navigation";
 import Link from "next/link";
 import {AuthoringIssueCards, AuthoringIssueCounts, QuestionIssueOverlay} from "@/components/reviews/AuthoringIssues";
 import {authoringIssueDomains, visibleAuthoringIssues} from "@/lib/authoringIssueDomains";
+import {questionTextReviewed} from "@/lib/authoringTextReview";
 import {AuthoringRevisionHistory} from "@/components/reviews/AuthoringRevisionHistory";
 import {AuthoringDialog} from "@/components/reviews/AuthoringDialog";
 import {ReviewWorkspaceLayout} from "@/components/reviews/ReviewWorkspaceLayout";
@@ -61,6 +62,7 @@ export default function TestAuthoringPage() {
   const [dirty,setDirty]=useState(false);
   const [dirtyDomains,setDirtyDomains]=useState<Record<string,boolean>>({});
   const [buffers,setBuffers]=useState<Record<string,string>>({});
+  const [manualQuestionText,setManualQuestionText]=useState<Record<string,string>>({});
   const [selected,setSelected]=useState("");
   const [materials,setMaterials]=useState<Material[]>([]),[materialId,setMaterialId]=useState("");
   const [editing,setEditing]=useState({question:false,answer:false,rubric:false});
@@ -113,7 +115,7 @@ export default function TestAuthoringPage() {
       const value=data.revision?.snapshot||data.legacy;
       setActiveBasisLabel(data.confirmed_revision?.label||null);setActiveBasisId(data.confirmed_revision?.id||null);
       setRevision(data.revision);setSnapshot(value);setDirty(false);setDirtyDomains({});setExternalChange(data.external_source_change);setSourceProblems(data.source_problems||[]);
-      setBuffers(authoringBuffers(value));
+      setBuffers(authoringBuffers(value));setManualQuestionText({});
       setSelected(value.nodes[0]?.stable_key||"all");
       setMaterials(files.filter(m=>m.material_type!=="student_answer_source"));
       void testAuthoring.review(id).then(result=>{if(active){setIssues(result.issues);setReviewData(result);}}).catch(()=>{/* Review issues can be refreshed from the Test-wide review action. */});
@@ -148,7 +150,7 @@ export default function TestAuthoringPage() {
   },[snapshot,buffers,currentEditVersion,dirty,id]);
   function markDirty(){setReviewData(null);editEpoch.current++;setDirty(true);setSaveStatus("idle");}
   function synchronize(row:AuthoringRevision){
-    setReviewData(null);setRevision(row);setSnapshot(row.snapshot);setBuffers(authoringBuffers(row.snapshot));
+    setReviewData(null);setRevision(row);setSnapshot(row.snapshot);setBuffers(authoringBuffers(row.snapshot));setManualQuestionText({});
     setDirty(false);setDirtyDomains({});
   }
   function change(value:AuthoringSnapshot,domain?:string){setSnapshot(value);markDirty();setDirtyDomains(d=>({...d,...(domain?{[domain]:true}:{question:value.nodes!==snapshot?.nodes||value.domains?.question!==snapshot?.domains?.question||d.question,answer:value.answers!==snapshot?.answers||d.answer,rubric:value.rubrics!==snapshot?.rubrics||d.rubric})}));}
@@ -250,6 +252,7 @@ export default function TestAuthoringPage() {
     change({...snapshot,nodes:[...snapshot.nodes.map(candidate=>candidate.stable_key===target.stable_key?result.updated:candidate),...result.children]});
     const targetRegions=questionDomain?.document.regions||[];
     setBuffers(current=>({...current,[target.stable_key]:questionContent(result.updated,targetRegions).text,...Object.fromEntries(result.children.map(child=>[child.stable_key,questionContent(child,targetRegions).text]))}));
+    setManualQuestionText(current=>Object.fromEntries(Object.entries(current).filter(([key])=>key!==target.stable_key&&!result.children.some(child=>child.stable_key===key))));
     setSelected(result.children[0]?.stable_key||target.stable_key);setSplitProposal(null);
   }
   async function analyzeSource(domain:"question"|"answer",requestedMaterialId:string){
@@ -270,7 +273,7 @@ export default function TestAuthoringPage() {
         row=await testAuthoring.importSources(id,revision.edit_version,true,requestedMaterialId);
       }
       setRevision(row);setSnapshot(row.snapshot);setDirty(false);setDirtyDomains({});setExternalChange(false);setContinueExternal(false);
-      setBuffers(authoringBuffers(row.snapshot));
+      setBuffers(authoringBuffers(row.snapshot));setManualQuestionText({});
       setSelected(current=>row.snapshot.nodes.some(n=>n.stable_key===current)?current:row.snapshot.nodes[0]?.stable_key||"all");
       const roleDomain=materialRole==="rubric_source"?row.snapshot.domains?.rubric:row.snapshot.domains?.answer;
       const outcome=materialRole==="question_sheet"?undefined:(roleDomain?.analysis_results?.[materialRole||"model_answer_source"]||roleDomain?.analysis_result);
@@ -293,16 +296,16 @@ export default function TestAuthoringPage() {
   async function begin(confirmedId:string|undefined=activeBasisId||undefined){setBusy(true);setError("");try{
     const row=await testAuthoring.begin(id,confirmedId);setRevision(row);setSnapshot(row.snapshot);setDirty(false);setDirtyDomains({});
     setSelected(current=>row.snapshot.nodes.some(n=>n.stable_key===current)?current:row.snapshot.nodes[0]?.stable_key||"all");
-    setBuffers(authoringBuffers(row.snapshot));
+    setBuffers(authoringBuffers(row.snapshot));setManualQuestionText({});
     notify("info","編集用ワークスペースを開きました","保存しても正式な問題・解答・採点基準は変更されません。");
   }catch(e){setError(e instanceof Error?e.message:"下書きを開けませんでした。");}finally{setBusy(false);}}
-  async function discardDraft(){if(!revision||!window.confirm("修正版の下書きを破棄します。保存済み・未保存の修正は編集対象から外れます。確定版と元資料は保持されます。続行しますか？"))return;setBusy(true);try{const row=await testAuthoring.discard(id,revision);setRevision(row);setSnapshot(row.snapshot);setBuffers(authoringBuffers(row.snapshot));setSelected(current=>row.snapshot.nodes.some(n=>n.stable_key===current)?current:row.snapshot.nodes[0]?.stable_key||"all");setDirty(false);setDirtyDomains({});notify("info","修正版を破棄しました");}catch(e){setError(e instanceof Error?e.message:"下書きを破棄できませんでした。");}finally{setBusy(false);}}
+  async function discardDraft(){if(!revision||!window.confirm("修正版の下書きを破棄します。保存済み・未保存の修正は編集対象から外れます。確定版と元資料は保持されます。続行しますか？"))return;setBusy(true);try{const row=await testAuthoring.discard(id,revision);setRevision(row);setSnapshot(row.snapshot);setBuffers(authoringBuffers(row.snapshot));setManualQuestionText({});setSelected(current=>row.snapshot.nodes.some(n=>n.stable_key===current)?current:row.snapshot.nodes[0]?.stable_key||"all");setDirty(false);setDirtyDomains({});notify("info","修正版を破棄しました");}catch(e){setError(e instanceof Error?e.message:"下書きを破棄できませんでした。");}finally{setBusy(false);}}
   async function importSources(){if(!revision)return;
     if(dirty){setError("先に現在の編集内容を保存してください。保存済みレビューは自動では取り込みません。");return;}
     if(!window.confirm("最新の解答・採点基準レビューを取り込みます。現在の設問本文・分割・階層は保持し、取り込み前の編集版も残します。問題レビューの変更は確認事項として扱います。続行しますか？"))return;
     setBusy(true);setError("");try{
       const row=await testAuthoring.importSources(id,revision.edit_version,true);setRevision(row);setSnapshot(row.snapshot);setDirty(false);setDirtyDomains({});
-      setBuffers(authoringBuffers(row.snapshot));
+      setBuffers(authoringBuffers(row.snapshot));setManualQuestionText({});
       setSelected(current=>row.snapshot.nodes.some(n=>n.stable_key===current)?current:row.snapshot.nodes[0]?.stable_key||"all");setExternalChange(false);setContinueExternal(false);notify("success","保存済みレビューを取り込みました","現在の設問本文・分割・階層は保持されています。");
     }catch(e){const message=e instanceof Error?e.message:"取り込めませんでした。";setError(message);notify("error","レビューを取り込めませんでした",message);}finally{setBusy(false);}
   }
@@ -566,11 +569,12 @@ export default function TestAuthoringPage() {
           <AuthoringPreviewEditor actions={<button aria-pressed={questionSettings} onClick={()=>{setQuestionSettings(v=>!v);setEditing(v=>({...v,question:false}));}}>{questionSettings?"プレビューに戻る":"設問設定の変更"}</button>} label="問題" editLabel="本文編集" editing={editing.question} auxiliaryEditing={questionSettings} onEditing={value=>{setQuestionSettings(false);setEditing(v=>({...v,question:value}));}} preview={<><p className="authoring-question-metadata">{node.parent_key?"小問":"大問"}：{pathFor(node.stable_key)} ／ 配点：{previewScore??"－"}点（{node.score_semantics==="sum_children"?"小問合計":node.score_semantics==="each_child"?"小問ごとの配点":previewScore===null?"未設定":"直接配点"}）</p><div className="authoring-question-preview-frame"><MarkdownMathText source={buffers[selected]??node.body_text}/><AcceptedDiagramPreview records={questionStale?[]:node.diagram_records} path={questionDomain?`/tests/${id}/authoring/nodes/${selected}/diagrams`:undefined}/></div></>}>
           <NodeEditor editorMode={questionSettings?"settings":"body"} inlinePreview={false} key={node.stable_key} node={node} nodes={nodes} regions={activeRegions} readonly={readonly||analyzing}
             content={buffers[selected]??node.body_text} contentChanged={(buffers[selected]??node.body_text)!==questionContent(node,regions).text}
+            textReviewed={questionTextReviewed(node,revision?.snapshot.nodes.find(n=>n.stable_key===selected),regions,buffers[selected]??node.body_text,manualQuestionText[selected])}
             mathContext={questionDomain&&!questionStale&&revision?{reviewId:questionDomain.document.id,revision:revision.edit_version,savedNode:revision.snapshot.nodes.find(n=>n.stable_key===selected),authoringTestId:id}:undefined}
             activeRegionId={regionId} renderEvidence={questionDomain?(rid)=><EvidencePanel id={questionDomain.document.id} regionId={rid} ownerLabel={pathFor(selected)} readonly={readonly||saving||analyzing}
               decision={(regions.find(r=>r.region_id===rid)?.region_type==="formula"?node.formula_decisions:node.figure_decisions)[rid]||{decision:"unreviewed"}}
               onDecision={d=>{const field=regions.find(r=>r.region_id===rid)?.region_type==="formula"?"formula_decisions":"figure_decisions";updateNode({...node,[field]:{...node[field],[rid]:d}});}}/>:undefined}
-            onCaret={offset=>{questionCaret.current=offset;}} onContentChange={(text,proposal)=>{setSplitProposal(null);markDirty();setDirtyDomains(d=>({...d,question:true}));setBuffers(current=>({...current,[selected]:text}));if(proposal?.apply_provenance)updateNode({...node,math_ocr_edits:[...(node.math_ocr_edits||[]),proposal.apply_provenance].slice(-16)});}}
+            onCaret={offset=>{questionCaret.current=offset;}} onContentChange={(text,proposal)=>{setSplitProposal(null);markDirty();setDirtyDomains(d=>({...d,question:true}));setBuffers(current=>({...current,[selected]:text}));setManualQuestionText(current=>{const next={...current};if(proposal)delete next[selected];else next[selected]=text;return next;});if(proposal?.apply_provenance)updateNode({...node,math_ocr_edits:[...(node.math_ocr_edits||[]),proposal.apply_provenance].slice(-16)});}}
             onConfirmContent={confirm=>{const next=editQuestionContent(node,regions,buffers[selected]??node.body_text);if(next)updateNode(confirm(next));else setError("問題文と元資料の対応を確認してください。");}} onChange={updateNode}
             onParent={parent=>reparentNode(node,parent)} onMove={direction=>moveNode(node,direction)} onRegion={setRegionId}/>
           <div hidden={questionSettings}><button disabled={readonly||saving||analyzing} onClick={()=>{
