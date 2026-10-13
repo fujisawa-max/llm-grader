@@ -1,3 +1,4 @@
+import {editQuestionText,readQuestionText,openQuestionOperations} from "./authoringEditMode";
 import {canonicalQuestionRoot} from "../lib/canonicalQuestionPath";
 import {readFile} from "node:fs/promises";
 import {execFileSync} from "node:child_process";
@@ -23,7 +24,7 @@ test("real Sample Q5 revision history forks exact diagrams and confirms an indep
  async function analyze(){const result=page.waitForResponse(r=>r.request().method()==="POST"&&(/\/authoring\/(source-import|analyze-answer)$/.test(r.url())));await confirmAnalysis(page,controls,"解析");const response=await result;expect(response.status(),await response.text()).toBe(200);await expect(page.locator(".authoring-analysis-progress")).toHaveCount(0);}
  await add("question_sheet","../testData/SampleQ/sampleQ5.pdf");await analyze();
  let row=(await(await page.request.get(authoring)).json()).revision;const parent=row.snapshot.nodes.find((n:any)=>/問題\s*[3３]/.test(n.label.raw));expect(parent,JSON.stringify(row.snapshot.nodes.map((n:any)=>n.label))).toBeTruthy();
- await selector.selectOption(parent.stable_key);const question=page.locator("#authoring-question");await question.getByRole("button",{name:"本文編集",exact:true}).click();await question.getByRole("button",{name:"小問の分割案を作成",exact:true}).click();const proposal=page.getByRole("dialog",{name:/の分割案/});await expect(proposal).toBeVisible();const parts=proposal.locator(".authoring-split-block");let children=0;for(let i=0;i<await parts.count();i++){if(await parts.nth(i).getByRole("combobox").inputValue()==="child"){await parts.nth(i).getByLabel("小問名",{exact:true}).fill(`(${++children})`);}}expect(children).toBe(3);await proposal.getByRole("button",{name:"分割を適用",exact:true}).click();await saveAuthoring(page);
+ await selector.selectOption(parent.stable_key);const question=page.locator("#authoring-question");await openQuestionOperations(page);await question.getByRole("button",{name:"小問の分割案を作成",exact:true}).click();const proposal=page.getByRole("dialog",{name:/の分割案/});await expect(proposal).toBeVisible();const parts=proposal.locator(".authoring-split-block");let children=0;for(let i=0;i<await parts.count();i++){if(await parts.nth(i).getByRole("combobox").inputValue()==="child"){await parts.nth(i).getByLabel("小問名",{exact:true}).fill(`(${++children})`);}}expect(children).toBe(3);await proposal.getByRole("button",{name:"分割を適用",exact:true}).click();await saveAuthoring(page);
  await add("model_answer_source","../testData/SampleQ/modelAnswer/sampleQ5_modelAnswer.pdf");await analyze();
  row=(await(await page.request.get(authoring)).json()).revision;const nodes=row.snapshot.nodes,child=nodes.find((n:any)=>n.parent_key===parent.stable_key&&n.label.raw==="(1)");expect(child).toBeTruthy();
 

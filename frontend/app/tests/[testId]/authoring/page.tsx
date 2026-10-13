@@ -218,6 +218,9 @@ export default function TestAuthoringPage() {
         else target=levels?.querySelector<HTMLElement>(".rubric-level-edit button")||levels||target;
       }
       let content=target;
+      if(section==="question"&&!issue.warning_id&&!issue.region_id&&["content","source"].includes(issue.field||"")){
+        const edit=target?.querySelector<HTMLElement>('[data-question-edit]');if(edit){content=edit.closest<HTMLElement>('[data-content-type="question-content"]')||target;target=edit;}
+      }
       if(issue.field==="score")target=target?.querySelector<HTMLElement>('input[type="number"]')||target;
       if(issue.field==="mapping")target=target?.querySelector<HTMLElement>('[aria-label="対応する設問"]')||target;
       if(!target)return;
@@ -559,6 +562,7 @@ export default function TestAuthoringPage() {
           return <tr key={n.stable_key}><th scope="row"><span className="authoring-hierarchy-label" style={{paddingLeft:depth*20}}>{n.label.raw}</span></th><td>{gradable?`${points??"未設定"}点`:"小問合計"}</td><td>{gradable?(answerReady?"準備完了":"未登録"):"—"}</td><td>{gradable?(rubricReady?`${rubricCriteria.length}基準・${rubricCriteria.reduce((sum,c)=>sum+c.points,0)}点`:"確認が必要"):"—"}</td><td>{accepted?"確認済み図あり":"なし"}</td><td>{hasSourceProblem?"確認が必要":"確認済み"}</td></tr>;
         })}</tbody></table>
         <details><summary>得点段階と部分点の条件</summary>{orderedNodes().filter(n=>n.included&&!nodes.some(child=>child.included&&child.parent_key===n.stable_key)).map(n=><section key={n.stable_key}><h3>{pathFor(n.stable_key)}</h3><p>基準ごとの最高点を合計します。</p>{(snapshot.rubrics[n.stable_key]||[]).map(c=>{const maximum=Math.max(0,...(c.levels||[]).map(level=>typeof level.score==="number"&&Number.isFinite(level.score)?level.score:0));return <article key={c.id}><p>{c.description} — 最高点 {maximum}点</p>{c.levels?.length?<ul>{c.levels.map((level,index)=><li key={index}>{level.score??"未設定"}点: {level.condition||"条件が未設定"}</li>)}</ul>:<p>得点段階が未設定です。</p>}</article>})}</section>)}</details>
+        <details><summary>問題文を確認</summary>{orderedNodes().filter(n=>n.included).map(n=><article key={n.stable_key}><h3>{pathFor(n.stable_key)}</h3><MarkdownMathText source={buffers[n.stable_key]??n.body_text}/></article>)}</details>
         <h3>要修正事項 {issues.length}件</h3><AuthoringIssueCards issues={issues} pathFor={pathFor} onAction={navigate}/>
         {questionDomain&&questionDomain.document.warnings.length>0&&<WarningPanel quickAcknowledge targetLabel={w=>{const owner=warningQuestion(w);return owner?pathFor(owner.stable_key):"試験全体";}} warnings={questionWarningCatalog} states={questionDomain.snapshot.warning_states||{}} readonly={readonly||saving||analyzing}
             onChange={(key,resolution)=>change({...snapshot,domains:{...snapshot.domains,question:{...questionDomain,snapshot:{...questionDomain.snapshot,warning_states:{...questionDomain.snapshot.warning_states,[key]:resolution}}}}})}/>}
@@ -571,38 +575,35 @@ export default function TestAuthoringPage() {
       </section>:(node||selected==="unassigned")&&<>
         {visible.question&&node&&<section id="authoring-question" tabIndex={-1} aria-label="問題"><h2>問題</h2>
 
-          <AuthoringPreviewEditor actions={<button aria-pressed={questionSettings} onClick={()=>{setQuestionSettings(v=>!v);setEditing(v=>({...v,question:false}));}}>{questionSettings?"プレビューに戻る":"設問設定の変更"}</button>} label="問題" editLabel="本文編集" editing={editing.question} auxiliaryEditing={questionSettings} onEditing={value=>{setQuestionSettings(false);setEditing(v=>({...v,question:value}));}} preview={<><p className="authoring-question-metadata">{node.parent_key?"小問":"大問"}：{pathFor(node.stable_key)} ／ 配点：{previewScore??"－"}点（{node.score_semantics==="sum_children"?"小問合計":node.score_semantics==="each_child"?"小問ごとの配点":previewScore===null?"未設定":"直接配点"}）</p><div className="authoring-question-preview-frame"><MarkdownMathText source={buffers[selected]??node.body_text}/><AcceptedDiagramPreview records={questionStale?[]:node.diagram_records} path={questionDomain?`/tests/${id}/authoring/nodes/${selected}/diagrams`:undefined}/></div></>}>
-          <NodeEditor editorMode={questionSettings?"settings":"body"} inlinePreview={false} key={node.stable_key} node={node} nodes={nodes} regions={activeRegions} readonly={readonly||analyzing}
+          <div className="compact-question-editor" aria-label="問題の表示切替"><p className="authoring-question-metadata">{node.parent_key?"小問":"大問"}：{pathFor(node.stable_key)} ／ 配点：{previewScore??"－"}点（{node.score_semantics==="sum_children"?"小問合計":node.score_semantics==="each_child"?"小問ごとの配点":previewScore===null?"未設定":"直接配点"}）</p><button aria-pressed={questionSettings} onClick={()=>setQuestionSettings(v=>!v)}>{questionSettings?"プレビューに戻る":"設問設定の変更"}</button>
+          <NodeEditor compact dialogResetKey={`${revision?.id}:${questionDomain?.document.id}`} onSplitAtCaret={(text,offset,normalization)=>{
+            const reconciled=editQuestionContent(node,regions,text);
+            const next=reconciled&&normalization?.apply_provenance?{...reconciled,math_ocr_edits:[...(reconciled.math_ocr_edits||[]),normalization.apply_provenance].slice(-16)}:reconciled;
+            const proposal=next&&splitQuestionAtCaret(next,offset,questionContent(next,regions).spans,questionDomain?.document.automatic_nodes.find(n=>n.stable_key===node.source_draft_stable_key)?.ordered_content);
+            if(!proposal){setError("この位置は元資料の範囲を安全に分割できません。数式や図の境界を避け、分割位置を確認してください。");return;}
+            setError("");updateNode(next!);setSplitProposal(reviewQuestionSplit(proposal,node));
+          }} operations={<><button disabled={readonly||saving||analyzing} onClick={()=>{
+            const next=editQuestionContent(node,regions,buffers[selected]??node.body_text);
+            if(!next){setError("元資料との対応を保った分割案を作成できません。");return;}
+            updateNode(next);const proposal=suggestSubquestions(next,questionDomain?.document.automatic_nodes.find(n=>n.stable_key===node.source_draft_stable_key));
+            setError("");setSplitProposal(proposal?reviewQuestionSplit(proposal,node):null);if(!proposal)notify("info","小問候補は見つかりませんでした","必要なら設問を追加してください。");
+          }}>小問の分割案を作成</button><button disabled={readonly||saving||busy||splitRunning} aria-busy={splitRunning} onClick={()=>void suggestQuestionSplit()}>{splitRunning?<><span className="spinner" aria-hidden="true"/>分割案を作成中…</>:"AIで小問の分割案を作成"}</button></>} editorMode={questionSettings?"settings":"body"} inlinePreview={false} key={node.stable_key} node={node} nodes={nodes} regions={activeRegions} readonly={readonly||analyzing}
             content={buffers[selected]??node.body_text} contentChanged={(buffers[selected]??node.body_text)!==questionContent(node,regions).text}
             textReviewed={questionTextReviewed(node,revision?.snapshot.nodes.find(n=>n.stable_key===selected),regions,buffers[selected]??node.body_text,manualQuestionText[selected],revision?.snapshot.question_text_buffers?.[selected])}
             mathContext={questionDomain&&!questionStale&&revision?{reviewId:questionDomain.document.id,revision:revision.edit_version,savedNode:revision.snapshot.nodes.find(n=>n.stable_key===selected),authoringTestId:id}:undefined}
             activeRegionId={regionId} renderEvidence={questionDomain?(rid)=><EvidencePanel id={questionDomain.document.id} regionId={rid} ownerLabel={pathFor(selected)} readonly={readonly||saving||analyzing}
               decision={(regions.find(r=>r.region_id===rid)?.region_type==="formula"?node.formula_decisions:node.figure_decisions)[rid]||{decision:"unreviewed"}}
               onDecision={d=>{const field=regions.find(r=>r.region_id===rid)?.region_type==="formula"?"formula_decisions":"figure_decisions";updateNode({...node,[field]:{...node[field],[rid]:d}});}}/>:undefined}
-            onCaret={offset=>{questionCaret.current=offset;}} onContentChange={(text,proposal)=>{setSplitProposal(null);markDirty();setDirtyDomains(d=>({...d,question:true}));setBuffers(current=>({...current,[selected]:text}));setManualQuestionText(current=>{const next={...current};if(proposal)delete next[selected];else next[selected]=text;return next;});if(proposal?.apply_provenance)updateNode({...node,math_ocr_edits:[...(node.math_ocr_edits||[]),proposal.apply_provenance].slice(-16)});}}
+            onCaret={offset=>{questionCaret.current=offset;}} onContentChange={(text,proposal,manual=!proposal)=>{setSplitProposal(null);markDirty();setDirtyDomains(d=>({...d,question:true}));setBuffers(current=>({...current,[selected]:text}));setManualQuestionText(current=>{const next={...current};if(manual)next[selected]=text;else delete next[selected];return next;});if(proposal?.apply_provenance)updateNode({...node,math_ocr_edits:[...(node.math_ocr_edits||[]),proposal.apply_provenance].slice(-16)});}}
             onConfirmContent={confirm=>{const next=editQuestionContent(node,regions,buffers[selected]??node.body_text);if(next)updateNode(confirm(next));else setError("問題文と元資料の対応を確認してください。");}} onChange={updateNode}
             onParent={parent=>reparentNode(node,parent)} onMove={direction=>moveNode(node,direction)} onRegion={setRegionId}/>
-          <div hidden={questionSettings}><button disabled={readonly||saving||analyzing} onClick={()=>{
-            const next=editQuestionContent(node,regions,buffers[selected]??node.body_text);
-            if(!next){setError("元資料との対応を保った分割案を作成できません。");return;}
-            updateNode(next);const proposal=suggestSubquestions(next,questionDomain?.document.automatic_nodes.find(n=>n.stable_key===node.source_draft_stable_key));
-            setError("");setSplitProposal(proposal?reviewQuestionSplit(proposal,node):null);if(!proposal)notify("info","小問候補は見つかりませんでした","必要なら設問を追加してください。");
-          }}>小問の分割案を作成</button>
-          <button disabled={readonly||saving||busy||splitRunning} aria-busy={splitRunning} onClick={()=>void suggestQuestionSplit()}>{splitRunning?<><span className="spinner" aria-hidden="true"/>分割案を作成中…</>:"AIで小問の分割案を作成"}</button>
-          <button disabled={readonly||saving||analyzing} onClick={()=>{
-            const next=editQuestionContent(node,regions,buffers[selected]??node.body_text);
-            const proposal=next&&splitQuestionAtCaret(next,questionCaret.current,questionContent(next,regions).spans,questionDomain?.document.automatic_nodes.find(n=>n.stable_key===node.source_draft_stable_key)?.ordered_content);
-            if(!proposal){setError("この位置は元資料の範囲を安全に分割できません。数式や図の境界を避け、分割位置を確認してください。");return;}
-            setError("");updateNode(next!);setSplitProposal(reviewQuestionSplit(proposal,node));
-          }}>問題文のカーソル位置で分割</button>
-
-          </div><div hidden={questionSettings}>
+          <div hidden={questionSettings}><AcceptedDiagramPreview records={questionStale?[]:node.diagram_records} path={questionDomain?`/tests/${id}/authoring/nodes/${selected}/diagrams`:undefined}/>
           {questionDomain&&revision&&<DiagramReview path={`/tests/${id}/authoring/nodes/${selected}/diagrams`} revision={revision.edit_version}
             records={node.diagram_records} sourceStale={questionStale} disabled={readonly||saving||analyzing} label="図の確認" onSelect={setDiagramSelection}
             onChange={records=>{markDirty();setDirtyDomains(d=>({...d,diagram:true}));setSnapshot(current=>current?{...current,nodes:current.nodes.map(n=>{if(n.stable_key!==node.stable_key)return n;const decisions={...n.figure_decisions};for(const record of records)for(const rid of record.legacy_region_ids||(record.legacy_region_id?[record.legacy_region_id]:[]))decisions[rid]={decision:record.state==="accepted"?"accepted_as_evidence":record.state==="excluded"?"excluded":"unreviewed"};return {...n,diagram_records:records,figure_decisions:decisions};})}:current);}}/>}
 
           </div>
-        </AuthoringPreviewEditor>
+        </div>
           {questionDomain&&questionWarnings.length>0&&<WarningPanel quickAcknowledge warnings={questionWarnings} targetLabel={()=>pathFor(selected)} states={questionDomain.snapshot.warning_states||{}} readonly={readonly||saving||analyzing} confirmed={readonly}
             onChange={(key,resolution)=>change({...snapshot,domains:{...snapshot.domains,question:{...questionDomain,snapshot:{...questionDomain.snapshot,warning_states:{...questionDomain.snapshot.warning_states,[key]:resolution}}}}})}/>}
         </section>}

@@ -327,3 +327,11 @@ dialog.authoring-proposal-dialog::backdrop{background:#0006}
 .compact-rubric-levels>summary::marker{content:""}
 .compact-rubric-chevron{font-size:.85em;width:1em;flex-shrink:0}
 .compact-rubric-dialog-conversion{max-height:28vh;overflow:auto;min-height:0}
+
+.compact-question-header{display:flex;justify-content:space-between;align-items:center;gap:12px}
+.compact-question-header h4{margin:4px 0}
+.compact-question-body{overflow-wrap:anywhere;line-height:1.6}
+.compact-question-node .review-fields{padding:0;border:0;min-width:0}
+.compact-question-node .review-fields>legend{display:none}
+.compact-question-operations>summary{cursor:pointer;font-weight:600}
+.compact-question-node .review-content-item{padding-block:8px}

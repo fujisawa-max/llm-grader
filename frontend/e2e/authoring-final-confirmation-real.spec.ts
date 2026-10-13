@@ -1,5 +1,5 @@
 import {test,expect,type Page} from "@playwright/test";
-import {openAuthoringEditors} from "./authoringEditMode";
+import {openAuthoringEditors,editQuestionText} from "./authoringEditMode";
 
 test.setTimeout(90000);
 test.skip(!process.env.RUNTIME_MANAGER_E2E,"requires isolated FastAPI/production browser harness");
@@ -24,7 +24,7 @@ test("final review confirms one exact saved authoring revision atomically",async
   await page.getByRole("spinbutton",{name:/^配点/}).fill("10");
   await page.getByRole("button",{name:"プレビューに戻る",exact:true}).click();
   await openAuthoringEditors(page);
-  await page.getByLabel("問題文",{exact:true}).fill("x + 1 = 2");
+  await editQuestionText(page,"x + 1 = 2");
   await page.getByLabel("模範解答本文",{exact:true}).fill("x = 1");
   await page.getByRole("button",{name:"基準を追加"}).click();
   const criterion=page.locator(".compact-rubric-criterion").first();
@@ -50,6 +50,7 @@ test("final review confirms one exact saved authoring revision atomically",async
   await review.click();
   const confirmButton=page.getByRole("button",{name:"この内容でテストを確定",exact:true});
   await expect(confirmButton).toBeEnabled();
+  await page.getByText("問題文を確認",{exact:true}).click();await expect(page.getByText("x + 1 = 2",{exact:true})).toBeVisible();
   await expect(page.getByRole("table",{name:"テスト全体の設問と採点準備"})).toContainText("準備完了");
   const saved=(await (await page.request.get(base+"/authoring")).json()).revision;
   const dialog=page.getByRole("dialog",{name:"この内容でテストを確定しますか？"});
@@ -79,4 +80,6 @@ test("final review confirms one exact saved authoring revision atomically",async
   await page.getByRole("link",{name:"テスト内容を見る",exact:true}).click();
   await expect(page.getByRole("button",{name:"要修正事項、未解決0件",exact:true})).toBeVisible();
   expect((await(await page.request.get(base+"/authoring/review")).json()).issues).toEqual([]);
+  await page.getByRole("button",{name:"修正版を作成",exact:true}).click();await page.getByLabel("対象設問",{exact:true}).selectOption(saved.snapshot.nodes[0].stable_key);await editQuestionText(page,"x + 1 = 2 — revised wording");const savedDraft=page.waitForResponse(response=>response.request().method()==="PUT"&&response.url().endsWith(base+"/authoring"));await page.getByRole("button",{name:"保存",exact:true}).click();expect((await savedDraft).status()).toBe(200);expect((await(await page.request.get(base+"/authoring/confirmed")).json()).active).toEqual(active);await page.getByRole("button",{name:"版の履歴",exact:true}).click();await page.getByRole("dialog").getByRole("button",{name:/第1版 — 現在の確定版/}).click();const historical=page.getByRole("region",{name:"第1版の確定内容"});await expect(historical).toContainText("x + 1 = 2");await expect(historical).not.toContainText("revised wording");await expect(historical.getByRole("button",{name:"編集",exact:true})).toHaveCount(0);await expect(historical.getByRole("textbox")).toHaveCount(0);
+
 });

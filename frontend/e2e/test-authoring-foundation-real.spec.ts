@@ -1,4 +1,4 @@
-import {openAuthoringEditors} from "./authoringEditMode";
+import {openAuthoringEditors,openQuestionDialog,readQuestionText} from "./authoringEditMode";
 import {test,expect} from "@playwright/test";
 
 test.setTimeout(90000);
@@ -22,7 +22,7 @@ test("whole-test drafts preserve local caret, materials, section state and forma
   await page.goto(`/tests/${exam.id}/authoring`);
   await page.getByRole("button",{name:"設問を追加",exact:true}).waitFor();
   await page.getByRole("button",{name:"設問を追加",exact:true}).click();
-  await page.getByLabel("問題文",{exact:true}).waitFor({state:"attached"});await openAuthoringEditors(page);const editor=page.getByLabel("問題文",{exact:true});
+  await openAuthoringEditors(page);const questionDialog=await openQuestionDialog(page),editor=questionDialog.getByLabel("問題文",{exact:true});
   const text="2変数 x1, x2 に対して、\nx1 + x2 - 3 の値が\n0以上ならクラス1";
   await editor.fill(text);
   const at=text.indexOf("\n");
@@ -30,7 +30,7 @@ test("whole-test drafts preserve local caret, materials, section state and forma
   await page.keyboard.press("Delete");
   await expect(editor).toHaveValue(text.slice(0,at)+text.slice(at+1));
   expect(await editor.evaluate(el=>({caret:(el as HTMLTextAreaElement).selectionStart,same:el===(window as unknown as {authorEditor:HTMLTextAreaElement}).authorEditor}))).toEqual({caret:at,same:true});
-  await page.getByRole("button",{name:"設問設定の変更",exact:true}).click();await page.getByRole("spinbutton",{name:/^配点/}).fill("10");await page.getByLabel("問題の表示切替",{exact:true}).getByRole("button",{name:"本文編集",exact:true}).click();
+  await questionDialog.getByRole("button",{name:"完了",exact:true}).click();await page.getByRole("button",{name:"設問設定の変更",exact:true}).click();await page.getByRole("spinbutton",{name:/^配点/}).fill("10");await page.getByRole("button",{name:"プレビューに戻る",exact:true}).click();
   await page.getByLabel("模範解答本文",{exact:true}).fill("Answer draft");
   await page.getByRole("button",{name:"基準を追加"}).click();
   let criterion=page.locator(".compact-rubric-criterion").first();await criterion.locator(".compact-rubric-criterion-header").getByRole("button",{name:"編集",exact:true}).click();let rubricDialog=page.getByRole("dialog",{name:"採点基準本文"});await rubricDialog.getByLabel("採点基準本文").fill("Correct result");await rubricDialog.getByRole("button",{name:"完了",exact:true}).click();
@@ -39,13 +39,13 @@ test("whole-test drafts preserve local caret, materials, section state and forma
   await page.getByRole("checkbox",{name:"問題",exact:true}).uncheck();
   await expect(editor).toHaveCount(0);
   await page.getByRole("checkbox",{name:"問題",exact:true}).check();
-  await expect(editor).toHaveValue(text.slice(0,at)+text.slice(at+1));
+  expect(await readQuestionText(page)).toBe(text.slice(0,at)+text.slice(at+1));
   await expect(page.getByText("未保存の変更があります",{exact:true})).toBeVisible();
   await page.getByRole("button",{name:"保存",exact:true}).first().click();
   await expect(page.locator(".authoring-toast").filter({hasText:"保存しました"}).last()).toBeVisible();
   const saved=await (await page.request.get(base+"/authoring")).json();
   await page.reload();await openAuthoringEditors(page);
-  await expect(editor).toHaveValue(saved.revision.snapshot.nodes[0].body_text);
+  expect(await readQuestionText(page)).toBe(saved.revision.snapshot.nodes[0].body_text);
   await expect(page.getByLabel("模範解答本文",{exact:true})).toHaveValue("Answer draft");
   criterion=page.locator(".compact-rubric-criterion").first();await expect(criterion.locator(".compact-rubric-body")).toContainText("Correct result");
   const reloadedLevels=criterion.locator('details[aria-label="得点段階"]');await expect(reloadedLevels.locator("summary")).toContainText("最高点: 10点");await reloadedLevels.locator("summary").click();await expect(reloadedLevels.locator("table")).toContainText("Incorrect result");await expect(reloadedLevels.locator("table")).toContainText("Correct result");

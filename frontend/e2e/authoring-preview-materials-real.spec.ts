@@ -1,3 +1,4 @@
+import {openQuestionDialog,readQuestionText,openQuestionOperations} from "./authoringEditMode";
 import {confirmAnalysis} from "./authoringNotifications";
 import {test,expect,type Page,type Locator} from "@playwright/test";
 test.setTimeout(90000);
@@ -6,8 +7,8 @@ async function calls(page:Page){return Promise.all(["ocr","math_ocr","ornith_rub
   const result=await(await page.request.get(`${process.env.LLM_GRADER_RUNTIME_MANAGER_URL}/runtimes/${p}/logs?tail=1000`)).json();
   return result.lines.filter((s:string)=>s.includes("POST /v1/chat/completions")).length;
 }));}
-async function exerciseEditor(page:Page,area:Locator,wrapper:Locator){
-  await wrapper.getByRole("button",{name:"本文編集",exact:true}).click();
+async function exerciseEditor(page:Page,area:Locator,wrapper:Locator,isQuestion=false){
+  if(isQuestion){const dialog=await openQuestionDialog(page);area=dialog.getByLabel("問題文",{exact:true});}else await wrapper.getByRole("button",{name:"本文編集",exact:true}).click();
   await area.fill("第1行\n第2行\n第3行");
   await area.evaluate(el=>{const a=el as HTMLTextAreaElement;(window as unknown as {activeAuthoringArea:HTMLTextAreaElement}).activeAuthoringArea=a;a.focus();a.setSelectionRange(3,3);});
   await page.keyboard.press("Delete");await expect(area).toHaveValue("第1行第2行\n第3行");
@@ -24,6 +25,13 @@ async function exerciseEditor(page:Page,area:Locator,wrapper:Locator){
   await area.evaluate(el=>{const a=el as HTMLTextAreaElement;a.setSelectionRange(4,7);});
   await page.keyboard.insertText("貼付\n複数行");
   const current=await area.inputValue(),caret=await area.evaluate(el=>(el as HTMLTextAreaElement).selectionStart);
+  if(isQuestion){
+    expect(await area.evaluate(el=>el===(window as unknown as {activeAuthoringArea:HTMLTextAreaElement}).activeAuthoringArea)).toBe(true);
+    expect(await area.evaluate(el=>(el as HTMLTextAreaElement).selectionStart)).toBe(caret);
+    await page.keyboard.press("Control+z");await expect(area).toHaveValue(beforePaste);await page.keyboard.press("Control+Shift+z");await expect(area).toHaveValue(current);
+    expect((await area.boundingBox())!.height).toBeLessThan(200);
+    await page.getByRole("dialog",{name:"問題文",exact:true}).getByRole("button",{name:"完了",exact:true}).click();expect(await readQuestionText(page)).toBe(current);
+  }else{
   await wrapper.getByRole("button",{name:"プレビューを見る",exact:true}).click();
   await expect(area).not.toBeVisible();await expect(wrapper.locator(".authoring-current-preview")).toContainText("貼付");
   await wrapper.getByRole("button",{name:"本文編集",exact:true}).click();await expect(area).toHaveValue(current);
@@ -31,6 +39,7 @@ async function exerciseEditor(page:Page,area:Locator,wrapper:Locator){
   expect(await area.evaluate(el=>(el as HTMLTextAreaElement).selectionStart)).toBe(caret);
   await page.keyboard.press("Control+z");await expect(area).toHaveValue(beforePaste);await page.keyboard.press("Control+Shift+z");await expect(area).toHaveValue(current);
   expect((await area.boundingBox())!.height).toBeGreaterThanOrEqual(120);expect((await area.boundingBox())!.height).toBeLessThan(200);
+  }
   return current;
 }
 test("current preview and retained editor history; explicit add/replace materials; Back goes to Test",async({page})=>{
@@ -41,7 +50,7 @@ test("current preview and retained editor history; explicit add/replace material
   const exam=await(await page.request.post(`/api/v1/offerings/${seed.course_offering_id}/tests`,{data:{name:"Preview material controls",total_points:10}})).json(),base=`/api/v1/tests/${exam.id}`;
   await page.goto(`/tests/${exam.id}/authoring`);await page.getByRole("button",{name:"設問を追加",exact:true}).waitFor();await page.getByRole("button",{name:"設問を追加",exact:true}).click();
   const question=page.locator("#authoring-question"),answer=page.locator("#authoring-answer"),rubric=page.locator("#authoring-rubric");
-  await expect(question.getByRole("button",{name:"本文編集",exact:true})).toBeVisible();await expect(answer.getByRole("button",{name:"本文編集",exact:true})).toBeVisible();await expect(rubric.getByRole("button",{name:"基準を追加",exact:true})).toBeVisible();
+  await expect(question.getByRole("button",{name:"編集",exact:true})).toBeVisible();await expect(answer.getByRole("button",{name:"本文編集",exact:true})).toBeVisible();await expect(rubric.getByRole("button",{name:"基準を追加",exact:true})).toBeVisible();
   await expect(page.getByLabel("問題文",{exact:true})).not.toBeVisible();await expect(page.getByLabel("模範解答本文",{exact:true})).not.toBeVisible();
   await expect(page.getByRole("button",{name:"設問を追加",exact:true})).toHaveCount(1);
   await expect(page.locator(".authoring-target-controls").getByRole("button",{name:"設問を追加",exact:true})).toBeVisible();
@@ -56,12 +65,12 @@ test("current preview and retained editor history; explicit add/replace material
   await question.locator('input[type="number"]').fill("");
   await question.getByRole("button",{name:"プレビューに戻る",exact:true}).click();
   const before=await(await page.request.get(base+"/authoring")).json(),counts=await calls(page);
-  const qtext=await exerciseEditor(page,page.getByLabel("問題文",{exact:true}),question);
+  const qtext=await exerciseEditor(page,page.getByLabel("問題文",{exact:true}),question,true);await openQuestionOperations(page);
   await expect(page.getByLabel("設問の階層",{exact:true})).not.toBeVisible();await expect(page.getByRole("button",{name:"小問の分割案を作成",exact:true})).toBeVisible();
   await page.getByRole("button",{name:"最終確認へ",exact:true}).click();await page.locator(".authoring-issue-cards article").filter({hasText:"問題1"}).filter({hasText:"配点を確認"}).getByRole("button",{name:"配点を修正",exact:true}).click();await expect.poll(()=>page.evaluate(()=>document.activeElement?.getAttribute("type"))).toBe("number");await expect(page.getByLabel("問題文",{exact:true})).not.toBeVisible();await expect(page.getByLabel("設問の階層",{exact:true})).toBeVisible();await expect(page.getByRole("button",{name:"小問の分割案を作成",exact:true})).not.toBeVisible();
-  await question.getByRole("button",{name:"本文編集",exact:true}).click();await expect(page.getByLabel("問題文",{exact:true})).toHaveValue(qtext);
+  if(await question.getByRole("button",{name:"プレビューに戻る",exact:true}).count())await question.getByRole("button",{name:"プレビューに戻る",exact:true}).click();expect(await readQuestionText(page)).toBe(qtext);
   const atext=await exerciseEditor(page,page.getByLabel("模範解答本文",{exact:true}),answer);
-  await question.getByRole("button",{name:"プレビューを見る",exact:true}).click();await expect(answer.getByRole("button",{name:"プレビューを見る",exact:true})).toBeVisible();
+  await expect(answer.getByRole("button",{name:"プレビューを見る",exact:true})).toBeVisible();
   await page.getByRole("button",{name:"基準を追加",exact:true}).click();
   let criterion=rubric.locator(".compact-rubric-criterion").first();await criterion.locator(".compact-rubric-criterion-header").getByRole("button",{name:"編集",exact:true}).click();let dialog=page.getByRole("dialog",{name:"採点基準本文"});await dialog.getByLabel("採点基準本文").fill("$x^2$ を確認");await dialog.getByRole("button",{name:"完了",exact:true}).click();
   const levels=criterion.locator('details[aria-label="得点段階"]');await levels.locator("summary").click();await levels.locator("tbody tr").nth(1).getByRole("button",{name:"編集",exact:true}).click();dialog=page.getByRole("dialog",{name:"得点段階を編集"});await dialog.getByLabel("点数").fill("5");await dialog.getByLabel("条件").fill("$x^2$ を確認");await dialog.getByRole("button",{name:"完了",exact:true}).click();
@@ -86,7 +95,7 @@ test("current preview and retained editor history; explicit add/replace material
   await page.getByRole("button",{name:"保存",exact:true}).first().click();await expect(page.locator(".authoring-toast").filter({hasText:"保存しました"}).last()).toBeVisible();
   const saved=(await(await page.request.get(base+"/authoring")).json()).revision,replacementRef=saved.snapshot.materials.find((m:{id:string;replaces_material_id?:string})=>m.replaces_material_id===old);expect(replacementRef).toBeTruthy();
   await page.reload();await expect(page.locator("#authoring-question .authoring-question-preview-frame")).toContainText("貼付");await expect(page.locator("#authoring-answer .authoring-answer-preview-frame")).toContainText("日本語");await expect(page.getByLabel("模範解答本文",{exact:true})).not.toBeVisible();
-  await question.getByRole("button",{name:"本文編集",exact:true}).click();await expect(page.getByLabel("問題文",{exact:true})).toHaveValue(qtext);await answer.getByRole("button",{name:"本文編集",exact:true}).click();await expect(page.getByLabel("模範解答本文",{exact:true})).toHaveValue(atext);
+  if(await question.getByRole("button",{name:"プレビューに戻る",exact:true}).count())await question.getByRole("button",{name:"プレビューに戻る",exact:true}).click();expect(await readQuestionText(page)).toBe(qtext);await answer.getByRole("button",{name:"本文編集",exact:true}).click();await expect(page.getByLabel("模範解答本文",{exact:true})).toHaveValue(atext);
   await selector.selectOption(replacementRef!.id);const materialActions=page.getByRole("group",{name:"利用資料の操作"});await expect(materialActions.getByRole("button",{name:"解析",exact:true})).toBeEnabled();
   await confirmAnalysis(page,materialActions,"解析");await expect(materialActions.getByRole("button",{name:"再解析",exact:true})).toBeEnabled();
   const analyzed=(await(await page.request.get(base+"/authoring")).json()).revision;expect(analyzed.snapshot.nodes).toEqual(saved.snapshot.nodes);expect(analyzed.snapshot.domains.answer.material_id).toBe(replacementRef!.id);

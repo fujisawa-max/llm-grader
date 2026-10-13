@@ -1,4 +1,5 @@
-import { useMemo, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {AuthoringDialog} from "./AuthoringDialog";
 import type { AutomaticNode, Region, ReviewNode } from "@/types/reviews";
 import { questionTypeLabel, reviewDecisionLabel, scoreSemanticsLabel } from "@/lib/reviewLabels";
 import { MarkdownMathText, MarkdownMathPreview, markdownMathHelp } from "@/components/MarkdownMathText";
@@ -10,13 +11,17 @@ import { questionMathSource, questionMathReference } from "@/lib/questionMathSou
 import type { LatexProposal } from "@/lib/api/textTools";
 import {editQuestionContent} from "@/lib/questionContent";
 
-export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange, onParent, onMove, onRegion, activeRegionId, renderEvidence, issues = {}, mathContext, content, contentChanged, textReviewed = false, onContentChange, onConfirmContent, onCaret, inlinePreview = true, editorMode = "all" }: {
+export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange, onParent, onMove, onRegion, activeRegionId, renderEvidence, issues = {}, mathContext, content, contentChanged, textReviewed = false, onContentChange, onConfirmContent, onCaret, inlinePreview = true, editorMode = "all", compact = false, onSplitAtCaret, operations, dialogResetKey }: {
+  compact?: boolean;
+  dialogResetKey?:string;
+  onSplitAtCaret?: (text:string,offset:number,proposal?:LatexProposal)=>void;
+  operations?: ReactNode;
   editorMode?: "all"|"body"|"settings";
   inlinePreview?: boolean;
   content: string; contentChanged: boolean;
   textReviewed?: boolean;
   onCaret?: (offset:number)=>void;
-  onContentChange: (text: string, proposal?: LatexProposal) => void;
+  onContentChange: (text: string, proposal?: LatexProposal, manual?:boolean) => void;
   onConfirmContent: (confirm: (node: ReviewNode) => ReviewNode) => void;
   mathContext?: {reviewId: string; revision: number; savedNode?: ReviewNode; authoringTestId?: string};
   node: ReviewNode; nodes: ReviewNode[]; automatic?: AutomaticNode; regions: Region[]; readonly: boolean;
@@ -24,6 +29,12 @@ export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange
   onMove: (direction: number) => void; onRegion: (region: string) => void;
   activeRegionId?: string; renderEvidence?: (regionId: string) => ReactNode; issues?: Record<string, string[]>;
 }) {
+  const [dialog,setDialog]=useState<{text:string;mode:"edit"|"split";proposal?:LatexProposal;manual?:boolean}|null>(null);
+  const dialogText=useRef<HTMLTextAreaElement>(null);
+  useEffect(()=>setDialog(null),[node.stable_key,dialogResetKey,readonly]);
+  const openDialog=(mode:"edit"|"split")=>setDialog({text:content,mode});
+  const completeDialog=()=>{if(dialog&&dialog.text!==content)onContentChange(dialog.text,dialog.proposal,dialog.manual);setDialog(null);};
+  const splitDialog=()=>{if(!dialog||!onSplitAtCaret)return;const offset=dialogText.current?.selectionStart??0;if(dialog.text!==content)onContentChange(dialog.text,dialog.proposal,dialog.manual);onSplitAtCaret(dialog.text,offset,dialog.proposal);setDialog(null);};
   const descendants = new Set([node.stable_key]);
   for (let i = 0; i < nodes.length; i++) for (const n of nodes) if (n.parent_key && descendants.has(n.parent_key)) descendants.add(n.stable_key);
   const modified = useMemo(() => automatic && (JSON.stringify(automatic.ordered_content) !== JSON.stringify(node.ordered_content) ||
@@ -57,7 +68,7 @@ export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange
   const fieldIssues = (key: string) => issues[key] || [];
   const errors = (key: string) => fieldIssues(key).map((issue, index) => <small key={index} className="review-field-error" role="alert">{issue}</small>);
   const needsCheck = (key: string) => fieldIssues(key).length ? <span className="review-required">要確認</span> : null;
-  return <article className="panel review-field-target" id={reviewFieldId(node.stable_key, "node")} aria-label="選択問題エディタ">
+  return <article className={`panel review-field-target${compact?" compact-question-node":""}`} id={reviewFieldId(node.stable_key, "node")} aria-label="選択問題エディタ">
     <h3>{node.label.raw || "名称未設定の設問"} {(modified || contentChanged) && <span className="badge badge-rubric_review">自動解析から変更あり</span>}</h3>
     {errors("node")}
     <fieldset disabled={readonly} className="review-fields"><legend>設問の編集</legend>
@@ -92,7 +103,7 @@ export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange
       </div><div className="review-node-mode" style={editorMode==="all"?{display:"contents"}:undefined} hidden={editorMode==="settings"}><section id={reviewFieldId(node.stable_key, "content")} className={fieldIssues("content").length ? "review-content-item has-error" : "review-content-item"} data-content-type="question-content" aria-label="問題文の編集">
         {Object.keys(issues).filter(key => key.startsWith("text:") || key.startsWith("formula:")).map(key =>
           <span key={key} id={reviewFieldId(node.stable_key, key)} />)}
-        <label>問題文<textarea aria-label="問題文" maxLength={20000} rows={editorMode==="all"?14:4} value={content} aria-invalid={!!fieldIssues("content").length}
+        {compact?<><header className="compact-question-header"><h4>問題文</h4>{!readonly&&<button type="button" data-question-edit onClick={()=>openDialog("edit")}>編集</button>}</header><div className="compact-question-body authoring-question-preview-frame" aria-label="問題プレビュー"><MarkdownMathText source={content||"本文なし"}/></div></>:<><label>問題文<textarea aria-label="問題文" maxLength={20000} rows={editorMode==="all"?14:4} value={content} aria-invalid={!!fieldIssues("content").length}
           onSelect={event=>onCaret?.(event.currentTarget.selectionStart)} onChange={event => onContentChange(event.target.value)} /></label>
         {errors("content")}
         <small className="math-help">{markdownMathHelp}</small>{inlinePreview && <MarkdownMathPreview source={content} />}
@@ -102,6 +113,7 @@ export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange
           {!source && <p className="muted" role="status">{!mathContext.savedNode || JSON.stringify(node.ordered_content.map(questionMathReference)) !== JSON.stringify(mathContext.savedNode.ordered_content.map(questionMathReference))
             ? "構成の変更を保存すると、元PDFとの対応を確認して数式OCRを利用できます。"
             : "この設問には利用できる元PDFの対応情報がありません。"}</p>}</>}
+        </>}
         {regions.some(r => r.region_type === "formula") && (!textReviewed||formulaReviewPending) && <div className="review-toolbar">
           <button type="button" data-review-confirm-content onClick={confirmContent}>{textReviewed?"数式を確認":"問題文を確認"}</button>
           <span className="muted">{textReviewed?"数式の内容を元資料と照合してください。":!contentChanged && regions.filter(r => r.region_type === "formula").every(r => formulaIsConfirmed(node.formula_decisions[r.region_id]))
@@ -109,6 +121,7 @@ export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange
         </div>}
         {Object.entries(issues).filter(([key]) => key.startsWith("text:") || key.startsWith("formula:")).flatMap(([key, messages]) =>
           messages.map((message, index) => <p role="alert" key={`${key}:${index}`}>{message}</p>))}
+        {compact&&!readonly&&<details className="compact-question-operations"><summary>問題の操作</summary><div className="compact-rubric-actions"><button type="button" onClick={()=>openDialog("split")}>位置を指定して2分割</button>{operations}</div></details>}
       </section>
       {node.ordered_content.filter(item => item.type === "figure_region").map(item => {
         const id = String("region_id" in item ? item.region_id : ""), decision = node.figure_decisions[id];
@@ -131,5 +144,11 @@ export function NodeEditor({ node, nodes, automatic, regions, readonly, onChange
     <details><summary>保存済みの問題文を表示</summary><MarkdownMathText source={node.body_text} /></details>
     {automatic && <details><summary>自動解析された問題文を表示</summary><MarkdownMathText source={automatic.body_text} /></details>}
     <details><summary>技術情報</summary><code>{node.stable_key}</code></details>
+    {compact&&dialog&&<AuthoringDialog title={dialog.mode==="split"?"問題文の分割位置を指定":"問題文"} onCancel={()=>setDialog(null)} actions={<><button type="button" onClick={()=>setDialog(null)}>キャンセル</button><button type="button" onClick={splitDialog}>カーソルの位置で分割</button><button type="button" onClick={completeDialog}>完了</button></>}>
+      {dialog.mode==="split"&&<p>分割する位置にカーソルを置いてください。</p>}
+      <label className="compact-rubric-dialog-field">問題文<textarea aria-label="問題文" ref={dialogText} autoFocus rows={4} maxLength={20000} value={dialog.text} onSelect={event=>onCaret?.(event.currentTarget.selectionStart)} onChange={event=>setDialog(value=>value?{...value,text:event.target.value,manual:true}:value)}/></label>
+      <small className="math-help">{markdownMathHelp}</small>
+      {mathContext&&<div className="compact-rubric-dialog-conversion"><LatexNormalizationControl text={dialog.text} contextType="question" contextLabel={node.label.raw} source={source} disabled={readonly||!source} onApply={(text,proposal)=>setDialog(value=>value?{...value,text,proposal,manual:false}:value)}/>{!source&&<p className="muted">構成の変更を保存すると、元PDFとの対応を確認して数式OCRを利用できます。</p>}</div>}
+    </AuthoringDialog>}
   </article>;
 }

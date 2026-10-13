@@ -1,3 +1,4 @@
+import {editQuestionText,readQuestionText,openQuestionOperations} from "./authoringEditMode";
 import {openAuthoringEditors} from "./authoringEditMode";
 import {test,expect,type Page} from "@playwright/test";
 test.setTimeout(90000);
@@ -32,7 +33,7 @@ test("Test and single right-hand recent shortcut open authoring; source stacks v
   await expect(page.getByRole("button",{name:/下書き.*作成/})).toHaveCount(0);
   const initial=(await (await page.request.get(base+"/authoring")).json()).revision;await page.reload();await page.getByRole("button",{name:"設問を追加",exact:true}).waitFor();expect((await (await page.request.get(base+"/authoring")).json()).revision.id).toBe(initial.id);expect(await modelCalls(page)).toEqual(callsBefore);
   await page.getByRole("button",{name:"設問を追加",exact:true}).click();
-  await page.getByLabel("問題文",{exact:true}).waitFor({state:"attached"});await openAuthoringEditors(page);const text=page.getByLabel("問題文",{exact:true});await text.fill("第1行\n第2行\n第3行");
+  await page.locator("#authoring-question .compact-question-body").waitFor({state:"attached"});await openAuthoringEditors(page);const text=page.locator("#authoring-question .compact-question-body");await editQuestionText(page,"第1行\n第2行\n第3行");
   await page.getByRole("checkbox",{name:"採点基準",exact:true}).uncheck();
   const selected=await page.getByLabel("対象設問",{exact:true}).inputValue();
   const source=page.locator(".review-workspace-source"),editor=page.locator(".review-workspace-editor");
@@ -49,7 +50,7 @@ test("Test and single right-hand recent shortcut open authoring; source stacks v
   await source.getByRole("button",{name:"ページに合わせる",exact:true}).click();await source.getByRole("button",{name:"幅に合わせる",exact:true}).click();
   await source.getByRole("button",{name:"倍率をリセット",exact:true}).click();await expect(toolbar.getByText("100%",{exact:true})).toBeVisible();
   await material.selectOption(materials[1].id);await expect(source.getByRole("button",{name:"拡大",exact:true})).toBeEnabled();
-  await expect(text).toHaveValue("第1行\n第2行\n第3行");await expect(page.getByLabel("対象設問",{exact:true})).toHaveValue(selected);
+  expect(await readQuestionText(page)).toBe("第1行\n第2行\n第3行");await expect(page.getByLabel("対象設問",{exact:true})).toHaveValue(selected);
   await expect(page.getByRole("checkbox",{name:"採点基準",exact:true})).not.toBeChecked();await expect(page.getByText("未保存の変更があります",{exact:true})).toBeVisible();
   await expect(source.locator(".diagram-overlay")).toHaveCount(0);
   await page.evaluate(()=>window.scrollTo(0,document.body.scrollHeight));b=await boxes();
@@ -72,7 +73,7 @@ test("Test and single right-hand recent shortcut open authoring; source stacks v
   await page.setViewportSize({width:560,height:900});await expect(recent.getByRole("link",{name:"編集を続ける",exact:true})).toBeVisible();
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true);
   await recent.getByRole("link",{name:"編集を続ける",exact:true}).click();await expect(page).toHaveURL(new RegExp(`/tests/${exam.id}/authoring$`));
-  await expect(text).toHaveValue(saved.snapshot.nodes[0].body_text);
+  expect(await readQuestionText(page)).toBe(saved.snapshot.nodes[0].body_text);
   expect((await (await page.request.get(base+"/authoring")).json()).revision.id).toBe(saved.id);
   await page.goto(`/tests/${exam.id}`);await guidance.getByRole("button",{name:"編集を続ける ›",exact:true}).click();await expect(page).toHaveURL(new RegExp(`/tests/${exam.id}/authoring$`));
   expect(await modelCalls(page)).toEqual(callsBefore);expect(errors).toEqual([]);

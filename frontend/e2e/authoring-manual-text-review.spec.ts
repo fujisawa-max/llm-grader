@@ -1,3 +1,6 @@
+import {reviewFieldId} from "../lib/reviewValidation";
+import {confirmAnalysis} from "./authoringNotifications";
+import {editQuestionText,readQuestionText,openQuestionDialog} from "./authoringEditMode";
 import {test,expect} from '@playwright/test';
 import {readFile} from 'node:fs/promises';
 import {editQuestionContent,questionContent} from '../lib/questionContent';
@@ -64,19 +67,26 @@ test('Sample Q5 manual prose Save preserves math review and unrelated warnings a
  const draft=await(await page.request.post(`/api/v1/question-imports/${extraction.id}/draft`)).json();
  expect((await page.request.post(`/api/v1/question-import-drafts/${draft.id}/reviews`)).status()).toBe(201);
  expect((await page.request.post(base+'/source-import',{data:{expected_edit_version:row.edit_version,analysis_material_id:extraction.material_id}})).status()).toBe(200);
+ // Explicit pending formula decision in this disposable fixture makes the server-owned formula issue navigable.
+ row=(await(await page.request.get(base)).json()).revision;const q3=row.snapshot.nodes.find((n:ReviewNode)=>n.stable_key==='q3');const formulaRegions=row.snapshot.domains.question.document.regions.filter((r:{region_type:string;assigned_question_key:string})=>r.region_type==='formula'&&r.assigned_question_key===(q3.source_draft_stable_key||q3.stable_key));expect(formulaRegions.length).toBeGreaterThan(0);q3.formula_decisions={...q3.formula_decisions,[formulaRegions[0].region_id]:{decision:'unreviewed'}};const pendingSave=await page.request.put(base,{data:{snapshot:row.snapshot,expected_edit_version:row.edit_version}});expect(pendingSave.status(),await pendingSave.text()).toBe(200);
  await page.goto(`/tests/${exam.id}/authoring`);
  const selector=page.getByLabel('対象設問',{exact:true});await selector.selectOption('q3');
- await page.locator('#authoring-question').getByRole('button',{name:'本文編集',exact:true}).click();
- const editor=page.getByLabel('問題文',{exact:true});await expect(editor).toBeEditable();
- // Establish existing formula review using its ordinary explicit control.
- await page.getByRole('button',{name:'問題文を確認',exact:true}).click();
+
+ const editor=page.locator('#authoring-question .compact-question-body');await expect(editor).toBeVisible();
+ const initialText=await readQuestionText(page);let firstDialog=await openQuestionDialog(page);await firstDialog.getByLabel('問題文',{exact:true}).fill(initialText);await firstDialog.getByRole('button',{name:'完了',exact:true}).click();await expect(page.getByRole('button',{name:'問題文を確認',exact:true})).toBeVisible();
+ firstDialog=await openQuestionDialog(page);await firstDialog.getByLabel('問題文',{exact:true}).fill(initialText+' 一時変更');await firstDialog.getByLabel('問題文',{exact:true}).fill(initialText);await firstDialog.getByRole('button',{name:'完了',exact:true}).click();await expect(page.getByRole('button',{name:'問題文を確認',exact:true})).toBeVisible();
+ await editQuestionText(page,initialText+'  ');await expect(page.getByRole('button',{name:'問題文を確認',exact:true})).toBeVisible();await editQuestionText(page,initialText);
+ await editQuestionText(page,initialText+'\n教師が本文を補足しました。');await expect(page.getByRole('button',{name:'問題文を確認',exact:true})).toHaveCount(0);await expect(page.getByRole('button',{name:'数式を確認',exact:true})).toBeVisible();
+ const formulaIssue=(await(await page.request.get(base+'/review')).json()).issues.find((i:{question_key:string;field:string})=>i.question_key==='q3'&&i.field==='formula');expect(formulaIssue).toBeTruthy();await page.getByRole('button',{name:/^要修正 \d+件$/}).click();const overlay=page.getByRole('region',{name:/の要修正$/});await overlay.locator('article').filter({hasText:formulaIssue.message}).first().getByRole('button',{name:'出典確認へ',exact:true}).click();const formulaTarget=page.locator(`[id="${reviewFieldId('q3',`source:${formulaIssue.region_id}`)}"]`);await expect(formulaTarget).toBeVisible();await expect(formulaTarget.getByRole('button',{name:'元資料を確認',exact:true})).toBeFocused();
+ // Text editing must not approve independent formulas.
+ await page.getByRole('button',{name:'数式を確認',exact:true}).click();
  async function save(){const response=page.waitForResponse(r=>r.request().method()==='PUT'&&r.url().endsWith(base));await page.getByRole('button',{name:'保存',exact:true}).click();expect((await response).status()).toBe(200);}
  await save();
  const baseline=(await(await page.request.get(base)).json()).revision;
  const before=baseline.snapshot.nodes.find((n:ReviewNode)=>n.stable_key==='q3');
  const beforeIssues=(await(await page.request.get(base+'/review')).json()).issues;
  const warnings=beforeIssues.filter((i:{code:string})=>i.code==='question_source_warning');
- const text=await editor.inputValue();await editor.fill(text+'\n各点について説明してください。');await save();
+ const text=await readQuestionText(page);const dialog=await openQuestionDialog(page);await dialog.getByLabel('問題文',{exact:true}).fill(text+'\n各点について説明してください。');await dialog.getByRole('button',{name:'完了',exact:true}).click();await expect(page.getByRole('button',{name:'問題文を確認',exact:true})).toHaveCount(0);await save();
  const saved=(await(await page.request.get(base)).json()).revision;
  const after=saved.snapshot.nodes.find((n:ReviewNode)=>n.stable_key==='q3');
  expect(after.formula_decisions).toEqual(before.formula_decisions);
@@ -89,8 +99,10 @@ test('Sample Q5 manual prose Save preserves math review and unrelated warnings a
  const option=selector.locator('option[value="q3"]');
  if(count){await expect(option).toContainText(' *');await expect(page.getByRole('button',{name:`要修正 ${count}件`,exact:true})).toBeVisible();}
  else {await expect(option).not.toContainText('*');await expect(page.getByRole('button',{name:/^要修正 \d+件$/})).toHaveCount(0);}
- await page.reload();await selector.selectOption('q3');await page.locator('#authoring-question').getByRole('button',{name:'本文編集',exact:true}).click();await expect(editor).toHaveValue(text+'\n各点について説明してください。');
+ await page.reload();await selector.selectOption('q3');expect(await readQuestionText(page)).toBe(text+'\n各点について説明してください。');await expect(page.getByRole('button',{name:'問題文を確認',exact:true})).toHaveCount(0);
  expect((await(await page.request.get(base)).json()).revision.snapshot.nodes.find((n:ReviewNode)=>n.stable_key==='q3').teacher_correction).toEqual(after.teacher_correction);
  await page.getByRole('link',{name:'戻る',exact:true}).click();await page.getByRole('link',{name:'テスト内容を編集',exact:true}).click();
- await selector.selectOption('q3');await page.locator('#authoring-question').getByRole('button',{name:'本文編集',exact:true}).click();await expect(editor).toHaveValue(text+'\n各点について説明してください。');
+ await selector.selectOption('q3');expect(await readQuestionText(page)).toBe(text+'\n各点について説明してください。');await expect(page.getByRole('button',{name:'問題文を確認',exact:true})).toHaveCount(0);
+ await page.getByLabel('利用資料',{exact:true}).selectOption(extraction.material_id);const controls=page.getByRole('group',{name:'利用資料の操作'});const action=await controls.getByRole('button',{name:'再解析',exact:true}).count()?'再解析':'解析';await confirmAnalysis(page,controls,action);await expect(controls.getByRole('button',{name:'再解析',exact:true})).toBeEnabled();await selector.selectOption('q3');await expect(page.getByRole('button',{name:'問題文を確認',exact:true})).toBeVisible();expect(await readQuestionText(page)).not.toContain('各点について説明してください。');
+
 });
