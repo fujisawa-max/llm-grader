@@ -1,3 +1,4 @@
+import {editAnswerText} from "./authoringEditMode";
 import {test,expect,type Page,type Locator} from '@playwright/test';
 import {saveAuthoring} from './authoringNotifications';
 
@@ -38,7 +39,7 @@ test('manual classification-routing edits confirm semantics, preserve automatic 
   const entry=page.locator(`#authoring-candidate-${original.id}`),details=entry.locator('[data-authoring-classification]');
   await expect(details).toHaveAttribute('open','');await visibleContent(page,details.locator('summary'));
   await expect(details).toHaveClass(/authoring-correction-target/);
-  const before=await calls(page);await entry.getByLabel('模範解答本文',{exact:true}).fill(original.answer_text+' Teacher prose correction.');await saveAuthoring(page);
+  const before=await calls(page);await editAnswerText(page,original.answer_text+' Teacher prose correction.',entry);await saveAuthoring(page);
   row=(await(await page.request.get(base)).json()).revision;let saved=row.snapshot.domains.answer.entries.find((e:any)=>e.id===original.id);
   expect(saved.semantic_classification.status).toBe('needs_teacher_review');expect(saved.teacher_correction?.confirmation_origin).not.toBe('manual_edit');
   expect(saved.teacher_correction.text_review.confirmation_origin).toBe('manual_edit');

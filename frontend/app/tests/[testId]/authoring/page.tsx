@@ -8,11 +8,11 @@ import {questionTextReviewed} from "@/lib/authoringTextReview";
 import {AuthoringRevisionHistory} from "@/components/reviews/AuthoringRevisionHistory";
 import {AuthoringDialog} from "@/components/reviews/AuthoringDialog";
 import {ReviewWorkspaceLayout} from "@/components/reviews/ReviewWorkspaceLayout";
-import {AuthoringPreviewEditor, AcceptedDiagramPreview} from "@/components/reviews/AuthoringPreviewEditor";
+import {CompactModelAnswerText} from "@/components/reviews/CompactModelAnswerText";
+import {AcceptedDiagramPreview} from "@/components/reviews/AuthoringPreviewEditor";
 import {MarkdownMathText} from "@/components/MarkdownMathText";
 import {NodeEditor} from "@/components/reviews/NodeEditor";
 import {SourcePdfPreview} from "@/components/SourcePdfPreview";
-import {LatexNormalizationControl} from "@/components/LatexNormalizationControl";
 import {LoadingState, ErrorState} from "@/components/ui";
 import {testAuthoring, type AuthoringRevision, type AuthoringSnapshot, type AuthoringIssue, type AuthoringReview} from "@/lib/api/testAuthoring";
 import {authoringBuffers,prepareAuthoringSave,analysisReadiness} from "@/lib/authoringState";
@@ -206,6 +206,10 @@ export default function TestAuthoringPage() {
       if(issue.warning_id)target=document.getElementById(reviewWarningId(issue.warning_id));
       else if(issue.region_id&&issue.question_key)target=document.getElementById(reviewFieldId(issue.question_key,issue.field==="formula"?`source:${issue.region_id}`:`figure:${issue.region_id}`))||target;
       if(target)for(let parent=target.parentElement;parent;parent=parent.parentElement)if(parent instanceof HTMLDetailsElement)parent.open=true;
+      if(section==="answer"){
+        const operations=target?.querySelector<HTMLDetailsElement>('[data-answer-operations]');if(operations&&["classification","mapping"].includes(issue.field||""))operations.open=true;
+        if(["content","source"].includes(issue.field||"")){const edit=target?.querySelector<HTMLElement>('[data-answer-edit]');if(edit)target=edit;}
+      }
       if(issue.field==="classification"){
         const details=target?.querySelector<HTMLDetailsElement>('[data-authoring-classification]');if(details){details.open=true;target=details;}
       }
@@ -223,6 +227,7 @@ export default function TestAuthoringPage() {
       if(section==="question"&&!issue.warning_id&&!issue.region_id&&["content","source"].includes(issue.field||"")){
         const edit=target?.querySelector<HTMLElement>('[data-question-edit]');if(edit){content=edit.closest<HTMLElement>('[data-content-type="question-content"]')||target;target=edit;}
       }
+      if(section==="answer"&&["content","source"].includes(issue.field||""))target=target?.querySelector<HTMLElement>("[data-answer-edit]")||target;
       if(issue.field==="score")target=target?.querySelector<HTMLElement>('input[type="number"]')||target;
       if(issue.field==="mapping")target=target?.querySelector<HTMLElement>('[aria-label="対応する設問"]')||target;
       if(!target)return;
@@ -588,6 +593,7 @@ export default function TestAuthoringPage() {
         })}</tbody></table>
         <details><summary>得点段階と部分点の条件</summary>{orderedNodes().filter(n=>n.included&&!nodes.some(child=>child.included&&child.parent_key===n.stable_key)).map(n=><section key={n.stable_key}><h3>{pathFor(n.stable_key)}</h3><p>基準ごとの最高点を合計します。</p>{(snapshot.rubrics[n.stable_key]||[]).map(c=>{const maximum=Math.max(0,...(c.levels||[]).map(level=>typeof level.score==="number"&&Number.isFinite(level.score)?level.score:0));return <article key={c.id}><p>{c.description} — 最高点 {maximum}点</p>{c.levels?.length?<ul>{c.levels.map((level,index)=><li key={index}>{level.score??"未設定"}点: {level.condition||"条件が未設定"}</li>)}</ul>:<p>得点段階が未設定です。</p>}</article>})}</section>)}</details>
         <details><summary>問題文を確認</summary>{orderedNodes().filter(n=>n.included).map(n=><article key={n.stable_key}><h3>{pathFor(n.stable_key)}</h3><MarkdownMathText source={buffers[n.stable_key]??n.body_text}/></article>)}</details>
+        <details><summary>模範解答を確認</summary>{orderedNodes().filter(n=>n.included).map(n=>{const value=snapshot.answers[n.stable_key];return value&&<article key={n.stable_key}><h3>{pathFor(n.stable_key)}</h3>{[value.primary,...value.alternatives].map((text,index)=><section key={index}><h4>模範解答{index+1}</h4><MarkdownMathText source={text||"本文なし"}/></section>)}<AcceptedDiagramPreview records={value.diagram_records}/></article>;})}</details>
         <h3>要修正事項 {issues.length}件</h3><AuthoringIssueCards issues={issues} pathFor={pathFor} onAction={navigate}/>
         {questionDomain&&questionDomain.document.warnings.length>0&&<WarningPanel quickAcknowledge targetLabel={w=>{const owner=warningQuestion(w);return owner?pathFor(owner.stable_key):"試験全体";}} warnings={questionWarningCatalog} states={questionDomain.snapshot.warning_states||{}} readonly={readonly||saving||analyzing}
             onChange={(key,resolution)=>change({...snapshot,domains:{...snapshot.domains,question:{...questionDomain,snapshot:{...questionDomain.snapshot,warning_states:{...questionDomain.snapshot.warning_states,[key]:resolution}}}}})}/>}
@@ -636,7 +642,7 @@ export default function TestAuthoringPage() {
           {snapshot.domains?.answer&&revision?<AuthoringCandidates key={`answer:${snapshot.domains.answer.draft_id}`} testId={id} draftId={snapshot.domains.answer.draft_id} revision={revision.edit_version} questionKey={selected}
             staleSourceDraftIds={staleAnswerSourceDraftIds} entries={snapshot.domains.answer.entries as AuthoringEntry[]} savedEntries={(revision.snapshot.domains?.answer?.entries||[]) as AuthoringEntry[]} disabled={readonly||saving||analyzing}
             answerEditing={editing.answer} rubricEditing={false} onAnswerEditing={value=>setEditing(v=>({...v,answer:value}))} onRubricEditing={()=>{}}
-            showAnswer showRubric={false} questions={orderedNodes().map(n=>({key:n.stable_key,parentKey:n.parent_key,label:pathFor(n.stable_key),gradable:!nodes.some(c=>c.included&&c.parent_key===n.stable_key),sourceId:snapshot.source_provenance.authoring_origins?.identities[n.stable_key]?.formal_question_id||n.stable_key}))}
+            compactAnswer showAnswer showRubric={false} questions={orderedNodes().map(n=>({key:n.stable_key,parentKey:n.parent_key,label:pathFor(n.stable_key),gradable:!nodes.some(c=>c.included&&c.parent_key===n.stable_key),sourceId:snapshot.source_provenance.authoring_origins?.identities[n.stable_key]?.formal_question_id||n.stable_key}))}
             onSelect={selection=>{if(selection.record.source_type==="manual_pdf_crop"&&selection.record.material_id){setMaterialId(String(selection.record.material_id));setSourceMode("pdf");}setDiagramSelection(selection);}} onChange={entries=>{
               const answerDomain=snapshot.domains?.answer;
               if(!answerDomain)return;
@@ -647,10 +653,8 @@ export default function TestAuthoringPage() {
                 answers[key]={primary:primary?.answer_text||"",alternatives:current.flatMap(e=>[...(e.answer_kind==="alternative"?[e.answer_text]:[]),...(e.manual_alternative_answers||e.semantic_classification?.manual_alternative_answers||e.semantic_classification?.alternative_answers||[]).map(a=>a.text)]),diagram_records:primary?.diagram_records||[]};
               }
               change({...snapshot,domains:{...snapshot.domains,answer:{...answerDomain,entries}},answers},"answer");
-            }}/>:<AuthoringPreviewEditor editLabel="本文編集" label="模範解答" editing={editing.answer} onEditing={value=>setEditing(v=>({...v,answer:value}))} preview={<div className="authoring-question-preview-frame authoring-answer-preview-frame"><MarkdownMathText source={answer.primary||"本文なし"}/>{answer.alternatives.map((text,index)=><div key={index}><h4>別解{index+1}</h4><MarkdownMathText source={text}/></div>)}<AcceptedDiagramPreview records={answer.diagram_records}/></div>}>
-            <label>模範解答本文<textarea aria-label="模範解答本文" rows={4} disabled={readonly||saving||analyzing} value={answer.primary} onChange={event=>change({...snapshot,answers:{...snapshot.answers,[selected]:{...answer,primary:event.target.value}}},"answer")}/></label>
-            <LatexNormalizationControl text={answer.primary} contextType="model_answer" disabled={readonly||saving||analyzing} onApply={text=>change({...snapshot,answers:{...snapshot.answers,[selected]:{...answer,primary:text}}},"answer")}/>
-          </AuthoringPreviewEditor>}
+            }}/>:<><CompactModelAnswerText key={`${revision?.id}:${selected}`} label="模範解答1" addLabel="模範解答を追加" text={answer.primary} alternatives={answer.alternatives.map((text,index)=>({id:`legacy-alternative-${index}`,text}))} disabled={readonly||saving||analyzing} onText={text=>change({...snapshot,answers:{...snapshot.answers,[selected]:{...answer,primary:text}}},"answer")} onAlternatives={values=>change({...snapshot,answers:{...snapshot.answers,[selected]:{...answer,alternatives:values.map(a=>a.text)}}},"answer")}/><AcceptedDiagramPreview records={answer.diagram_records}/></>}
+
         </section>}
         {visible.rubric&&<section id="authoring-rubric" tabIndex={-1} aria-label="採点基準"><h2>採点基準</h2>
           <AuthoringCandidates key={`rubric:${rubricDomain?.draft_id||"manual"}`} testId={id} draftId={rubricDomain?.draft_id||"manual-rubric"} revision={revision?.edit_version||1} questionKey={selected}

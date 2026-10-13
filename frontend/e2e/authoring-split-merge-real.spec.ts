@@ -1,4 +1,4 @@
-import {editQuestionText,readQuestionText,openQuestionOperations} from "./authoringEditMode";
+import {addModelAnswer,openAuthoringEditors,editQuestionText,readQuestionText,openQuestionOperations} from "./authoringEditMode";
 import {confirmAnalysis,saveAuthoring} from "./authoringNotifications";
 import {test,expect,type Page} from "@playwright/test";
 import {readFile} from "node:fs/promises";
@@ -47,7 +47,7 @@ test("AI split feedback/review and sequential answer/rubric analysis preserve th
   if(role==="model_answer_source"){
    expect(row.snapshot.domains.answer.analysis_result.assigned_count).toBe(2);expect(row.snapshot.domains.rubric).toEqual(before.domains.rubric);
    const answerToggle=page.getByRole("checkbox",{name:"解答",exact:true});if(!(await answerToggle.isChecked()))await answerToggle.check();
-   await page.getByRole("region",{name:"模範解答候補",exact:true}).first().getByRole("button",{name:"本文編集",exact:true}).click();
+   await openAuthoringEditors(page);
    const diagram=page.getByRole("region",{name:"模範解答の図",exact:true}).first(),discover=diagram.getByRole("button",{name:"図候補を確認",exact:true});
    await expect(discover).toBeEnabled();await expect(diagram.getByText("設問の構造・対応先の変更を保存してから、図候補を確認してください。",{exact:true})).toHaveCount(0);
    const discovery=page.waitForResponse(response=>response.request().method()==="POST"&&/\/authoring\/entries\/[^/]+\/diagrams/.test(response.url()));await discover.click();expect((await discovery).status()).toBe(200);
@@ -118,13 +118,13 @@ test("saved Q3 split discovers only Q3 parent diagrams and shares accepted diagr
  const editor=page.locator("#authoring-question .compact-question-body");await editQuestionText(page,"問題3\n(1) 第一の確認\n(2) 第二の確認\n(3) 第三の確認");await openQuestionOperations(page);await page.getByRole("button",{name:"小問の分割案を作成",exact:true}).click();
  const proposal=page.getByRole("dialog",{name:/問題3の分割案/});await expect(proposal).toBeVisible();await expect(proposal.locator(".authoring-split-block")).toHaveCount(4);await proposal.getByRole("button",{name:"分割を適用",exact:true}).click();
  await saveAuthoring(page);let saved=(await(await page.request.get(authoring)).json()).revision;const children=saved.snapshot.nodes.filter((n:{parent_key:string|null;included:boolean})=>n.parent_key===parent.stable_key&&n.included).sort((a:{sort_order:number},b:{sort_order:number})=>a.sort_order-b.sort_order);expect(children).toHaveLength(3);
- await selector.selectOption(children[0].stable_key);const answerSection=page.locator("#authoring-answer"),addAnswer=answerSection.getByRole("button",{name:"模範解答を追加",exact:true});await addAnswer.click();await saveAuthoring(page);
+ await selector.selectOption(children[0].stable_key);const answerSection=page.locator("#authoring-answer"),addAnswer=answerSection.getByRole("button",{name:"模範解答を追加",exact:true});await addModelAnswer(page);await saveAuthoring(page);
  const firstEntry=(await(await page.request.get(authoring)).json()).revision.snapshot.domains.answer.entries.find((entry:{authoring_question_key:string})=>entry.authoring_question_key===children[0].stable_key);expect(firstEntry).toBeTruthy();
- const firstCandidate=page.locator(`#authoring-candidate-${firstEntry.id}`);await firstCandidate.getByRole("button",{name:"本文編集",exact:true}).click();const firstDiagram=firstCandidate.getByRole("region",{name:"模範解答の図",exact:true});
+ const firstCandidate=page.locator(`#authoring-candidate-${firstEntry.id}`);await openAuthoringEditors(page);const firstDiagram=firstCandidate.getByRole("region",{name:"模範解答の図",exact:true});
  const parentDiscovery=page.waitForResponse(response=>response.request().method()==="POST"&&response.url().includes("scope=parent"));await firstDiagram.getByRole("button",{name:"図候補を確認",exact:true}).click();expect((await parentDiscovery).status()).toBe(200);
  await expect(firstDiagram.getByAltText("図1の切り出し範囲",{exact:true})).toBeVisible();await expect(firstDiagram.locator("[data-diagram-id]")).toHaveCount(1);await expect(firstDiagram.getByText("図の範囲が設問の出典範囲を超えています。",{exact:true})).toHaveCount(0);
  const acceptedButton=firstDiagram.getByRole("button",{name:"この図を使用",exact:true});await expect(acceptedButton).toBeEnabled();await acceptedButton.click();await saveAuthoring(page);
- await selector.selectOption(children[1].stable_key);const addSibling=answerSection.getByRole("button",{name:"模範解答を追加",exact:true});await addSibling.click();await saveAuthoring(page);
+ await selector.selectOption(children[1].stable_key);const addSibling=answerSection.getByRole("button",{name:"模範解答を追加",exact:true});await addModelAnswer(page);await saveAuthoring(page);
  saved=(await(await page.request.get(authoring)).json()).revision;const siblingEntry=saved.snapshot.domains.answer.entries.find((entry:{authoring_question_key:string})=>entry.authoring_question_key===children[1].stable_key);expect(siblingEntry).toBeTruthy();
  const sibling=page.locator(`#authoring-candidate-${siblingEntry.id}`),siblingEdit=sibling.getByRole("button",{name:"本文編集",exact:true});if(await siblingEdit.count())await siblingEdit.click();const siblingDiagram=sibling.getByRole("region",{name:"模範解答の図",exact:true});await expect(siblingDiagram.getByText("この大問ですでに使用している図",{exact:true})).toBeVisible();await expect(siblingDiagram.getByAltText("再利用できる図",{exact:true})).toBeVisible();await siblingDiagram.getByRole("button",{name:"この図を再利用",exact:true}).click();await saveAuthoring(page);
  const answerBeforeRubric=(await(await page.request.get(authoring)).json()).revision.snapshot.domains.answer;

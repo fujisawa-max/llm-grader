@@ -1,4 +1,4 @@
-import {openAuthoringEditors,openQuestionDialog,readQuestionText} from "./authoringEditMode";
+import {editAnswerText,readAnswerText,openAuthoringEditors,readQuestionText,openQuestionDialog} from "./authoringEditMode";
 import {test,expect} from "@playwright/test";
 
 test.setTimeout(90000);
@@ -31,7 +31,7 @@ test("whole-test drafts preserve local caret, materials, section state and forma
   await expect(editor).toHaveValue(text.slice(0,at)+text.slice(at+1));
   expect(await editor.evaluate(el=>({caret:(el as HTMLTextAreaElement).selectionStart,same:el===(window as unknown as {authorEditor:HTMLTextAreaElement}).authorEditor}))).toEqual({caret:at,same:true});
   await questionDialog.getByRole("button",{name:"完了",exact:true}).click();await page.getByRole("button",{name:"設問設定の変更",exact:true}).click();await page.getByRole("spinbutton",{name:/^配点/}).fill("10");await page.getByRole("button",{name:"プレビューに戻る",exact:true}).click();
-  await page.getByLabel("模範解答本文",{exact:true}).fill("Answer draft");
+  await editAnswerText(page,"Answer draft");
   await page.getByRole("button",{name:"基準を追加"}).click();
   let criterion=page.locator(".compact-rubric-criterion").first();await criterion.locator(".compact-rubric-criterion-header").getByRole("button",{name:"編集",exact:true}).click();let rubricDialog=page.getByRole("dialog",{name:"採点基準本文"});await rubricDialog.getByLabel("採点基準本文").fill("Correct result");await rubricDialog.getByRole("button",{name:"完了",exact:true}).click();
   const levels=criterion.locator('details[aria-label="得点段階"]');await levels.locator("summary").click();await levels.locator("tbody tr").nth(0).getByRole("button",{name:"編集",exact:true}).click();rubricDialog=page.getByRole("dialog",{name:"得点段階を編集"});await rubricDialog.getByLabel("条件").fill("Incorrect result");await rubricDialog.getByRole("button",{name:"完了",exact:true}).click();
@@ -46,7 +46,7 @@ test("whole-test drafts preserve local caret, materials, section state and forma
   const saved=await (await page.request.get(base+"/authoring")).json();
   await page.reload();await openAuthoringEditors(page);
   expect(await readQuestionText(page)).toBe(saved.revision.snapshot.nodes[0].body_text);
-  await expect(page.getByLabel("模範解答本文",{exact:true})).toHaveValue("Answer draft");
+  expect(await readAnswerText(page)).toBe("Answer draft");
   criterion=page.locator(".compact-rubric-criterion").first();await expect(criterion.locator(".compact-rubric-body")).toContainText("Correct result");
   const reloadedLevels=criterion.locator('details[aria-label="得点段階"]');await expect(reloadedLevels.locator("summary")).toContainText("最高点: 10点");await reloadedLevels.locator("summary").click();await expect(reloadedLevels.locator("table")).toContainText("Incorrect result");await expect(reloadedLevels.locator("table")).toContainText("Correct result");
   // Upload is explicit source registration, never extraction/classification.
@@ -65,7 +65,7 @@ test("whole-test drafts preserve local caret, materials, section state and forma
   const selected=await page.getByLabel("対象設問",{exact:true}).inputValue();
   await page.getByLabel("利用資料",{exact:true}).selectOption(files[0].id);
   expect(await page.getByLabel("対象設問",{exact:true}).inputValue()).toBe(selected);
-  await expect(page.getByLabel("模範解答本文",{exact:true})).toHaveValue("Answer draft");
+  expect(await readAnswerText(page)).toBe("Answer draft");
   await page.getByRole("button",{name:"保存",exact:true}).first().click();
   await expect(page.getByText("未保存の変更があります",{exact:true})).not.toBeVisible();
   await page.getByRole("button",{name:"最終確認へ"}).click();

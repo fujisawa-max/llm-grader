@@ -1,6 +1,6 @@
 import {test,expect} from "@playwright/test";
 import {derivedRubricMaximum,initialRubricLevels,prepareRubricCriteria} from "../lib/rubricLevels";
-import {openAuthoringEditors,editQuestionText} from "./authoringEditMode";
+import {editAnswerText,openAuthoringEditors,editQuestionText} from "./authoringEditMode";
 
 test("Web criteria derive their maximum only from score levels",()=>{
   const levels=initialRubricLevels(10,"Full response");
@@ -36,7 +36,7 @@ test("compact Rubric editor uses local dialogs and keeps score levels canonical"
   await page.getByRole("button",{name:"プレビューに戻る",exact:true}).click();
   await openAuthoringEditors(page);
   await editQuestionText(page,"x = 1");
-  await page.getByLabel("模範解答本文",{exact:true}).fill("x = 1");
+  await editAnswerText(page,"x = 1");
   await page.getByRole("checkbox",{name:"採点基準",exact:true}).check();
   await page.getByRole("button",{name:"基準を追加",exact:true}).click();
   const rubric=page.getByRole("region",{name:"採点基準候補",exact:true});

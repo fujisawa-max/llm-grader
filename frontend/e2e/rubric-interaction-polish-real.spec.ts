@@ -1,5 +1,5 @@
 import {test,expect} from '@playwright/test';
-import {openAuthoringEditors,editQuestionText} from './authoringEditMode';
+import {editAnswerText,openAuthoringEditors,editQuestionText} from './authoringEditMode';
 import {saveAuthoring} from './authoringNotifications';
 
 test.setTimeout(120000);
@@ -9,7 +9,7 @@ test('Rubric interactions preserve local dialogs, split buffers, excluded data a
   const seed=await(await page.request.get(`/api/v1/tests/${process.env.MODEL_ANSWER_CLASSIFICATION_TEST_ID}`)).json();
   const created=await page.request.post(`/api/v1/offerings/${seed.course_offering_id}/tests`,{data:{name:`Rubric polish ${Date.now()}`,total_points:10}});expect(created.status()).toBe(201);
   const tid=(await created.json()).id,base=`/api/v1/tests/${tid}/authoring`;
-  await page.goto(`/tests/${tid}/authoring`);await page.getByRole('button',{name:'設問を追加',exact:true}).click();await page.getByRole('button',{name:'設問設定の変更',exact:true}).click();await page.getByRole('spinbutton',{name:/^配点/}).fill('10');await page.getByRole('button',{name:'プレビューに戻る',exact:true}).click();await openAuthoringEditors(page);await editQuestionText(page,'Explain the two conditions.');await page.getByLabel('模範解答本文',{exact:true}).fill('Both conditions.');await page.getByRole('button',{name:'基準を追加',exact:true}).click();
+  await page.goto(`/tests/${tid}/authoring`);await page.getByRole('button',{name:'設問を追加',exact:true}).click();await page.getByRole('button',{name:'設問設定の変更',exact:true}).click();await page.getByRole('spinbutton',{name:/^配点/}).fill('10');await page.getByRole('button',{name:'プレビューに戻る',exact:true}).click();await openAuthoringEditors(page);await editQuestionText(page,'Explain the two conditions.');await editAnswerText(page,'Both conditions.');await page.getByRole('button',{name:'基準を追加',exact:true}).click();
   const rubric=page.getByRole('region',{name:'採点基準候補',exact:true}),cards=rubric.locator('.compact-rubric-criterion'),card=cards.first(),levels=card.locator('details[aria-label="得点段階"]'),summary=levels.locator('summary');
   await expect(summary).toHaveAttribute('aria-expanded','false');await expect(summary).toContainText('▶');await summary.click();await expect(summary).toHaveAttribute('aria-expanded','true');await expect(summary).toContainText('▼');await expect(levels.getByRole('table')).toBeVisible();await summary.focus();await page.keyboard.press('Enter');await expect(summary).toHaveAttribute('aria-expanded','false');await page.keyboard.press('Space');await expect(summary).toHaveAttribute('aria-expanded','true');
   await levels.locator('tbody tr').nth(1).getByRole('button',{name:'編集',exact:true}).click();let dialog=page.getByRole('dialog',{name:'得点段階を編集'});await dialog.getByLabel('点数').fill('10');await dialog.getByLabel('条件').fill('Both conditions are correct.');await dialog.getByRole('button',{name:'完了',exact:true}).click();

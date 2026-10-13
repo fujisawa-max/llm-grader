@@ -1,5 +1,5 @@
+import {editAnswerText,openAuthoringEditors,editQuestionText} from "./authoringEditMode";
 import {test,expect,type Page} from "@playwright/test";
-import {openAuthoringEditors,editQuestionText} from "./authoringEditMode";
 
 test.setTimeout(90000);
 test.skip(!process.env.RUNTIME_MANAGER_E2E,"requires isolated FastAPI/production browser harness");
@@ -25,7 +25,7 @@ test("final review confirms one exact saved authoring revision atomically",async
   await page.getByRole("button",{name:"プレビューに戻る",exact:true}).click();
   await openAuthoringEditors(page);
   await editQuestionText(page,"x + 1 = 2");
-  await page.getByLabel("模範解答本文",{exact:true}).fill("x = 1");
+  await editAnswerText(page,"x = 1");
   await page.getByRole("button",{name:"基準を追加"}).click();
   const criterion=page.locator(".compact-rubric-criterion").first();
   await criterion.locator(".compact-rubric-criterion-header").getByRole("button",{name:"編集",exact:true}).click();

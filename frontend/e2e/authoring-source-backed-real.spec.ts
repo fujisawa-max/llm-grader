@@ -1,5 +1,4 @@
-import {editQuestionText,readQuestionText,openQuestionOperations,openQuestionDialog} from "./authoringEditMode";
-import {openAuthoringEditors} from "./authoringEditMode";
+import {readAnswerText,addModelAnswer,openAuthoringEditors,editQuestionText,readQuestionText,openQuestionDialog} from "./authoringEditMode";
 import {test,expect} from "@playwright/test";
 import {readFile} from "node:fs/promises";
 test.setTimeout(90000);
@@ -43,8 +42,8 @@ test("saved source reviews integrate Question, answer diagrams and advanced Rubr
   await expect(problemDiagram.getByAltText("図1の切り出し範囲")).toBeVisible();await expect(page.locator(".diagram-overlay")).toBeVisible();
   await problemDiagram.getByRole("button",{name:"この図を使用",exact:true}).click();await expect(problemDiagram.getByText("使用中",{exact:true})).toBeVisible();
   await page.getByLabel("利用資料",{exact:true}).selectOption(process.env.AUTHORING_SOURCE_MATERIAL_ID!);expect(await readQuestionText(page)).toBe(initial+"\n教師が編集した問題文");
-  await page.getByLabel("候補の扱い").first().selectOption("ignored");await page.getByRole("button",{name:"模範解答を追加",exact:true}).click();await page.locator('[id^="authoring-candidate-teacher-entry-"]').first().waitFor();await openAuthoringEditors(page);
-  const manual=page.locator('[id^="authoring-candidate-teacher-entry-"]');await expect(manual.getByLabel("模範解答本文",{exact:true})).toHaveValue("");
+  await openAuthoringEditors(page);await page.getByLabel("候補の扱い").first().selectOption("ignored");await addModelAnswer(page);await page.locator('[id^="authoring-candidate-teacher-entry-"]').first().waitFor();await openAuthoringEditors(page);
+  const manual=page.locator('[id^="authoring-candidate-teacher-entry-"]');expect(await readAnswerText(page,manual)).toBe("");
   const diagrams=manual.getByRole("region",{name:"模範解答の図",exact:true});await diagrams.getByRole("button",{name:"図候補を確認",exact:true}).click();
   await expect(diagrams.getByAltText("図1の切り出し範囲")).toBeVisible();await diagrams.getByRole("button",{name:"この図を使用",exact:true}).click();await expect(diagrams.getByText("使用中",{exact:true})).toBeVisible();
   await page.getByRole("button",{name:"保存",exact:true}).first().click();await expect(page.locator(".authoring-toast").filter({hasText:"保存しました"}).last()).toBeVisible();
@@ -69,7 +68,7 @@ test("saved source reviews integrate Question, answer diagrams and advanced Rubr
   await rubricEditor().getByRole("button",{name:"採点基準の統合案を作成",exact:true}).click();
   await expect(page.getByRole("region",{name:"採点基準の統合案",exact:true})).toBeVisible();
   await page.getByRole("button",{name:"この統合を適用",exact:true}).click();await expect(cards()).toHaveCount(2);
-  await manual.getByRole("button",{name:"別解を追加",exact:true}).click();await manual.getByLabel("別解1",{exact:true}).fill("教師が入力した別解");
+  await manual.getByRole("button",{name:"別解を追加",exact:true}).click();await page.getByRole("dialog",{name:"模範解答本文",exact:true}).getByLabel("模範解答本文",{exact:true}).fill("教師が入力した別解");await page.getByRole("dialog",{name:"模範解答本文",exact:true}).getByRole("button",{name:"完了",exact:true}).click();
   await page.getByRole("checkbox",{name:"解答",exact:true}).uncheck();await page.getByRole("checkbox",{name:"解答",exact:true}).check();await expect(diagrams.getByText("使用中",{exact:true})).toBeVisible();
   const beforeReview=await (await page.request.get(base+"/authoring")).json();
   await page.getByRole("button",{name:"最終確認へ",exact:true}).click();
@@ -79,7 +78,7 @@ test("saved source reviews integrate Question, answer diagrams and advanced Rubr
   await selector.selectOption("q1");expect(await readQuestionText(page)).toBe(initial+"\n教師が編集した問題文");
   await page.getByRole("button",{name:"保存",exact:true}).first().click();await expect(page.locator(".authoring-toast").filter({hasText:"保存しました"}).last()).toBeVisible();
   const saved=await (await page.request.get(base+"/authoring")).json();expect(saved.revision.state).toBe("draft");
-  await page.reload();await openAuthoringEditors(page);expect(await readQuestionText(page)).toBe(initial+"\n教師が編集した問題文");await expect(manual.getByLabel("模範解答本文",{exact:true})).toHaveValue("");await expect(cards()).toHaveCount(2);await expect(manual.getByLabel("別解1",{exact:true})).toHaveValue("教師が入力した別解");
+  await page.reload();await openAuthoringEditors(page);expect(await readQuestionText(page)).toBe(initial+"\n教師が編集した問題文");expect(await readAnswerText(page,manual)).toBe("");await expect(cards()).toHaveCount(2);await expect(manual.getByRole("region",{name:/別解1/})).toContainText("教師が入力した別解");
   await expect(diagrams.getByText("使用中",{exact:true})).toBeVisible();
   expect(await (await page.request.get(`/api/v1/question-import-reviews/${review.id}`)).json()).toEqual(review);
   expect(await (await page.request.get(`/api/v1/model-answer-import-drafts/${answer.id}`)).json()).toEqual(answer);
