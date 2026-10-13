@@ -1,6 +1,7 @@
 import type {ModelAnswerDraftEntry, RubricCandidateEdit, RubricConsolidatedGroup} from "@/lib/api/modelAnswerImports";
 import {parseMathText} from "./mathText";
 import {reviewCandidateId} from "@/lib/reviewCandidateId";
+import {initialRubricLevels,prepareRubricCriteria,withCanonicalRubricMaximum} from "@/lib/rubricLevels";
 type RubricEdit = RubricCandidateEdit;
 export function pointHint(text: string): { description: string; points: number } {
   const prefix = text.match(/^\s*(\d+(?:\.\d+)?)\s*(?:点|points?)\s*[:：-]\s*/i);
@@ -18,10 +19,13 @@ export function rubricRows(entry: ModelAnswerDraftEntry): RubricEdit[] {
   const groups = entry.semantic_classification?.rubric_groups?.filter((group) => group.kind === "rubric"
     && group.segment_ids.every((id) => segmentsById.get(id)?.category === "rubric")) || [];
   if (groups.length) return rubricGroupRows(groups);
-  return segments.filter((segment) => segment.category === "rubric").map((segment) => ({
-    id: segment.id, source_text: segment.source_text || segment.text, segment_ids: [segment.id], ...pointHint(segment.text), grouping_confirmed: true,
+  return segments.filter((segment) => segment.category === "rubric").map((segment) => {
+    const hinted=pointHint(segment.text);
+    return {...hinted,
+    id: segment.id, source_text: segment.source_text || segment.text, segment_ids: [segment.id],
+    grouping_confirmed: true,
     grouping_method: "legacy",
-  }));
+  };});
 }
 
 export function rubricGroupRows(groups:RubricConsolidatedGroup[]):RubricEdit[]{
@@ -31,6 +35,14 @@ export function rubricGroupRows(groups:RubricConsolidatedGroup[]):RubricEdit[]{
     grouping_confirmed: !group.needs_teacher_review,
     grouping_method: group.merge_type,
   }));
+}
+
+export function prepareRubricRows(rows:RubricEdit[]):RubricEdit[]{
+  return prepareRubricCriteria(rows).map(withCanonicalRubricMaximum);
+}
+
+export function webRubricRows(entry:ModelAnswerDraftEntry):RubricEdit[]{
+  return prepareRubricRows(rubricRows(entry));
 }
 
 export function joinRubricDescriptions(items: string[]) {
@@ -45,7 +57,7 @@ export function joinRubricDescriptions(items: string[]) {
   }, "");
 }
 
-export function mergeRubricRows(entry: ModelAnswerDraftEntry, ids: string[], type: "manual_above" | "manual_multi") {
+export function mergeRubricRows(entry: ModelAnswerDraftEntry, ids: string[], type: "manual_above" | "manual_multi", canonicalLevels = false) {
     const rows = rubricRows(entry);
     if (ids.length < 2) return null;
     const chosen = rows.filter((row) => ids.includes(row.id));
@@ -68,10 +80,20 @@ export function mergeRubricRows(entry: ModelAnswerDraftEntry, ids: string[], typ
       points_conflict: chosen.some((row) => row.points_conflict) || distinctPoints.length > 1 || pointValues.length > 1,
       points_confirmed: false, grouping_confirmed: true, grouping_method: type,
     };
+    if(canonicalLevels){
+      const prepared=chosen.map(row=>prepareRubricCriteria([row])[0]);
+      const levelPolicy=JSON.stringify(prepared[0].levels||[]);
+      merged.levels=prepared.every(row=>JSON.stringify(row.levels||[])===levelPolicy)
+        ? JSON.parse(levelPolicy) as RubricEdit["levels"]
+        : [
+          {score:0,condition:"基準を満たしていない。"},
+          {score:merged.points>0?merged.points:null,condition:""},
+        ];
+    }
     const firstIndex = Math.min(...chosen.map((row) => rows.findIndex((rowItem) => rowItem.id === row.id)));
     const next = rows.filter((row) => !ids.includes(row.id));
     next.splice(firstIndex, 0, merged);
-    return {rubric_edits:next,rubric_merge_history:history};
+    return {rubric_edits:canonicalLevels?next.map(withCanonicalRubricMaximum):next,rubric_merge_history:history};
 }
 
 export const rubricCriterionLabel=(index:number)=>`基準${index+1}`;

@@ -13,7 +13,8 @@ import {acceptedAnswerDiagramPatch} from "@/lib/authoringAnswerInclusion";
 import {manualClassificationPatch} from "@/lib/authoringClassification";
 import {scrollReviewContent} from "@/lib/reviewIssues";
 import {reviewCandidateId} from "@/lib/reviewCandidateId";
-import {rubricRows, rubricGroupRows, mergeRubricRows, rubricCriterionLabel, rubricSplitOffset} from "@/lib/rubricEditing";
+import {webRubricRows, rubricGroupRows, mergeRubricRows, rubricCriterionLabel, rubricSplitOffset} from "@/lib/rubricEditing";
+import {derivedRubricMaximum,initialRubricLevels,withCanonicalRubricMaximum} from "@/lib/rubricLevels";
 import type {ModelAnswerDraftEntry, ModelAnswerContentCategory, RubricCandidateEdit, RubricSplitProposal, RubricConsolidatedGroup} from "@/lib/api/modelAnswerImports";
 
 export type AuthoringEntry=ModelAnswerDraftEntry & {source_draft_id?:string;authoring_question_key?:string|null;manual_alternative_answers?:{id:string;text:string}[];material_role?:string;rubric_only_preserved?:boolean};
@@ -58,11 +59,19 @@ export function AuthoringCandidates({testId, draftId, revision, questionKey, ent
   const current=useRef(entries);current.current=entries;
   const changeRef=useRef(onChange);changeRef.current=onChange;
   const update=(id:string,patch:Partial<AuthoringEntry>)=>changeRef.current(current.current.map(e=>e.id===id?{...e,...patch}:e),patch.diagram_records?"diagram":patch.rubric_edits||patch.rubric_merge_history?"rubric":"answer");
+  const setRubricEditing=(value:boolean)=>{
+    if(value){
+      const prepared=current.current.map(entry=>entry.authoring_question_key===questionKey&&webRubricRows(entry).length
+        ? {...entry,rubric_edits:webRubricRows(entry)} : entry);
+      if(JSON.stringify(prepared)!==JSON.stringify(current.current))changeRef.current(prepared,"rubric");
+    }
+    onRubricEditing(value);
+  };
   const classify=(entry:AuthoringEntry,patch:Partial<AuthoringEntry>)=>update(entry.id,manualClassificationPatch(entry,patch));
   const assign=(entry:AuthoringEntry,key:string)=>classify(entry,{authoring_question_key:key||null,
     disposition:key?"include":"unassigned",mapping_state:key?"manual_mapped":"needs_review"});
-  const rows=(entry:AuthoringEntry,next:RubricCandidateEdit[])=>update(entry.id,{rubric_edits:next,
-    rubric_merge_history:[...(entry.rubric_merge_history||[]),rubricRows(entry)].slice(-50)});
+  const rows=(entry:AuthoringEntry,next:RubricCandidateEdit[])=>update(entry.id,{rubric_edits:next.map(withCanonicalRubricMaximum),
+    rubric_merge_history:[...(entry.rubric_merge_history||[]),webRubricRows(entry)].slice(-50)});
   async function split(entry:AuthoringEntry,item:RubricCandidateEdit,manual:boolean){
     if(splitInFlight.current||proposal)return;
     setProposalError("");setProposalStale(false);
@@ -81,8 +90,8 @@ export function AuthoringCandidates({testId, draftId, revision, questionKey, ent
     finally{splitInFlight.current=false;if(requestEpoch.current===token){setBusy(false);setSplitting(null);}}
   }
   async function consolidate(entry:AuthoringEntry){const token=requestEpoch.current;setBusy(true);setError("");try{
-    const result=await apiFetch<{groups:RubricConsolidatedGroup[]}>(`/tests/${testId}/authoring/entries/${entry.id}/rubric-consolidate`,json({expected_revision:revision,criteria:rubricRows(entry).filter(c=>!c.excluded).map(c=>({id:c.id,description:c.description,points:c.points}))}));
-    const original=rubricRows(entry);
+    const result=await apiFetch<{groups:RubricConsolidatedGroup[]}>(`/tests/${testId}/authoring/entries/${entry.id}/rubric-consolidate`,json({expected_revision:revision,criteria:webRubricRows(entry).filter(c=>!c.excluded).map(c=>({id:c.id,description:c.description,points:c.points}))}));
+    const original=webRubricRows(entry);
     const projected=rubricGroupRows(result.groups).map(group=>{
       const inputs=original.filter(c=>group.segment_ids?.includes(c.id));
       const ids=[...new Set(inputs.flatMap(c=>c.segment_ids||[]))];
@@ -96,29 +105,30 @@ export function AuthoringCandidates({testId, draftId, revision, questionKey, ent
     if(!proposal||applyInFlight.current)return;
     const token=requestEpoch.current;
     applyInFlight.current=true;setApplying(true);setProposalError("");
-    try{const entry=current.current.find(e=>e.id===proposal.entryId);const found=entry&&rubricRows(entry).find(c=>c.id===proposal.item.id);if(!entry||JSON.stringify(found)!==proposal.baseline){setProposalStale(true);setProposalError("候補が変更されています。分割案を作り直してください。");return;}
+    try{const entry=current.current.find(e=>e.id===proposal.entryId);const found=entry&&webRubricRows(entry).find(c=>c.id===proposal.item.id);if(!entry||JSON.stringify(found)!==proposal.baseline){setProposalStale(true);setProposalError("候補が変更されています。分割案を作り直してください。");return;}
         try{for(const part of proposal.split.parts.slice(1))rubricSplitOffset(proposal.original,Array.from(proposal.original).slice(0,part.start).join("").length);}catch(e){setProposalError(e instanceof Error?e.message:"数式の分割位置を確認してください。");return;}
         const latest=(await testAuthoring.get(testId)).revision;
         if(!latest||latest.id!==proposal.revisionId||latest.edit_version!==revision){setProposalStale(true);setProposalError("保存状態が別の画面で変更されています。再読み込みして分割案を作り直してください。");return;}
         if(requestEpoch.current!==token)return;
-        if(JSON.stringify(current.current.find(e=>e.id===proposal.entryId)&&rubricRows(current.current.find(e=>e.id===proposal.entryId)!).find(c=>c.id===proposal.item.id))!==proposal.baseline){setProposalStale(true);setProposalError("候補が変更されています。分割案を作り直してください。");return;}
-        const parts=proposal.split.parts.map(p=>({id:reviewCandidateId("split"),description:p.description,points:p.points,source_text:p.source_text,segment_ids:proposal.item.segment_ids||[],grouping_confirmed:true,grouping_method:"split",points_conflict:p.points_conflict,points_confirmed:false,provenance:{...(proposal.item.segment_ids?.length?{}:{source:"teacher_manual"}),split_from_candidate_id:proposal.item.id,original_text:proposal.original,original_points:proposal.item.points,source_sha256:proposal.split.source_sha256,start:p.start,end:p.end,previous_operation:proposal.item.provenance||{},teacher_confirmed:true}}));
-        rows(entry,rubricRows(entry).flatMap(c=>c.id===proposal.item.id?parts:[c]));setProposal(null);requestAnimationFrame(()=>{const control=textareas.current[`${entry.id}:${parts[0].id}`];control?.focus();control?.scrollIntoView({block:"nearest"});});
+        if(JSON.stringify(current.current.find(e=>e.id===proposal.entryId)&&webRubricRows(current.current.find(e=>e.id===proposal.entryId)!).find(c=>c.id===proposal.item.id))!==proposal.baseline){setProposalStale(true);setProposalError("候補が変更されています。分割案を作り直してください。");return;}
+        const parts=proposal.split.parts.map(p=>({id:reviewCandidateId("split"),description:p.description,points:p.points,
+          levels:initialRubricLevels(p.points,p.description,p.points_conflict),source_text:p.source_text,segment_ids:proposal.item.segment_ids||[],grouping_confirmed:true,grouping_method:"split",points_conflict:p.points_conflict,points_confirmed:false,provenance:{...(proposal.item.segment_ids?.length?{}:{source:"teacher_manual"}),split_from_candidate_id:proposal.item.id,original_text:proposal.original,original_points:proposal.item.points,source_sha256:proposal.split.source_sha256,start:p.start,end:p.end,previous_operation:proposal.item.provenance||{},teacher_confirmed:true}}));
+        rows(entry,webRubricRows(entry).flatMap(c=>c.id===proposal.item.id?parts:[c]));setProposal(null);requestAnimationFrame(()=>{const control=textareas.current[`${entry.id}:${parts[0].id}`];control?.focus();control?.scrollIntoView({block:"nearest"});});
       }catch(e){setProposalError(e instanceof Error?e.message:"分割案を適用できませんでした。");}
     finally{applyInFlight.current=false;setApplying(false);}
   }
   const visible=entries.filter(e=>e.authoring_question_key===questionKey||(questionKey==="unassigned"&&!e.authoring_question_key));
   const answerVisibleEntries=visible.filter(e=>e.material_role!=="rubric_source"&&!e.rubric_only_preserved);
-  const rubricVisibleEntries=visible.filter(e=>rubricRows(e).length>0);
+  const rubricVisibleEntries=visible.filter(e=>webRubricRows(e).length>0);
   const addAnswer=<button disabled={disabled||questionKey==="unassigned"} onClick={()=>onChange([...entries,{id:reviewCandidateId("teacher-entry"),question_id:null,authoring_question_key:questionKey,
       mapping_state:"manual_mapped",disposition:"include",answer_kind:visible.some(e=>(e.answer_kind||"primary")==="primary"&&e.disposition!=="ignored")?"alternative":"primary",answer_text:"",material_role:"model_answer_source",
       source:{kind:"teacher_manual",material_id:null,source_sha256:null,segments:[]}}])}>模範解答を追加</button>;
   return <div aria-label="出典付き解答・採点基準">
     {error&&<p role="alert">{error}</p>}
     {questionKey==="unassigned"&&<p className="notice">この候補を対応する設問へ割り当てるか、不要な候補として除外してください。</p>}
-    {visible.map((entry,entryIndex)=>{const entryAnswerVisible=showAnswer&&entry.material_role!=="rubric_source",entryRubricVisible=showRubric&&(entry.material_role==="rubric_source"||rubricRows(entry).length>0||!!entry.semantic_classification?.segments.some(segment=>segment.category==="rubric"||segment.category==="uncertain"));const entrySourceStale=staleSourceDraftIds.includes(entry.source_draft_id||draftId);const unresolved=questionKey==="unassigned"&&!entry.authoring_question_key&&!['ignored','excluded'].includes(entry.disposition||'include');return <article key={entry.id} id={`authoring-candidate-${entry.id}`}>
+    {visible.map((entry,entryIndex)=>{const entryAnswerVisible=showAnswer&&entry.material_role!=="rubric_source",entryRubricVisible=showRubric&&(entry.material_role==="rubric_source"||webRubricRows(entry).length>0||!!entry.semantic_classification?.segments.some(segment=>segment.category==="rubric"||segment.category==="uncertain"));const entrySourceStale=staleSourceDraftIds.includes(entry.source_draft_id||draftId);const unresolved=questionKey==="unassigned"&&!entry.authoring_question_key&&!['ignored','excluded'].includes(entry.disposition||'include');return <article key={entry.id} id={`authoring-candidate-${entry.id}`}>
       {unresolved&&<section className="authoring-candidate-resolution" aria-label="未割当候補の処理">
-        <div className="authoring-candidate-resolution-text" aria-label="未割当候補の本文"><MarkdownMathText source={entry.candidate_text||entry.answer_text||rubricRows(entry).map(item=>item.description).join("\n")||"本文なし"}/></div>
+        <div className="authoring-candidate-resolution-text" aria-label="未割当候補の本文"><MarkdownMathText source={entry.candidate_text||entry.answer_text||webRubricRows(entry).map(item=>item.description).join("\n")||"本文なし"}/></div>
         <p>対応する設問を選ぶと割当できます。使用しない候補は除外してください。</p>
         <label>対応する設問<select aria-label="対応する設問" disabled={disabled||busy} value="" onChange={event=>assign(entry,event.target.value)}><option value="">設問を選択</option>{questions.filter(q=>q.gradable).map(q=><option key={q.key} value={q.key}>{q.label}</option>)}</select></label>
         <button type="button" disabled={disabled||busy} onClick={()=>classify(entry,{disposition:"ignored"})}>不要として除外</button>
@@ -143,36 +153,39 @@ export function AuthoringCandidates({testId, draftId, revision, questionKey, ent
       {entry.semantic_classification&&entryAnswerVisible&&answerEditing&&<details data-authoring-classification><summary>候補の分類を確認</summary>{entry.semantic_classification.segments.map(segment=><label key={segment.id}>{segment.text}<select disabled={disabled||busy} value={segment.category} onChange={e=>classify(entry,{semantic_classification:{...entry.semantic_classification!,segments:entry.semantic_classification!.segments.map(s=>s.id===segment.id?{...s,category:e.target.value as ModelAnswerContentCategory}:s)}})}>{([['question','問題文'],['model_answer','模範解答'],['alternative_answer','別解'],['rubric','採点基準'],['note','補足'],['uncertain','要確認']] as const).map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></label>)}<button disabled={disabled||busy} onClick={event=>{const content=event.currentTarget.closest("details");update(entry.id,{semantic_classification:{...entry.semantic_classification!,status:"teacher_reviewed"}});if(content)requestAnimationFrame(()=>scrollReviewContent(content));}}>この分類を確認</button></details>}
       {entryAnswerVisible&&!entry.rubric_only_preserved&&entry.id===answerVisibleEntries.at(-1)?.id&&addAnswer}
       </section>}
-      {entryRubricVisible&&<section aria-label="採点基準候補"><h3>採点基準候補</h3><AuthoringPreviewEditor label="採点基準" editing={rubricEditing} onEditing={onRubricEditing} preview={<>{rubricRows(entry).filter(c=>!c.excluded).map((c,i)=><article className="panel" key={c.id}><h4>{rubricCriterionLabel(i)}</h4><MarkdownMathText source={c.description}/><p>{c.points}点</p></article>)}</>}>
-        <button disabled={disabled||busy} onClick={()=>rows(entry,[...rubricRows(entry),{id:reviewCandidateId("teacher-rubric"),description:"",points:0,segment_ids:[],grouping_confirmed:true,grouping_method:"teacher_manual",provenance:{source:"teacher_manual",manual_add:true}}])}>基準を追加</button>
+      {entryRubricVisible&&<section aria-label="採点基準候補"><h3>採点基準候補</h3><AuthoringPreviewEditor label="採点基準" editing={rubricEditing} onEditing={setRubricEditing} preview={<>{webRubricRows(entry).filter(c=>!c.excluded).map((c,i)=><article className="panel" key={c.id}><h4>{rubricCriterionLabel(i)}</h4><MarkdownMathText source={c.description}/><p>最高点: {derivedRubricMaximum(c)}点</p></article>)}</>}>
+        <p>最高点は得点段階から自動計算されます。基準ごとに本文と得点段階・条件を編集してください。</p>
+        <button disabled={disabled||busy} onClick={()=>rows(entry,[...webRubricRows(entry),{id:reviewCandidateId("teacher-rubric"),description:"",points:0,levels:initialRubricLevels(0,"",true),segment_ids:[],grouping_confirmed:true,grouping_method:"teacher_manual",provenance:{source:"teacher_manual",manual_add:true}}])}>基準を追加</button>
         <button disabled={disabled||busy||!entry.rubric_merge_history?.length} onClick={()=>update(entry.id,{rubric_edits:entry.rubric_merge_history!.at(-1),rubric_merge_history:entry.rubric_merge_history!.slice(0,-1)})}>編集を元に戻す</button>
-        <button disabled={disabled||busy||(selected[entry.id]||[]).length<2} onClick={()=>{const result=mergeRubricRows(entry,selected[entry.id],"manual_multi");if(result)update(entry.id,result);setSelected(s=>({...s,[entry.id]:[]}));}}>選択した基準を結合</button>
-        <button disabled={disabled||busy||!rubricRows(entry).some(c=>!c.excluded&&c.description.trim())} onClick={()=>void consolidate(entry)}>採点基準の統合案を作成</button>
-        {rubricRows(entry).map((item,index,all)=><fieldset key={item.id} disabled={disabled||busy} id={`authoring-rubric-${item.id}`}>
+        <button disabled={disabled||busy||(selected[entry.id]||[]).length<2} onClick={()=>{const result=mergeRubricRows(entry,selected[entry.id],"manual_multi",true);if(result)update(entry.id,result);setSelected(s=>({...s,[entry.id]:[]}));}}>選択した基準を結合</button>
+        <button disabled={disabled||busy||!webRubricRows(entry).some(c=>!c.excluded&&c.description.trim())} onClick={()=>void consolidate(entry)}>採点基準の統合案を作成</button>
+        {webRubricRows(entry).map((item,index,all)=><fieldset key={item.id} disabled={disabled||busy} id={`authoring-rubric-${item.id}`}>
           <label><input type="checkbox" checked={(selected[entry.id]||[]).includes(item.id)} onChange={e=>setSelected(s=>({...s,[entry.id]:e.target.checked?[...(s[entry.id]||[]),item.id]:(s[entry.id]||[]).filter(id=>id!==item.id)}))}/>{rubricCriterionLabel(index)}</label>
           <label>本文<textarea aria-label={`${rubricCriterionLabel(index)}の本文`} ref={element=>{textareas.current[`${entry.id}:${item.id}`]=element;}} value={item.description} onFocus={()=>{activeCriterion.current=`${entry.id}:${item.id}`;}} onChange={e=>update(entry.id,{rubric_edits:all.map(c=>c.id===item.id?{...c,description:e.target.value}:c)})}/></label>
-          <label>配点<input aria-label={`${rubricCriterionLabel(index)}の配点`} type="number" min="0" value={item.points} onChange={e=>update(entry.id,{rubric_edits:all.map(c=>c.id===item.id?{...c,points:Number(e.target.value),points_confirmed:true}:c)})}/></label>
-          <ExecutableRubricLevels criterion={item} disabled={disabled||busy} onChange={next=>update(entry.id,{rubric_edits:all.map(c=>c.id===item.id?next:c)})}/>
+          <ExecutableRubricLevels criterion={item} disabled={disabled||busy} onChange={next=>{
+            const changedScores=JSON.stringify((next.levels||[]).map(level=>level.score))!==JSON.stringify((item.levels||[]).map(level=>level.score));
+            update(entry.id,{rubric_edits:all.map(c=>c.id===item.id?{...next,...(changedScores?{points_confirmed:true}:{})}:c)});
+          }}/>
           <LatexNormalizationControl text={item.description} contextType="rubric" disabled={disabled||busy} onApply={text=>update(entry.id,{rubric_edits:all.map(c=>c.id===item.id?{...c,description:text}:c)})}/>
           {item.grouping_confirmed===false&&<button onClick={event=>{const content=event.currentTarget.closest("fieldset");update(entry.id,{rubric_edits:all.map(c=>c.id===item.id?{...c,grouping_confirmed:true,provenance:{...c.provenance,teacher_confirmed:true}}:c)});if(content)requestAnimationFrame(()=>scrollReviewContent(content));}}>この採点基準を確認</button>}
-          {item.points_conflict&&!item.points_confirmed&&<p>配点の確認が必要です。点数を入力して確認してください。</p>}
-          <button onClick={()=>{const next=[...all];next.splice(index+1,0,{id:reviewCandidateId("teacher-rubric"),description:"",points:0,segment_ids:[],provenance:{source:"teacher_manual",inserted_after:item.id}});rows(entry,next);}}>後に追加</button>
+          {item.points_conflict&&!item.points_confirmed&&<p>得点段階の最高点に確認が必要です。得点段階を編集すると確認が記録されます。</p>}
+          <button onClick={()=>{const next=[...all];next.splice(index+1,0,{id:reviewCandidateId("teacher-rubric"),description:"",points:0,levels:initialRubricLevels(0,"",true),segment_ids:[],provenance:{source:"teacher_manual",inserted_after:item.id}});rows(entry,next);}}>後に追加</button>
           <button onClick={()=>{const next=[...all];next.splice(index+1,0,{...item,id:reviewCandidateId("teacher-rubric"),provenance:{...item.provenance,manual_duplicate_from:item.id,teacher_confirmed:true}});rows(entry,next);}}>複製</button>
           <button disabled={index===0} onClick={()=>{const next=[...all];[next[index-1],next[index]]=[next[index],next[index-1]];rows(entry,next);}}>上へ</button>
-          <button disabled={index===0} onClick={()=>{const result=mergeRubricRows(entry,[all[index-1].id,item.id],"manual_above");if(result)update(entry.id,result);}}>上と結合</button>
+          <button disabled={index===0} onClick={()=>{const result=mergeRubricRows(entry,[all[index-1].id,item.id],"manual_above",true);if(result)update(entry.id,result);}}>上と結合</button>
           <button onPointerDown={e=>e.preventDefault()} onClick={event=>{splitTrigger.current=event.currentTarget;void split(entry,item,true);}}>カーソル位置で分割</button><button aria-busy={splitting===`${entry.id}:${item.id}`} onClick={event=>{splitTrigger.current=event.currentTarget;void split(entry,item,false);}}>{splitting===`${entry.id}:${item.id}`?<><span className="spinner" aria-hidden="true"/>分割案を作成中…</>:"分割案を作成"}</button>
           <label><input type="checkbox" checked={!!item.excluded} onChange={e=>update(entry.id,{rubric_edits:all.map(c=>c.id===item.id?{...c,excluded:e.target.checked}:c)})}/>対象外</label>
         </fieldset>)}
       </AuthoringPreviewEditor>
-    {groups?.entryId===entry.id&&<section hidden={!rubricEditing} aria-label="採点基準の統合案"><h3>採点基準の統合案</h3>{groups.rows.map(c=><p key={c.id}>{c.description} — {c.points}点</p>)}<button disabled={disabled||busy} onClick={()=>{const entry=entries.find(e=>e.id===groups.entryId);if(!entry||JSON.stringify(rubricRows(entry))!==groups.baseline){setError("採点基準が変更されています。統合案を作り直してください。");return;}rows(entry,groups.rows);setGroups(null);}}>この統合を適用</button><button onClick={()=>setGroups(null)}>キャンセル</button></section>}
+    {groups?.entryId===entry.id&&<section hidden={!rubricEditing} aria-label="採点基準の統合案"><h3>採点基準の統合案</h3>{groups.rows.map(c=><p key={c.id}>{c.description} — 最高点 {derivedRubricMaximum(c)}点</p>)}<button disabled={disabled||busy} onClick={()=>{const entry=entries.find(e=>e.id===groups.entryId);if(!entry||JSON.stringify(webRubricRows(entry))!==groups.baseline){setError("採点基準が変更されています。統合案を作り直してください。");return;}rows(entry,groups.rows);setGroups(null);}}>この統合を適用</button><button onClick={()=>setGroups(null)}>キャンセル</button></section>}
       </section>}
     </article>})}
     {showAnswer&&answerVisibleEntries.length===0&&<section aria-label="模範解答候補">{addAnswer}</section>}
-    {showRubric&&rubricVisibleEntries.length===0&&<section aria-label="採点基準候補"><AuthoringPreviewEditor label="採点基準" editing={rubricEditing} onEditing={onRubricEditing} preview={<p>採点基準はまだありません。</p>}><button disabled={disabled||busy||questionKey==="unassigned"} onClick={()=>onChange([...entries,{id:reviewCandidateId("teacher-entry"),question_id:null,authoring_question_key:questionKey,mapping_state:"manual_mapped",disposition:"include",answer_kind:"alternative",answer_text:"",material_role:"rubric_source",source:{kind:"teacher_manual",material_id:null,source_sha256:null,segments:[]},rubric_edits:[{id:reviewCandidateId("teacher-rubric"),description:"",points:0,segment_ids:[],grouping_confirmed:true,grouping_method:"teacher_manual",provenance:{source:"teacher_manual",manual_add:true}}]}],"rubric")}>基準を追加</button></AuthoringPreviewEditor></section>}
-    {proposal&&<AuthoringDialog title={`${rubricCriterionLabel(Math.max(0,rubricRows(entries.find(e=>e.id===proposal.entryId)||{...visible[0],rubric_edits:[]}).findIndex(c=>c.id===proposal.item.id)))}の分割案`} busy={applying} onCancel={cancelProposal} actions={<><button disabled={applying} onClick={cancelProposal}>取消</button><button disabled={disabled||applying||proposalStale} onClick={()=>void applyProposal()}>{applying?"適用中…":"分割案を適用"}</button></>}>
-      <h3>元の基準</h3><MarkdownMathText source={proposal.original}/><p>元の配点: {proposal.item.points}点</p>
+    {showRubric&&rubricVisibleEntries.length===0&&<section aria-label="採点基準候補"><AuthoringPreviewEditor label="採点基準" editing={rubricEditing} onEditing={setRubricEditing} preview={<p>採点基準はまだありません。</p>}><button disabled={disabled||busy||questionKey==="unassigned"} onClick={()=>onChange([...entries,{id:reviewCandidateId("teacher-entry"),question_id:null,authoring_question_key:questionKey,mapping_state:"manual_mapped",disposition:"include",answer_kind:"alternative",answer_text:"",material_role:"rubric_source",source:{kind:"teacher_manual",material_id:null,source_sha256:null,segments:[]},rubric_edits:[{id:reviewCandidateId("teacher-rubric"),description:"",points:0,levels:initialRubricLevels(0,"",true),segment_ids:[],grouping_confirmed:true,grouping_method:"teacher_manual",provenance:{source:"teacher_manual",manual_add:true}}]}],"rubric")}>基準を追加</button></AuthoringPreviewEditor></section>}
+    {proposal&&<AuthoringDialog title={`${rubricCriterionLabel(Math.max(0,webRubricRows(entries.find(e=>e.id===proposal.entryId)||{...visible[0],rubric_edits:[]}).findIndex(c=>c.id===proposal.item.id)))}の分割案`} busy={applying} onCancel={cancelProposal} actions={<><button disabled={applying} onClick={cancelProposal}>取消</button><button disabled={disabled||applying||proposalStale} onClick={()=>void applyProposal()}>{applying?"適用中…":"分割案を適用"}</button></>}>
+      <h3>元の基準</h3><MarkdownMathText source={proposal.original}/><p>元の最高点: {derivedRubricMaximum(proposal.item)}点</p>
       <h3>分割後</h3>{proposal.split.parts.map((part,index)=><section className="panel" key={index}><h4>分割候補{index+1}</h4><MarkdownMathText source={part.description}/><p>{part.points}点</p></section>)}
-      {proposal.split.parts.some(part=>part.points_conflict)&&<p className="notice">配点は自動配分しません。適用後に各基準の配点を確認してください。</p>}
+      {proposal.split.parts.some(part=>part.points_conflict)&&<p className="notice">得点段階は自動配分しません。適用後に各基準の得点段階を確認してください。</p>}
       {proposalError&&<p role="alert">{proposalError}</p>}
     </AuthoringDialog>}
   </div>;

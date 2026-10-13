@@ -63,7 +63,7 @@ test("current preview and retained editor history; explicit add/replace material
   const atext=await exerciseEditor(page,page.getByLabel("模範解答本文",{exact:true}),answer);
   await question.getByRole("button",{name:"プレビューを見る",exact:true}).click();await expect(answer.getByRole("button",{name:"プレビューを見る",exact:true})).toBeVisible();
   await rubric.getByRole("button",{name:"編集する",exact:true}).click();await page.getByRole("button",{name:"基準を追加",exact:true}).click();
-  await page.getByLabel(/^基準\d+の本文$/).fill("$x^2$ を確認");await page.getByLabel(/^基準\d+の配点$/).fill("5");await page.getByRole("button",{name:"複製",exact:true}).click();
+  await page.getByLabel(/^基準\d+の本文$/).fill("$x^2$ を確認");await page.getByLabel("得点段階2の得点",{exact:true}).fill("5");await page.getByLabel("得点段階2の条件",{exact:true}).fill("$x^2$ を確認");await page.getByRole("button",{name:"複製",exact:true}).click();
   await page.getByRole("button",{name:"上と結合",exact:true}).nth(1).click();await expect(page.getByLabel(/^基準\d+の本文$/)).toHaveCount(1);
   await rubric.getByRole("button",{name:"プレビューを見る",exact:true}).click();await expect(rubric.locator(".katex").first()).toBeVisible();await expect(rubric.locator(".authoring-current-preview")).toContainText("5点");
   await rubric.getByRole("button",{name:"編集する",exact:true}).click();await page.getByRole("button",{name:"編集を元に戻す",exact:true}).click();await expect(page.getByLabel(/^基準\d+の本文$/)).toHaveCount(2);

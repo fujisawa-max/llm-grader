@@ -135,6 +135,14 @@ def validate_snapshot(value, previous):
     saved_recovery_ids = {candidate.get('id') for candidate in previous.get('domains', {}).get(
         'recovery', {}).get('rubric_candidates', [])}
     previous = normalize_authoring_snapshot(previous)
+    legacy_points_only = {
+        criterion['id']: criterion['points']
+        for entry in previous.get('domains', {}).get('rubric', {}).get('entries', [])
+        if isinstance(entry, dict)
+        for criterion in entry.get('criteria', [])
+        if isinstance(criterion, dict) and isinstance(criterion.get('id'), str)
+        and not criterion.get('levels')
+    }
     # Legacy recovery rows are derived on read. Seed them from the saved
     # automatic evidence before adapting a teacher's new routing decision;
     # otherwise that edit changes their immutable status/target provenance.
@@ -211,6 +219,30 @@ def validate_snapshot(value, previous):
     value['source_provenance'] = deepcopy(previous['source_provenance'])
     if 'domains' in previous:
         from .authoring_sources import validate_domains
+        # On the Web authoring path, executable score levels are canonical.
+        # Keep `points` only as a compatibility projection for older domain
+        # adapters; malformed/incomplete score rows are left for validation.
+        rubric_domain = value.get('domains', {}).get('rubric', {})
+        for entry in rubric_domain.get('entries', []) if isinstance(rubric_domain, dict) else []:
+            for criterion in entry.get('criteria', []) if isinstance(entry, dict) else []:
+                levels = criterion.get('levels') if isinstance(criterion, dict) else None
+                if isinstance(levels, list) and not levels and criterion.get('id') in legacy_points_only:
+                    # Keep editable legacy points-only drafts stable until the
+                    # teacher explicitly opens/prepares their Rubric editor.
+                    criterion['points'] = legacy_points_only[criterion['id']]
+                elif isinstance(levels, list) and all(
+                    isinstance(level, dict)
+                    and (level.get('score') is None or (
+                        type(level.get('score')) in (int, float)
+                        and math.isfinite(level['score'])
+                        and level['score'] >= 0
+                    ))
+                    for level in levels
+                ):
+                    criterion['points'] = max(
+                        (level['score'] for level in levels if level.get('score') is not None),
+                        default=0,
+                    )
         validate_domains(value, previous)
     if (not isinstance(value['metadata'], dict) or not isinstance(value['metadata'].get('name'), str)
             or not value['metadata']['name'].strip() or len(value['metadata']['name']) > 200
@@ -348,9 +380,13 @@ def preflight(snapshot, *, question_warnings=None):
             if any((c.get('points_conflict') and not c.get('points_confirmed')) or
                     c.get('grouping_confirmed') is False for c in criteria):
                 pending = next(c for c in criteria if (c.get('points_conflict') and not c.get('points_confirmed')) or c.get('grouping_confirmed') is False)
-                issue(key, 'rubric', '採点基準の統合結果と配点を確認してください。', code='rubric_review', criterion_id=pending.get('id'))
-            if not criteria or sum(c['points'] for c in criteria) != points:
-                issue(key, 'rubric', '採点基準の配点合計を確認してください。', 'points', 'rubric_points')
+                issue(key, 'rubric', '採点基準の統合結果と得点段階を確認してください。', code='rubric_review', criterion_id=pending.get('id'))
+            rubric_total = sum(max((level.get('score') for level in c.get('levels', [])
+                if isinstance(level, dict) and type(level.get('score')) in (int, float)
+                and math.isfinite(level['score']) and level['score'] >= 0), default=0)
+                for c in criteria)
+            if not criteria or rubric_total != points:
+                issue(key, 'rubric', '得点段階の最高点合計を設問の配点に合わせてください。', 'levels', 'rubric_points')
         if n.get('review_flags') and not snapshot.get('domains', {}).get('question'):
             issue(key, 'question', '出典の未確認項目があります。')
     question = snapshot.get('domains', {}).get('question')

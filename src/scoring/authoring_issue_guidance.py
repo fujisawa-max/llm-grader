@@ -1,5 +1,7 @@
 """Teacher-facing explanations for existing authoring blockers; no decisions."""
 
+import math
+
 
 def issue_guidance(snapshot, issue, total):
     key, code = issue.get('question_key'), issue.get('code')
@@ -13,7 +15,10 @@ def issue_guidance(snapshot, issue, total):
         result.update({k: issue[k] for k in ('action_label', 'expected_state') if k in issue})
         if issue.get('criterion_id'):
             criterion = next((c for c in criteria if c.get('id') == issue['criterion_id']), {})
-            result['current_state'] = f"配点: {criterion.get('points', '未設定')}点 / 得点段階: {len(criterion.get('levels') or [])}件"
+            levels = criterion.get('levels') or []
+            scores = [level.get('score') for level in levels if isinstance(level, dict)
+                      and type(level.get('score')) in (int, float) and math.isfinite(level['score'])]
+            result['current_state'] = f"最高点: {max(scores) if scores else '未設定'}点 / 得点段階: {len(levels)}件"
     elif code == 'question_source_warning':
         result.update(action_label='出典確認へ',
                       current_state=f"確認事項 {issue.get('source_review_index', '')}: {issue.get('source_review_label', '自動解析の確認事項')} / 未確認",
@@ -26,16 +31,19 @@ def issue_guidance(snapshot, issue, total):
                       expected_state='元PDFと編集本文を照合し、数式や出典付き読み取り項目の対応を修正して保存してください。警告の確認だけでは本文の差異は解消されません。')
     elif code == 'rubric_points':
         points = node.get('score_points')
-        result.update(current_state=f"設問の配点: {points if points is not None else '未設定'}点 / 採点基準の合計: {sum(c['points'] for c in criteria)}点",
-                      expected_state=f'採点基準の合計を{points}点にしてください。' if points is not None else '先に設問の配点を設定してください。')
+        rubric_total = sum(max((level.get('score') for level in c.get('levels', [])
+            if isinstance(level, dict) and type(level.get('score')) in (int, float)
+            and math.isfinite(level['score']) and level['score'] >= 0), default=0) for c in criteria)
+        result.update(action_label='得点段階を確認', current_state=f"設問の配点: {points if points is not None else '未設定'}点 / 得点段階の最高点合計: {rubric_total}点",
+                      field='levels', expected_state=f'得点段階の最高点合計を{points}点にしてください。' if points is not None else '先に設問の配点を設定してください。')
     elif code == 'rubric_review':
         pending = next((c for c in criteria if c.get('id') == issue.get('criterion_id')), {})
         states = []
         if pending.get('grouping_confirmed') is False:
             states.append('統合内容が未確認')
         if pending.get('points_conflict') and not pending.get('points_confirmed'):
-            states.append('配点が未確認')
-        result.update(current_state=' / '.join(states), expected_state='対象基準の本文を確認し、「この採点基準を確認」を押してください。配点が未確認の場合は点数を入力してください。')
+            states.append('得点段階の最高点が未確認')
+        result.update(current_state=' / '.join(states), expected_state='対象基準の本文を確認し、「この採点基準を確認」を押してください。得点段階の最高点に確認が必要な場合は、得点段階を編集してください。')
     elif code == 'question_score':
         result.update(action_label='配点を修正', current_state=f"設問の配点: {node.get('score_points') if node.get('score_points') is not None else '未設定'}",
                       expected_state='設問設定で正しい配点を入力してください。')

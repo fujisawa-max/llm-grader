@@ -96,7 +96,7 @@ def test_missing_levels_save_allowed_confirmation_blocked_then_teacher_completes
     row = save(w, row, value)
     review = w.client.get(base(w) + "/authoring/review").json()
     issue = next(i for i in review["issues"] if i.get("code") == "grading_levels_incomplete")
-    assert issue["criterion_id"] == "c1" and issue["action_label"] == "得点段階を設定"
+    assert issue["criterion_id"] == "c1" and issue["action_label"] == "得点段階を確認"
     assert not review["can_confirm"]
     before = deepcopy(row)
     assert confirm(w, row).status_code == 409
@@ -131,7 +131,11 @@ def test_invalid_executable_levels_never_synthesized(workspace, levels):
     before = deepcopy(snapshot)
     definition, issues = compile_definition(snapshot)
     assert not definition["complete"]
-    assert any(i["code"] == "grading_levels_incomplete" for i in issues)
+    if levels == [{"score": 11, "condition": "Invalid"}]:
+        assert not any(i["code"] == "grading_levels_incomplete" for i in issues)
+        assert definition["questions"][0]["rubric"]["criteria"][0]["max_score"] == 11
+    else:
+        assert any(i["code"] == "grading_levels_incomplete" for i in issues)
     assert snapshot == before
 
 
@@ -191,6 +195,37 @@ def test_projection_tampering_discarded_and_hash_remains_consistent(workspace):
         x["score"] for x in executable_rubric(row["snapshot"], w.question)["criteria"][0]["levels"]
     ] == [0, 10]
     assert canonical_hash(row["snapshot"]) == row["snapshot_sha256"]
+
+
+def test_score_levels_are_canonical_and_stale_points_are_ignored(workspace):
+    w = workspace
+    row = begin(w)
+    snapshot = deepcopy(row["snapshot"])
+    criterion = snapshot["domains"]["rubric"]["entries"][0]["criteria"][0]
+    criterion["points"] = 20
+    snapshot["rubrics"][w.question][0]["points"] = 20
+    definition, issues = compile_definition(snapshot)
+    assert not issues
+    executable = definition["questions"][0]["rubric"]["criteria"][0]
+    assert executable["max_score"] == 10
+    assert [level["score"] for level in executable["levels"]] == [0, 10]
+
+
+def test_save_derives_compatibility_points_from_levels_even_when_incomplete(workspace):
+    w = workspace
+    row = begin(w)
+    snapshot = deepcopy(row["snapshot"])
+    criterion = snapshot["domains"]["rubric"]["entries"][0]["criteria"][0]
+    criterion["points"] = 99
+    criterion["levels"] = [{"score": 0, "condition": "基準を満たしていない。"}]
+    row = save(w, row, snapshot)
+    criterion = row["snapshot"]["domains"]["rubric"]["entries"][0]["criteria"][0]
+    assert criterion["points"] == 0
+    assert row["snapshot"]["rubrics"][w.question][0]["points"] == 0
+    review = w.client.get(base(w) + "/authoring/review").json()
+    assert not review["can_confirm"]
+    assert any(issue["code"] == "grading_levels_incomplete" for issue in review["issues"])
+    assert not any(issue["code"] == "grading_criterion_points" for issue in review["issues"])
 
 
 def test_content_context_compilation_preserves_schema_ancestors_and_math(workspace):
@@ -335,7 +370,6 @@ def test_reference_asset_reader_never_uses_current_configuration_and_rejects_dri
     "patch,code,field",
     [
         ({"description": ""}, "grading_criterion_description", "content"),
-        ({"points": 0}, "grading_criterion_points", "points"),
         ({"id": ""}, "grading_criterion_identity", "content"),
     ],
 )

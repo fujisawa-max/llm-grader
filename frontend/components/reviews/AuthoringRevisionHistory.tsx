@@ -5,6 +5,7 @@ import {AcceptedDiagramPreview} from "./AuthoringPreviewEditor";
 import {MarkdownMathText} from "@/components/MarkdownMathText";
 import {testAuthoring,type AuthoringRevision,type ConfirmedAuthoringRevision} from "@/lib/api/testAuthoring";
 import {canonicalQuestionPath} from "@/lib/canonicalQuestionPath";
+import {derivedRubricMaximum} from "@/lib/rubricLevels";
 import type {DiagramRecord} from "@/types/diagrams";
 
 export function AuthoringRevisionHistory({testId,dirty,onClose,onFork}:{testId:string;dirty:boolean;onClose:()=>void;onFork:(parent:string)=>Promise<void>}){
@@ -32,7 +33,7 @@ export function AuthoringRevisionHistory({testId,dirty,onClose,onFork}:{testId:s
             <h4>{canonicalQuestionPath(node.stable_key,selected.snapshot.nodes.map(n=>({key:n.stable_key,parentKey:n.parent_key,label:n.label.raw})))} ／ {node.score_semantics==="sum_children"?"小問合計":`${node.score_points??"－"}点`}</h4>
             <h5>問題</h5><MarkdownMathText source={node.body_text}/><AcceptedDiagramPreview records={records(node.diagram_records,node.stable_key)}/>
             <h5>模範解答</h5>{entries.length?entries.map(entry=><div key={entry.id}><MarkdownMathText source={entry.answer_text||"本文なし"}/>{(entry.manual_alternative_answers||entry.semantic_classification?.alternative_answers||[]).map((alternative,index)=><MarkdownMathText key={index} source={alternative.text}/>)}<AcceptedDiagramPreview records={records(entry.diagram_records,entry.id)}/></div>):answer&&<><MarkdownMathText source={answer.primary}/>{answer.alternatives.map((text,index)=><MarkdownMathText key={index} source={text}/>)}<AcceptedDiagramPreview records={records(answer.diagram_records)}/></>}
-            <h5>採点基準</h5>{(selected.snapshot.rubrics[node.stable_key]||[]).map(criterion=><div key={criterion.id}><MarkdownMathText source={criterion.description}/><p>{criterion.points}点</p>{criterion.levels?.length?<ul>{criterion.levels.map((level,index)=><li key={index}>{level.score??"未設定"}点: {level.condition||"条件が未設定"}</li>)}</ul>:<p>得点段階が未設定です。</p>}</div>)}
+            <h5>採点基準</h5>{(selected.snapshot.rubrics[node.stable_key]||[]).map(criterion=><div key={criterion.id}><MarkdownMathText source={criterion.description}/><p>最高点 {criterion.levels?.length?derivedRubricMaximum(criterion):criterion.points}点</p>{criterion.levels?.length?<ul>{criterion.levels.map((level,index)=><li key={index}>{level.score??"未設定"}点: {level.condition||"条件が未設定"}</li>)}</ul>:<p>得点段階が未設定です。</p>}</div>)}
           </article>;
         })}
         <details><summary>出典情報</summary><ul>{selected.snapshot.materials.map(material=><li key={material.id}><a href={`/api/v1/tests/${encodeURIComponent(testId)}/materials/${encodeURIComponent(material.id)}/file`} target="_blank" rel="noopener noreferrer">{material.role==="question_sheet"?"問題用紙":material.role==="model_answer_source"?"模範解答資料":material.role==="rubric_source"?"採点基準資料":"元資料"}を開く</a></li>)}</ul><pre style={{whiteSpace:"pre-wrap",overflowWrap:"anywhere"}}>{JSON.stringify({materials:selected.snapshot.materials,provenance:selected.snapshot.source_provenance,diagrams:selected.snapshot.domains?.answer?.entries.flatMap(entry=>entry.diagram_records||[])},null,2)}</pre></details>

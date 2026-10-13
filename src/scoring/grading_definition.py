@@ -355,9 +355,8 @@ def compile_definition(snapshot, evidence=None):
         for c in snapshot.get("rubrics", {}).get(key, []) if key not in children else []:
             if c.get("excluded"):
                 continue
-            cid, points, levels = c.get("id"), c.get("points"), c.get("levels", [])
+            cid, levels = c.get("id"), c.get("levels", [])
             identity_valid = isinstance(cid, str) and bool(cid) and cid not in used
-            points_valid = _integer(points, positive=True)
             description_valid = isinstance(c.get("description"), str) and bool(
                 c["description"].strip()
             )
@@ -380,18 +379,6 @@ def compile_definition(snapshot, evidence=None):
                     action_label="採点基準を修正",
                     expected_state="この基準で確認する内容を入力してください。",
                 )
-            if not points_valid:
-                issue(
-                    key,
-                    "grading_criterion_points",
-                    "採点基準の配点を正の整数で設定してください。",
-                    cid,
-                )
-                issues[-1].update(
-                    field="points",
-                    action_label="配点を修正",
-                    expected_state="この基準の正しい配点を入力してください。",
-                )
             valid = isinstance(levels, list) and bool(levels)
             scores = []
             for level in levels if isinstance(levels, list) else []:
@@ -399,7 +386,6 @@ def compile_definition(snapshot, evidence=None):
                 condition = level.get("condition") if isinstance(level, dict) else None
                 good = (
                     _integer(score)
-                    and (not points_valid or score <= points)
                     and isinstance(condition, str)
                     and bool(condition.strip())
                 )
@@ -409,7 +395,7 @@ def compile_definition(snapshot, evidence=None):
             valid = (
                 valid
                 and len(scores) == len(set(scores))
-                and (not points_valid or max(scores, default=-1) == points)
+                and max(scores, default=0) > 0
             )
             if not valid:
                 issue(
@@ -418,6 +404,12 @@ def compile_definition(snapshot, evidence=None):
                     "採点基準の得点段階が未設定または不完全です。部分点の条件を確認してください。",
                     cid,
                 )
+                issues[-1].update(
+                    field="levels",
+                    action_label="得点段階を確認",
+                    expected_state="0点と最高点を含む得点段階を設定し、各段階の条件を入力してください。",
+                )
+            maximum = max(scores, default=0)
             if isinstance(cid, str):
                 used.add(cid)
             executable_id = (
@@ -438,7 +430,7 @@ def compile_definition(snapshot, evidence=None):
                     "criterion_id": cid,
                     "executable_id": executable_id,
                     "description": c.get("description"),
-                    "max_score": int(points) if _integer(points) else points,
+                    "max_score": maximum,
                     "levels": [
                         {
                             **deepcopy(level),

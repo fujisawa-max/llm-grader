@@ -671,7 +671,7 @@ def validate_domains(value, previous):
                     if (not isinstance(levels, list) or len(levels) > 200 or any(
                             not isinstance(level, dict) or
                             (level.get('score') is not None and (type(level['score']) not in (int, float)
-                                or not math.isfinite(level['score']))) or
+                                or not math.isfinite(level['score']) or level['score'] < 0)) or
                             not isinstance(level.get('condition', ''), str) or len(level.get('condition', '')) > 20000
                             for level in levels)):
                         raise AuthoringError('AUTHORING_INVALID_RUBRIC', '得点段階の形式を確認してください。')

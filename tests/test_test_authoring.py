@@ -107,7 +107,35 @@ def test_atomic_draft_save_preserves_formal_entities_and_conflicts(workspace):
         assert s.get(RubricVersion,w.rubric).rubric_json['questions'][0]['criteria'][0]['description']=='Original criterion'
 
 
-@pytest.mark.parametrize('mutation',['provenance','cycle','foreign_material','duplicate','points','rubric',
+def test_legacy_points_only_working_draft_survives_unrelated_save_until_editor_prepares_levels(workspace):
+    from scoring.pdf_native import canonical_hash
+
+    w = workspace
+    row = begin(w)
+    legacy = deepcopy(row['snapshot'])
+    legacy_criterion = legacy['domains']['rubric']['entries'][0]['criteria'][0]
+    legacy_criterion['points'] = 10
+    legacy_criterion.pop('levels', None)
+    projected = legacy['rubrics'][w.question][0]
+    projected['points'] = 10
+    projected.pop('levels', None)
+    with w.sf() as session:
+        revision = session.get(Revision, row['id'])
+        revision.snapshot = legacy
+        revision.snapshot_sha256 = canonical_hash(legacy)
+        session.commit()
+
+    current = w.client.get(base(w) + '/authoring').json()['revision']
+    current['snapshot']['metadata']['description'] = 'Unrelated teacher edit'
+    saved = w.client.put(base(w) + '/authoring', json={
+        'expected_edit_version': current['edit_version'], 'snapshot': current['snapshot']})
+    assert saved.status_code == 200, saved.text
+    criterion = saved.json()['snapshot']['domains']['rubric']['entries'][0]['criteria'][0]
+    assert criterion['points'] == 10
+    assert criterion.get('levels') in (None, [])
+
+
+@pytest.mark.parametrize('mutation',['provenance','cycle','foreign_material','duplicate','points','rubric','rubric_negative_score',
     'malformed_parent','malformed_material'])
 def test_unsafe_snapshot_rejected_without_partial_save(workspace,mutation):
     w=workspace
@@ -124,7 +152,9 @@ def test_unsafe_snapshot_rejected_without_partial_save(workspace,mutation):
     if mutation=='points':
         value['nodes'][0]['score_points']=-1
     if mutation=='rubric':
-        value['rubrics'][w.question][0]['points']=-1
+        value['domains']['rubric']['entries'][0]['criteria'][0]['levels']='malformed'
+    if mutation=='rubric_negative_score':
+        value['domains']['rubric']['entries'][0]['criteria'][0]['levels'][1]['score']=-1
     if mutation=='malformed_parent':
         value['nodes'][0]['parent_key']=[]
     if mutation=='malformed_material':
@@ -626,7 +656,9 @@ def test_actionable_review_values_and_specific_targets_preserve_blockers(workspa
     from scoring.test_authoring import preflight
     row = begin(workspace)
     value = deepcopy(row['snapshot'])
-    value['rubrics'][workspace.question][0].update(points=8, grouping_confirmed=False)
+    value['rubrics'][workspace.question][0].update(
+        levels=[{'score': 0, 'condition': 'No credit'}, {'score': 8, 'condition': 'Partial'}],
+        points=10, grouping_confirmed=False)
     value['domains']['answer'] = {'entries': [{'id': 'classification-entry',
         'authoring_question_key': workspace.question, 'disposition': 'include',
         'answer_text': 'Answer', 'semantic_classification': {'status': 'needs_teacher_review'}},
@@ -635,17 +667,19 @@ def test_actionable_review_values_and_specific_targets_preserve_blockers(workspa
     result = preflight(value)
     by_code = {item.get('code'): item for item in result['issues']}
     assert not result['can_confirm']
-    assert by_code['rubric_points']['current_state'] == '設問の配点: 10.0点 / 採点基準の合計: 8点'
+    assert by_code['rubric_points']['current_state'] == '設問の配点: 10.0点 / 得点段階の最高点合計: 8点'
     assert '10.0点' in by_code['rubric_points']['expected_state']
     assert by_code['rubric_review']['criterion_id'] == 'c1'
     assert by_code['answer_classification']['entry_id'] == 'classification-entry'
     assert by_code['answer_unassigned']['question_key'] is None
     assert by_code['answer_unassigned']['entry_id'] == 'unassigned-entry'
     assert value == before
-    value['rubrics'][workspace.question][0].update(points=10, grouping_confirmed=True)
+    value['rubrics'][workspace.question][0].update(
+        levels=[{'score': 0, 'condition': 'No credit'}, {'score': 10, 'condition': 'Complete'}],
+        points=8, grouping_confirmed=True)
     after = preflight(value)
     assert {i.get('code') for i in after['issues']} == {'answer_classification', 'answer_unassigned'}
-    assert {'rubric_points', 'rubric_review', 'grading_levels_incomplete'} <= set(by_code)
+    assert {'rubric_points', 'rubric_review'} <= set(by_code)
     assert any(item.get('code') == 'answer_classification' for item in after['issues'])
 
 

@@ -58,7 +58,7 @@ test("saved source reviews integrate Question, answer diagrams and advanced Rubr
   await criterion.evaluate(el=>{const textarea=el as HTMLTextAreaElement;textarea.focus();textarea.setSelectionRange(16,16);});
   await criterion.press("ArrowRight");await criterion.press("ArrowLeft");
   await rubricEditor().getByRole("button",{name:"カーソル位置で分割",exact:true}).click();await page.getByRole("button",{name:"分割案を適用",exact:true}).click();
-  await expect(rubricEditor().getByLabel(/^基準\d+の本文$/)).toHaveCount(2);await rubricEditor().getByLabel(/^基準\d+の配点$/).nth(0).fill("5");await rubricEditor().getByLabel(/^基準\d+の配点$/).nth(1).fill("5");
+  await expect(rubricEditor().getByLabel(/^基準\d+の本文$/)).toHaveCount(2);for(const index of [0,1]){const criterion=rubricEditor().locator("fieldset").nth(index);await criterion.getByLabel("得点段階2の得点",{exact:true}).fill("5");await criterion.getByLabel("得点段階2の条件",{exact:true}).fill(`基準${index+1}の条件`);}
   await rubricEditor().getByRole("button",{name:"複製",exact:true}).nth(1).click();await expect(rubricEditor().getByLabel(/^基準\d+の本文$/)).toHaveCount(3);
   await rubricEditor().getByRole("button",{name:"上と結合",exact:true}).nth(2).click();await expect(rubricEditor().getByLabel(/^基準\d+の本文$/)).toHaveCount(2);
   await rubricEditor().getByRole("button",{name:"編集を元に戻す",exact:true}).click();await expect(rubricEditor().getByLabel(/^基準\d+の本文$/)).toHaveCount(3);
@@ -70,7 +70,7 @@ test("saved source reviews integrate Question, answer diagrams and advanced Rubr
   await page.getByRole("checkbox",{name:"解答",exact:true}).uncheck();await page.getByRole("checkbox",{name:"解答",exact:true}).check();await expect(diagrams.getByText("使用中",{exact:true})).toBeVisible();
   const beforeReview=await (await page.request.get(base+"/authoring")).json();
   await page.getByRole("button",{name:"最終確認へ",exact:true}).click();
-  await page.locator(".authoring-issue-cards article").filter({hasText:"問題4"}).filter({hasText:"採点基準の配点合計"}).getByRole("button",{name:"採点基準を修正",exact:true}).click();await expect(selector).toHaveValue("q2");
+  await page.locator(".authoring-issue-cards article").filter({hasText:"問題4"}).filter({hasText:"最高点合計"}).getByRole("button",{name:"得点段階を確認",exact:true}).click();await expect(selector).toHaveValue("q2");
   await expect.poll(()=>page.evaluate(()=>!!document.activeElement?.closest('[aria-label="採点基準候補"]'))).toBe(true);
   expect((await (await page.request.get(base+"/authoring")).json()).revision.edit_version).toBe(beforeReview.revision.edit_version);
   await selector.selectOption("q1");await expect(editor).toHaveValue(initial+"\n教師が編集した問題文");
