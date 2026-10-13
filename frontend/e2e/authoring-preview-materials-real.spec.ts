@@ -41,7 +41,7 @@ test("current preview and retained editor history; explicit add/replace material
   const exam=await(await page.request.post(`/api/v1/offerings/${seed.course_offering_id}/tests`,{data:{name:"Preview material controls",total_points:10}})).json(),base=`/api/v1/tests/${exam.id}`;
   await page.goto(`/tests/${exam.id}/authoring`);await page.getByRole("button",{name:"設問を追加",exact:true}).waitFor();await page.getByRole("button",{name:"設問を追加",exact:true}).click();
   const question=page.locator("#authoring-question"),answer=page.locator("#authoring-answer"),rubric=page.locator("#authoring-rubric");
-  await expect(question.getByRole("button",{name:"本文編集",exact:true})).toBeVisible();await expect(answer.getByRole("button",{name:"本文編集",exact:true})).toBeVisible();await expect(rubric.getByRole("button",{name:"編集する",exact:true})).toBeVisible();
+  await expect(question.getByRole("button",{name:"本文編集",exact:true})).toBeVisible();await expect(answer.getByRole("button",{name:"本文編集",exact:true})).toBeVisible();await expect(rubric.getByRole("button",{name:"基準を追加",exact:true})).toBeVisible();
   await expect(page.getByLabel("問題文",{exact:true})).not.toBeVisible();await expect(page.getByLabel("模範解答本文",{exact:true})).not.toBeVisible();
   await expect(page.getByRole("button",{name:"設問を追加",exact:true})).toHaveCount(1);
   await expect(page.locator(".authoring-target-controls").getByRole("button",{name:"設問を追加",exact:true})).toBeVisible();
@@ -62,11 +62,13 @@ test("current preview and retained editor history; explicit add/replace material
   await question.getByRole("button",{name:"本文編集",exact:true}).click();await expect(page.getByLabel("問題文",{exact:true})).toHaveValue(qtext);
   const atext=await exerciseEditor(page,page.getByLabel("模範解答本文",{exact:true}),answer);
   await question.getByRole("button",{name:"プレビューを見る",exact:true}).click();await expect(answer.getByRole("button",{name:"プレビューを見る",exact:true})).toBeVisible();
-  await rubric.getByRole("button",{name:"編集する",exact:true}).click();await page.getByRole("button",{name:"基準を追加",exact:true}).click();
-  await page.getByLabel(/^基準\d+の本文$/).fill("$x^2$ を確認");await page.getByLabel("得点段階2の得点",{exact:true}).fill("5");await page.getByLabel("得点段階2の条件",{exact:true}).fill("$x^2$ を確認");await page.getByRole("button",{name:"複製",exact:true}).click();
-  await page.getByRole("button",{name:"上と結合",exact:true}).nth(1).click();await expect(page.getByLabel(/^基準\d+の本文$/)).toHaveCount(1);
-  await rubric.getByRole("button",{name:"プレビューを見る",exact:true}).click();await expect(rubric.locator(".katex").first()).toBeVisible();await expect(rubric.locator(".authoring-current-preview")).toContainText("5点");
-  await rubric.getByRole("button",{name:"編集する",exact:true}).click();await page.getByRole("button",{name:"編集を元に戻す",exact:true}).click();await expect(page.getByLabel(/^基準\d+の本文$/)).toHaveCount(2);
+  await page.getByRole("button",{name:"基準を追加",exact:true}).click();
+  let criterion=rubric.locator(".compact-rubric-criterion").first();await criterion.locator(".compact-rubric-criterion-header").getByRole("button",{name:"編集",exact:true}).click();let dialog=page.getByRole("dialog",{name:"採点基準本文"});await dialog.getByLabel("採点基準本文").fill("$x^2$ を確認");await dialog.getByRole("button",{name:"完了",exact:true}).click();
+  const levels=criterion.locator('details[aria-label="得点段階"]');await levels.locator("summary").click();await levels.locator("tbody tr").nth(1).getByRole("button",{name:"編集",exact:true}).click();dialog=page.getByRole("dialog",{name:"得点段階を編集"});await dialog.getByLabel("点数").fill("5");await dialog.getByLabel("条件").fill("$x^2$ を確認");await dialog.getByRole("button",{name:"完了",exact:true}).click();
+  await criterion.locator("details.compact-rubric-criterion-operations summary").click();await criterion.getByRole("button",{name:"複製",exact:true}).click();
+  await rubric.locator(".compact-rubric-criterion").nth(1).locator("details.compact-rubric-criterion-operations summary").click();await rubric.locator(".compact-rubric-criterion").nth(1).getByRole("button",{name:"上と結合",exact:true}).click();await expect(rubric.locator(".compact-rubric-criterion")).toHaveCount(1);
+  criterion=rubric.locator(".compact-rubric-criterion").first();await expect(criterion.locator(".katex").first()).toBeVisible();await expect(criterion.locator(".compact-rubric-levels")).toContainText("5点");
+  await rubric.locator(".compact-rubric-toolbar details summary").click();await rubric.getByRole("button",{name:"編集を元に戻す",exact:true}).click();await expect(rubric.locator(".compact-rubric-criterion")).toHaveCount(2);
   await page.getByRole("checkbox",{name:"解答",exact:true}).uncheck();await page.getByRole("checkbox",{name:"解答",exact:true}).check();await expect(page.getByLabel("模範解答本文",{exact:true})).toHaveValue(atext);
   expect((await(await page.request.get(base+"/authoring")).json()).revision).toEqual(before.revision);expect(await calls(page)).toEqual(counts);
   const bytes=await(await page.request.get(`/api/v1/tests/${seed.id}/materials/${process.env.MODEL_ANSWER_CLASSIFICATION_MATERIAL_ID}/file`)).body();

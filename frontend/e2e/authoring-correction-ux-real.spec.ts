@@ -16,7 +16,7 @@ async function visibleContent(page:Page,content:Locator){
   const box=(await content.boundingBox())!;
   const stickyBottom=await page.locator('.review-workspace-selector').evaluate(el=>el.getBoundingClientRect().bottom);
   expect(box.y).toBeGreaterThanOrEqual(stickyBottom);
-  expect(box.y).toBeLessThan(700);
+  expect(box.y).toBeLessThan(800);
   expect(box.y+Math.min(box.height,100)).toBeLessThanOrEqual(900);
 }
 async function calls(page:Page){return Promise.all(['ocr','math_ocr','ornith_rubric_draft','grader'].map(async profile=>{
@@ -106,9 +106,10 @@ test('Rubric correction and confirmation keep criterion text below sticky contro
   row.snapshot.answers[node.stable_key]={primary:'Teacher answer.',alternatives:[],diagram_records:[]};row.snapshot.rubrics[node.stable_key]=Array.from({length:5},(_,i)=>({id:`criterion-${i}`,description:`Criterion ${i+1}: review this full source condition.`,points:2,levels:[{score:0,condition:"No credit"},{score:2,condition:"Complete criterion"}],segment_ids:[],grouping_confirmed:i!==4,provenance:{source:'teacher_manual'}}));
   expect((await page.request.put(base,{data:{snapshot:row.snapshot,expected_edit_version:row.edit_version}})).status()).toBe(200);await page.reload();
   await page.getByRole('button',{name:'最終確認へ',exact:true}).click();await page.locator('.authoring-issue-cards article').filter({hasText:'統合内容が未確認'}).getByRole('button',{name:'採点基準を修正',exact:true}).click();
-  const criterion=page.locator('#authoring-rubric-criterion-4'),body=criterion.getByRole('textbox',{name:'基準5の本文',exact:true});await expect(criterion).toHaveClass(/authoring-correction-target/);await visibleContent(page,body);
+  const criterion=page.locator('#authoring-rubric-criterion-4'),body=criterion.locator('.compact-rubric-body');await expect(criterion).toHaveClass(/authoring-correction-target/);await visibleContent(page,body);
   const originalCriterion=structuredClone(row.snapshot.rubrics[node.stable_key][4]);
-  await body.fill(originalCriterion.description+' Teacher text correction.');await saveAuthoring(page);
+  await criterion.locator('.compact-rubric-criterion-header').getByRole('button',{name:'編集',exact:true}).click();
+  const bodyDialog=page.getByRole('dialog',{name:'採点基準本文'});await bodyDialog.getByLabel('採点基準本文').fill(originalCriterion.description+' Teacher text correction.');await bodyDialog.getByRole('button',{name:'完了',exact:true}).click();await saveAuthoring(page);
   const corrected=(await(await page.request.get(base)).json()).revision.snapshot.rubrics[node.stable_key][4];
   expect(corrected.provenance.text_review.confirmation_origin).toBe('manual_edit');
   expect(corrected.grouping_confirmed).toBe(false);

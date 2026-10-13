@@ -33,10 +33,9 @@ test("whole-test drafts preserve local caret, materials, section state and forma
   await page.getByRole("button",{name:"設問設定の変更",exact:true}).click();await page.getByRole("spinbutton",{name:/^配点/}).fill("10");await page.getByLabel("問題の表示切替",{exact:true}).getByRole("button",{name:"本文編集",exact:true}).click();
   await page.getByLabel("模範解答本文",{exact:true}).fill("Answer draft");
   await page.getByRole("button",{name:"基準を追加"}).click();
-  await page.getByLabel(/^基準\d+の本文$/).fill("Correct result");
-  const levels=page.getByRole("region",{name:"得点段階と部分点の条件"});
-  await levels.getByLabel("得点段階1の条件",{exact:true}).fill("Incorrect result");
-  await levels.getByLabel("得点段階2の得点",{exact:true}).fill("10");await levels.getByLabel("得点段階2の条件",{exact:true}).fill("Correct result");
+  let criterion=page.locator(".compact-rubric-criterion").first();await criterion.locator(".compact-rubric-criterion-header").getByRole("button",{name:"編集",exact:true}).click();let rubricDialog=page.getByRole("dialog",{name:"採点基準本文"});await rubricDialog.getByLabel("採点基準本文").fill("Correct result");await rubricDialog.getByRole("button",{name:"完了",exact:true}).click();
+  const levels=criterion.locator('details[aria-label="得点段階"]');await levels.locator("summary").click();await levels.locator("tbody tr").nth(0).getByRole("button",{name:"編集",exact:true}).click();rubricDialog=page.getByRole("dialog",{name:"得点段階を編集"});await rubricDialog.getByLabel("条件").fill("Incorrect result");await rubricDialog.getByRole("button",{name:"完了",exact:true}).click();
+  await levels.locator("tbody tr").nth(1).getByRole("button",{name:"編集",exact:true}).click();rubricDialog=page.getByRole("dialog",{name:"得点段階を編集"});await rubricDialog.getByLabel("点数").fill("10");await rubricDialog.getByLabel("条件").fill("Correct result");await rubricDialog.getByRole("button",{name:"完了",exact:true}).click();
   await page.getByRole("checkbox",{name:"問題",exact:true}).uncheck();
   await expect(editor).toHaveCount(0);
   await page.getByRole("checkbox",{name:"問題",exact:true}).check();
@@ -48,7 +47,8 @@ test("whole-test drafts preserve local caret, materials, section state and forma
   await page.reload();await openAuthoringEditors(page);
   await expect(editor).toHaveValue(saved.revision.snapshot.nodes[0].body_text);
   await expect(page.getByLabel("模範解答本文",{exact:true})).toHaveValue("Answer draft");
-  await expect(page.getByLabel(/^基準\d+の本文$/)).toHaveValue("Correct result");
+  criterion=page.locator(".compact-rubric-criterion").first();await expect(criterion.locator(".compact-rubric-body")).toContainText("Correct result");
+  const reloadedLevels=criterion.locator('details[aria-label="得点段階"]');await expect(reloadedLevels.locator("summary")).toContainText("最高点: 10点");await reloadedLevels.locator("summary").click();await expect(reloadedLevels.locator("table")).toContainText("Incorrect result");await expect(reloadedLevels.locator("table")).toContainText("Correct result");
   // Upload is explicit source registration, never extraction/classification.
   const source=await page.request.get(`/api/v1/tests/${process.env.MODEL_ANSWER_CLASSIFICATION_TEST_ID}/materials/${process.env.MODEL_ANSWER_CLASSIFICATION_MATERIAL_ID}/file`);
   expect(source.status()).toBe(200);

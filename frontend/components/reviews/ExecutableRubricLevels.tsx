@@ -9,8 +9,8 @@ export function ExecutableRubricLevels({criterion,onChange,disabled=false}:{crit
   const maximum=derivedRubricMaximum(criterion);
   return <section aria-label="得点段階と部分点の条件">
     <h4>得点段階と部分点の条件</h4>
-    <p>得点段階の最高点がこの基準の配点になります。基準ごとの最高点を合計します。</p>
-    <p aria-label={`この基準の配点 ${maximum}点`}>この基準の配点: {maximum}点</p>
+    <p>得点段階の最高点が基準の最高点になります。</p>
+    <p aria-label={`最高点 ${maximum}点`}>最高点: {maximum}点</p>
     {!levels.length&&<p>未設定です。下書きは保存できますが、テストの確定には設定が必要です。</p>}
     {levels.map((level,index)=><div key={index}>
       <label>得点<input aria-label={`得点段階${index+1}の得点`} type="number" min="0" step="1" disabled={disabled} value={level.score??""} onChange={event=>update(levels.map((v,i)=>i===index?{...v,score:event.target.value===""?null:Number(event.target.value)}:v))}/></label>

@@ -4,11 +4,14 @@ import {useEffect,useId,useRef,type ReactNode} from "react";
 /** Native modal lifecycle shared by authoring confirmations and proposal review. */
 export function AuthoringDialog({title,children,actions,onCancel,busy=false}:{title:string;children:ReactNode;actions:ReactNode;onCancel:()=>void;busy?:boolean}) {
   const dialog=useRef<HTMLDialogElement>(null),titleId=useId(),descriptionId=useId();
+  const opener=useRef<HTMLElement|null>(typeof document==="undefined"?null:document.activeElement as HTMLElement|null);
   useEffect(()=>{
-    const element=dialog.current,previous=document.activeElement as HTMLElement|null;
+    const element=dialog.current,previous=opener.current;
     const previousOverflow=document.body.style.overflow;
     document.body.style.overflow="hidden";
     element?.showModal();
+    const first=element?.querySelector<HTMLElement>("[autofocus],button:not([disabled]),input:not([disabled]),textarea:not([disabled])");
+    first?.focus();
     return()=>{element?.close();document.body.style.overflow=previousOverflow;if(previous?.isConnected)previous.focus();};
   },[]);
   return <dialog ref={dialog} className="authoring-analysis-dialog authoring-proposal-dialog" aria-modal="true" aria-labelledby={titleId} aria-describedby={descriptionId} onKeyDown={event=>{

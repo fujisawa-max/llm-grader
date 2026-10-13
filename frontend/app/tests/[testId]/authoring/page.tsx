@@ -211,9 +211,14 @@ export default function TestAuthoringPage() {
         const card=Array.from(target?.querySelectorAll<HTMLElement>('[data-diagram-id]')||[]).find(element=>element.dataset.diagramId===issue.diagram_id);
         target=card||target?.querySelector<HTMLElement>('.diagram-review')||target;
       }
-      if(issue.field==="levels")target=target?.querySelector<HTMLElement>('[aria-label="得点段階と部分点の条件"]')||target;
+      if(issue.field==="levels"||issue.field==="points"){
+        const levels=target?.querySelector<HTMLDetailsElement>('details[aria-label="得点段階"]');
+        if(levels)levels.open=true;
+        if(issue.field==="levels")target=levels?.querySelector<HTMLElement>("summary")||levels||target;
+        else target=levels?.querySelector<HTMLElement>(".rubric-level-edit button")||levels||target;
+      }
       let content=target;
-      if(issue.field==="score"||issue.field==="points")target=target?.querySelector<HTMLElement>('input[type="number"]')||target;
+      if(issue.field==="score")target=target?.querySelector<HTMLElement>('input[type="number"]')||target;
       if(issue.field==="mapping")target=target?.querySelector<HTMLElement>('[aria-label="対応する設問"]')||target;
       if(!target)return;
       if(issue.field==="points")content=target.closest<HTMLElement>('[id^="authoring-rubric-"]')||content;

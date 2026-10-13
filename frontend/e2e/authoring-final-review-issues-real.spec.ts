@@ -37,11 +37,12 @@ test("Final Review issues show current values, overlay without reflow, and resol
   const table=page.getByRole('table',{name:'テスト全体の設問と採点準備'}),labels=table.locator('.authoring-hierarchy-label');const x=await labels.evaluateAll(elements=>elements.map(el=>({x:el.getBoundingClientRect().x+parseFloat(getComputedStyle(el).paddingLeft),align:getComputedStyle(el).textAlign})));
   expect(x[1].x).toBeGreaterThan(x[0].x);expect(x[2].x).toEqual(x[0].x);expect(x.every(v=>v.align==='left')).toBe(true);
   await page.getByRole('button',{name:'得点段階を確認',exact:true}).click();await expect(selector).toHaveValue(child.stable_key);
-  const levels=page.getByRole('region',{name:'得点段階と部分点の条件'});await expect(levels).toBeVisible();await expect(levels).toHaveClass(/authoring-correction-target/);
-  const body=page.getByLabel('基準1の本文',{exact:true});await expect(body).toBeVisible();
-  const levelsBox=(await levels.boundingBox())!,selectorBottom=await page.locator('.review-workspace-selector').evaluate(el=>el.getBoundingClientRect().bottom);
-  expect(levelsBox.y).toBeGreaterThanOrEqual(selectorBottom);expect(levelsBox.y+levelsBox.height).toBeLessThanOrEqual(900);
-  await page.getByLabel('得点段階2の得点',{exact:true}).fill('10');
+  const card=page.locator(`#authoring-rubric-criterion-${child.stable_key}`),levels=card.locator('details[aria-label="得点段階"]');await expect(card).toBeVisible();await expect(levels).toHaveAttribute('open','');
+  const body=card.locator('.compact-rubric-body');await expect(body).toBeVisible();
+  const levelsBox=(await card.boundingBox())!,selectorBottom=await page.locator('.review-workspace-selector').evaluate(el=>el.getBoundingClientRect().bottom);
+  expect(levelsBox.y).toBeGreaterThanOrEqual(selectorBottom);expect(levelsBox.y).toBeLessThanOrEqual(900);
+  async function setMaximum(value:string){const row=levels.locator('tbody tr').nth(1);await row.getByRole('button',{name:'編集',exact:true}).click();const dialog=page.getByRole('dialog',{name:'得点段階を編集'});await dialog.getByLabel('点数').fill(value);await dialog.getByRole('button',{name:'完了',exact:true}).click();}
+  await setMaximum('10');
   await expect(page.getByRole('button',{name:/^要修正 \d+件$/})).toHaveCount(0);
   await page.getByRole('button',{name:'最終確認へ',exact:true}).click();await expect(page.getByRole('alert').filter({hasText:'テストを確定するには先に保存してください。'})).toBeVisible();await expect(page.getByRole('button',{name:'この内容でテストを確定',exact:true})).toBeDisabled();
   const saved=page.waitForResponse(r=>r.request().method()==='PUT'&&r.url().endsWith(base));await page.getByRole('button',{name:'保存する',exact:true}).click();expect((await saved).status()).toBe(200);
@@ -49,11 +50,11 @@ test("Final Review issues show current values, overlay without reflow, and resol
   await expect(marked).not.toHaveAccessibleName(/要修正あり/);
   await expect(page.locator('.authoring-final-unsaved')).toHaveCount(0);await expect(page.getByRole('heading',{name:'要修正事項 0件',exact:true})).toBeVisible();await expect(page.getByRole('button',{name:'この内容でテストを確定',exact:true})).toBeEnabled();
   await selector.selectOption(child.stable_key);
-  await expect(page.getByRole('region',{name:'得点段階と部分点の条件'})).toBeVisible();
-  await page.getByLabel('得点段階2の得点',{exact:true}).fill('9');
+  if(!(await levels.evaluate(el=>(el as HTMLDetailsElement).open)))await levels.locator('summary').click();
+  await setMaximum('9');
   await expect(marked).toContainText(' *');
   await expect(page.getByRole('button',{name:'要修正 1件',exact:true})).toBeVisible();
-  await page.getByLabel('得点段階2の得点',{exact:true}).fill('10');
+  await setMaximum('10');
   const savedAgain=page.waitForResponse(r=>r.request().method()==='PUT'&&r.url().endsWith(base));
   await page.getByRole('button',{name:'保存',exact:true}).click();expect((await savedAgain).status()).toBe(200);
   await expect(marked).not.toContainText('*');

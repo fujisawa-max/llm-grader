@@ -54,18 +54,20 @@ test("saved source reviews integrate Question, answer diagrams and advanced Rubr
   const rubric=()=>page.getByRole("region",{name:"採点基準候補",exact:true}).last();
   await rubric().getByRole("button",{name:"基準を追加",exact:true}).click();
   const rubricEditor=()=>page.getByRole("region",{name:"採点基準候補",exact:true}).last();
-  const criterion=rubricEditor().getByLabel(/^基準\d+の本文$/);await criterion.fill("first condition\nsecond condition");
-  await criterion.evaluate(el=>{const textarea=el as HTMLTextAreaElement;textarea.focus();textarea.setSelectionRange(16,16);});
-  await criterion.press("ArrowRight");await criterion.press("ArrowLeft");
-  await rubricEditor().getByRole("button",{name:"カーソル位置で分割",exact:true}).click();await page.getByRole("button",{name:"分割案を適用",exact:true}).click();
-  await expect(rubricEditor().getByLabel(/^基準\d+の本文$/)).toHaveCount(2);for(const index of [0,1]){const criterion=rubricEditor().locator("fieldset").nth(index);await criterion.getByLabel("得点段階2の得点",{exact:true}).fill("5");await criterion.getByLabel("得点段階2の条件",{exact:true}).fill(`基準${index+1}の条件`);}
-  await rubricEditor().getByRole("button",{name:"複製",exact:true}).nth(1).click();await expect(rubricEditor().getByLabel(/^基準\d+の本文$/)).toHaveCount(3);
-  await rubricEditor().getByRole("button",{name:"上と結合",exact:true}).nth(2).click();await expect(rubricEditor().getByLabel(/^基準\d+の本文$/)).toHaveCount(2);
-  await rubricEditor().getByRole("button",{name:"編集を元に戻す",exact:true}).click();await expect(rubricEditor().getByLabel(/^基準\d+の本文$/)).toHaveCount(3);
-  await rubricEditor().getByRole("button",{name:"編集を元に戻す",exact:true}).click();await expect(rubricEditor().getByLabel(/^基準\d+の本文$/)).toHaveCount(2);
+  const cards=()=>rubricEditor().locator(".compact-rubric-criterion");
+  await cards().first().locator(".compact-rubric-criterion-header").getByRole("button",{name:"編集",exact:true}).click();
+  const bodyDialog=page.getByRole("dialog",{name:"採点基準本文"});await bodyDialog.getByLabel("採点基準本文").fill("first condition\nsecond condition");await bodyDialog.getByRole("button",{name:"完了",exact:true}).click();
+  await cards().first().locator("details.compact-rubric-criterion-operations summary").click();await cards().first().getByRole("button",{name:"カーソル位置で分割",exact:true}).click();
+  const splitDialog=page.getByRole("dialog",{name:"採点基準を分割"}),splitText=splitDialog.getByLabel("採点基準本文");await splitText.evaluate(el=>{const textarea=el as HTMLTextAreaElement;textarea.focus();textarea.setSelectionRange(16,16);});await splitDialog.getByRole("button",{name:"カーソル位置で分割案",exact:true}).click();
+  await page.getByRole("dialog",{name:/基準\d+の分割案/}).getByRole("button",{name:"分割案を適用",exact:true}).click();await expect(cards()).toHaveCount(2);
+  for(const index of [0,1]){const levels=cards().nth(index).locator('details[aria-label="得点段階"]');await levels.locator("summary").click();await levels.locator("tbody tr").nth(1).getByRole("button",{name:"編集",exact:true}).click();const level=page.getByRole("dialog",{name:"得点段階を編集"});await level.getByLabel("点数").fill("5");await level.getByLabel("条件").fill(`基準${index+1}の条件`);await level.getByRole("button",{name:"完了",exact:true}).click();}
+  await cards().nth(1).locator("details.compact-rubric-criterion-operations summary").click();await cards().nth(1).getByRole("button",{name:"複製",exact:true}).click();await expect(cards()).toHaveCount(3);
+  await cards().nth(2).locator("details.compact-rubric-criterion-operations summary").click();await cards().nth(2).getByRole("button",{name:"上と結合",exact:true}).click();await expect(cards()).toHaveCount(2);
+  await rubricEditor().locator(".compact-rubric-toolbar details summary").click();
+  await rubricEditor().getByRole("button",{name:"編集を元に戻す",exact:true}).click();await expect(cards()).toHaveCount(3);await rubricEditor().getByRole("button",{name:"編集を元に戻す",exact:true}).click();await expect(cards()).toHaveCount(2);
   await rubricEditor().getByRole("button",{name:"採点基準の統合案を作成",exact:true}).click();
   await expect(page.getByRole("region",{name:"採点基準の統合案",exact:true})).toBeVisible();
-  await page.getByRole("button",{name:"この統合を適用",exact:true}).click();await expect(rubricEditor().getByLabel(/^基準\d+の本文$/)).toHaveCount(2);
+  await page.getByRole("button",{name:"この統合を適用",exact:true}).click();await expect(cards()).toHaveCount(2);
   await manual.getByRole("button",{name:"別解を追加",exact:true}).click();await manual.getByLabel("別解1",{exact:true}).fill("教師が入力した別解");
   await page.getByRole("checkbox",{name:"解答",exact:true}).uncheck();await page.getByRole("checkbox",{name:"解答",exact:true}).check();await expect(diagrams.getByText("使用中",{exact:true})).toBeVisible();
   const beforeReview=await (await page.request.get(base+"/authoring")).json();
@@ -76,7 +78,7 @@ test("saved source reviews integrate Question, answer diagrams and advanced Rubr
   await selector.selectOption("q1");await expect(editor).toHaveValue(initial+"\n教師が編集した問題文");
   await page.getByRole("button",{name:"保存",exact:true}).first().click();await expect(page.locator(".authoring-toast").filter({hasText:"保存しました"}).last()).toBeVisible();
   const saved=await (await page.request.get(base+"/authoring")).json();expect(saved.revision.state).toBe("draft");
-  await page.reload();await openAuthoringEditors(page);await expect(editor).toHaveValue(initial+"\n教師が編集した問題文");await expect(manual.getByLabel("模範解答本文",{exact:true})).toHaveValue("");await expect(rubricEditor().getByLabel(/^基準\d+の本文$/)).toHaveCount(2);await expect(manual.getByLabel("別解1",{exact:true})).toHaveValue("教師が入力した別解");
+  await page.reload();await openAuthoringEditors(page);await expect(editor).toHaveValue(initial+"\n教師が編集した問題文");await expect(manual.getByLabel("模範解答本文",{exact:true})).toHaveValue("");await expect(cards()).toHaveCount(2);await expect(manual.getByLabel("別解1",{exact:true})).toHaveValue("教師が入力した別解");
   await expect(diagrams.getByText("使用中",{exact:true})).toBeVisible();
   expect(await (await page.request.get(`/api/v1/question-import-reviews/${review.id}`)).json()).toEqual(review);
   expect(await (await page.request.get(`/api/v1/model-answer-import-drafts/${answer.id}`)).json()).toEqual(answer);
