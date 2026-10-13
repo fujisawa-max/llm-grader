@@ -2,7 +2,8 @@
 import {Fragment, useCallback, useEffect, useRef, useState} from "react";
 import {useParams} from "next/navigation";
 import Link from "next/link";
-import {AuthoringIssueCards, QuestionIssueOverlay} from "@/components/reviews/AuthoringIssues";
+import {AuthoringIssueCards, AuthoringIssueCounts, QuestionIssueOverlay} from "@/components/reviews/AuthoringIssues";
+import {authoringIssueDomains, visibleAuthoringIssues} from "@/lib/authoringIssueDomains";
 import {AuthoringRevisionHistory} from "@/components/reviews/AuthoringRevisionHistory";
 import {AuthoringDialog} from "@/components/reviews/AuthoringDialog";
 import {ReviewWorkspaceLayout} from "@/components/reviews/ReviewWorkspaceLayout";
@@ -129,6 +130,7 @@ export default function TestAuthoringPage() {
     .flatMap(n=>[n,...orderedNodes(n.stable_key,depth+1)]);
   const node=nodes.find(n=>n.stable_key===selected);
   const issuesForQuestion=(key:string)=>issues.filter(issue=>issue.question_key===key);
+  const displayedIssues=visibleAuthoringIssues(issues,visible);
   const pathFor=(key:string)=>canonicalQuestionPath(key,nodes.map(n=>({key:n.stable_key,parentKey:n.parent_key,label:n.label.raw})));
   useEffect(()=>{
     if(!dirty&&!saving)return;
@@ -490,8 +492,8 @@ export default function TestAuthoringPage() {
       <button className="button secondary" disabled={busy} onClick={()=>void finalReview()}>最終確認へ</button><Link className="button secondary" href={`/tests/${id}`} onClick={event=>{if(saving||dirty&&!window.confirm("未保存の変更があります。保存せずにテスト詳細へ戻りますか？"))event.preventDefault();}}>戻る</Link>
       {dirty&&<><span role="status">未保存の変更があります</span><span className="muted">{Object.entries(dirtyDomains).filter(([,v])=>v).map(([k])=>({question:"問題",answer:"解答",rubric:"採点基準",diagram:"図"}[k])).filter(Boolean).join("・")}</span></>}
       <div className="authoring-utility-controls">{notificationView}
-        <div className="authoring-issues-control"><button type="button" aria-label={`要修正事項、未解決${issues.length}件`} aria-expanded={issuesOpen} onClick={()=>setIssuesOpen(value=>!value)}>⚠ 要修正{issues.length>0&&<span className="authoring-count-badge">{issues.length}</span>}</button>
-          {issuesOpen&&<section className="authoring-issues-panel" aria-label="要修正事項"><header><strong>要修正事項 {issues.length}件</strong><button type="button" onClick={()=>setIssuesOpen(false)}>閉じる</button></header>{issues.length===0?<p>現在、確認が必要な項目はありません。</p>:<ul>{issues.map((issue,index)=><li key={`${issue.question_key||issue.section}-${issue.field||""}-${index}`}>{issue.question_key||["answer","rubric"].includes(issue.section)?<button type="button" onClick={()=>{navigate(issue);setIssuesOpen(false);}}>{issue.question_key?pathFor(issue.question_key):"設問未割当"} — {issue.message}</button>:<span>{issue.message}</span>}</li>)}</ul>}</section>}
+        <div className="authoring-issues-control"><button type="button" aria-label={`要修正事項、未解決${issues.length}件`} aria-expanded={issuesOpen} onClick={()=>setIssuesOpen(value=>!value)}>⚠ 要修正{issues.length>0&&<span className="authoring-count-badge">{issues.length}</span>}</button><AuthoringIssueCounts issues={issues}/>
+          {issuesOpen&&<section className="authoring-issues-panel" aria-label="要修正事項"><header><strong>要修正事項 {displayedIssues.length}件</strong><button type="button" onClick={()=>setIssuesOpen(false)}>閉じる</button></header><p className="muted">表示中 {displayedIssues.length}件 / 全体 {issues.length}件</p>{displayedIssues.length===0?<p>表示中の分野に要修正事項はありません。すべての要修正事項は最終確認で確認できます。</p>:<ul>{displayedIssues.map((issue,index)=><li key={`${issue.question_key||issue.section}-${issue.field||""}-${index}`}>{["question","answer","rubric","source","metadata","save","publication"].includes(issue.section)?<button type="button" onClick={()=>{navigate(issue);setIssuesOpen(false);}}>{issue.question_key?pathFor(issue.question_key):["answer","rubric"].includes(issue.section)?"設問未割当":"テスト全体"} — {issue.message}</button>:<span>{issue.message}</span>}</li>)}</ul>}</section>}
         </div>
       </div>
     </div>} source={<>
@@ -522,7 +524,7 @@ export default function TestAuthoringPage() {
     </>} selector={<><div className="review-toolbar authoring-target-controls">
       <label>対象設問<select aria-label="対象設問" value={selected} onChange={e=>{if(e.target.value==="all")void finalReview(false);else {setFinalReviewMode(false);setSelected(e.target.value);setDiagramSelection(undefined);setRegionId("");}}}>
         {orderedNodes().map(n=>{const needsCorrection=issuesForQuestion(n.stable_key).length>0;const label=pathFor(n.stable_key);return <option key={n.stable_key} value={n.stable_key} aria-label={needsCorrection?`${label}、要修正あり`:label}>{label}{needsCorrection?" *":""}</option>;})}{(snapshot.domains?.answer?.entries.some(e=>!e.authoring_question_key)||snapshot.domains?.rubric?.entries.some(e=>!e.authoring_question_key))&&<option value="unassigned">設問未割当の候補</option>}<option value="all">テスト全体確認</option>
-      </select></label><span>表示</span>{([['question','問題'],['answer','解答'],['rubric','採点基準']] as const).map(([key,label])=><label key={key}><input type="checkbox" checked={visible[key]} onChange={e=>{const next={...visible,[key]:e.target.checked};setVisible(next);localStorage.setItem("test-authoring-visible",JSON.stringify(next));}}/>{label}</label>)}
+      </select></label><span>表示</span>{authoringIssueDomains.map(([key,label])=><label key={key}><input type="checkbox" checked={visible[key]} onChange={e=>{const next={...visible,[key]:e.target.checked};setVisible(next);localStorage.setItem("test-authoring-visible",JSON.stringify(next));}}/>{label}</label>)}
       <span className="authoring-add-question"><button disabled={readonly||saving||analyzing} onClick={()=>{const n=newNode(nodes.length);change({...snapshot,nodes:[...nodes,n]});setBuffers(current=>({...current,[n.stable_key]:""}));setSelected(n.stable_key);}}>設問を追加</button></span>
     </div>{analyzing&&<p className="authoring-analysis-progress" role="status" aria-live="polite"><span className="spinner" aria-hidden="true"/><strong>{analysisProgress}を解析しています…</strong><span className="muted">元資料を確認し、候補を更新しています。</span></p>}
       {rubricRecovery.length>0&&<details className="authoring-recovery-panel"><summary>未割当の採点基準候補を確認（{rubricRecovery.length}件）</summary><p>候補は採点基準へ自動登録されていません。内容と対応先を確認してください。</p>
@@ -532,7 +534,7 @@ export default function TestAuthoringPage() {
           <button type="button" disabled={readonly||saving||analyzing} onClick={()=>updateRecovery(candidate.id,{dismissed:true})}>無視</button>
         </article>)}
       </details>}
-    </>} overlay={node&&<QuestionIssueOverlay questionKey={selected} label={pathFor(selected)} issues={issuesForQuestion(selected)} pathFor={pathFor} onAction={navigate}/>}>
+    </>} overlay={node&&<QuestionIssueOverlay questionKey={selected} label={pathFor(selected)} issues={issuesForQuestion(selected)} visible={visible} pathFor={pathFor} onAction={navigate}/>}>
       {selected==="all"?<section aria-label="テスト全体確認"><h2>{finalReviewMode?"最終確認":"テスト全体確認"}</h2>{finalReviewMode&&<p>テストを確定する前に、内容と要修正事項を確認してください。</p>}
         <label>テスト名<input disabled={readonly||saving||analyzing} value={snapshot.metadata.name} onChange={e=>change({...snapshot,metadata:{...snapshot.metadata,name:e.target.value}})}/></label>
         <label>合計点<input type="number" disabled={readonly||saving||analyzing} value={snapshot.metadata.total_points} onChange={e=>change({...snapshot,metadata:{...snapshot.metadata,total_points:Number(e.target.value)}})}/></label>

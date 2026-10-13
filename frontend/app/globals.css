@@ -221,6 +221,9 @@
 .authoring-save-success { color: #216343; }
 .authoring-utility-controls{display:flex;align-items:center;gap:8px;margin-left:auto;position:relative}
 .authoring-notifications,.authoring-issues-control{position:relative}
+.authoring-issues-control{display:flex;align-items:center;flex-wrap:wrap;gap:6px}
+.authoring-issue-domain-counts{display:flex;flex-wrap:wrap;gap:6px;font-size:.85rem}
+.authoring-issue-domain-counts>output{white-space:nowrap}
 .authoring-utility-controls>div>button,.authoring-notification-history button,.authoring-issues-panel button{font:inherit}
 .authoring-count-badge{display:inline-grid;place-items:center;min-width:1.35em;height:1.35em;padding:0 .25em;margin-left:.35em;border-radius:99px;background:#a52d2d;color:#fff;font-size:.8em;font-weight:700}
 .authoring-notification-history,.authoring-issues-panel{position:absolute;right:0;top:calc(100% + 8px);z-index:90;width:min(420px,calc(100vw - 28px));max-height:min(65vh,540px);overflow:auto;padding:12px;background:#fff;border:1px solid var(--line,#cbd3da);border-radius:8px;box-shadow:0 8px 28px #172b3b30}
