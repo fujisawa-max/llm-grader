@@ -335,3 +335,25 @@ dialog.authoring-proposal-dialog::backdrop{background:#0006}
 .compact-question-node .review-fields>legend{display:none}
 .compact-question-operations>summary{cursor:pointer;font-weight:600}
 .compact-question-node .review-content-item{padding-block:8px}
+
+/* J.UI.15b: keep headings outside one shared body frame in Unified Authoring. */
+.authoring-content-header{display:flex;align-items:center;justify-content:space-between;gap:12px;min-width:0}
+.authoring-content-header h3{min-width:0;margin:4px 0;font-size:1rem;line-height:1.45;font-weight:650;overflow-wrap:anywhere}
+.compact-question-node.panel{padding:0;border:0;border-radius:0;background:transparent}
+.compact-question-node.panel.has-error{padding:10px;border:2px solid #a62b2b;border-radius:6px;background:#fff8f8}
+.compact-question-node .review-fields{margin:0}
+.compact-question-node [data-content-type="question-content"].review-content-item{padding:0;border:0;border-radius:0;background:transparent}
+.compact-question-node [data-content-type="question-content"].review-content-item:focus-within{border-color:transparent}
+.compact-question-node [data-content-type="question-content"].review-content-item.has-error{padding:10px;border:2px solid #a62b2b;border-radius:6px;background:#fff8f8}
+.compact-question-body.authoring-question-preview-frame{padding:12px 14px;line-height:1.6}
+.compact-rubric-criterion{padding:10px 0 14px;border:0;border-bottom:1px solid #d6dee5;border-radius:0;background:transparent}
+.compact-rubric-criterion.is-excluded{opacity:.68}
+.compact-rubric-title h3{margin:4px 0;font-size:1rem;line-height:1.45;font-weight:650}
+.compact-rubric-excluded-title{padding:0}
+.compact-rubric-body{min-height:2.8rem;padding:10px 12px;border:1px solid #d5dae2;border-radius:4px;background:#fff;line-height:1.6}
+.compact-rubric-body p:first-child{margin-top:0}
+.compact-rubric-body p:last-child{margin-bottom:0}
+.compact-rubric-merge-selection{display:flex;align-items:center;gap:8px;font-weight:500}
+.compact-model-answer-alternative{margin-top:12px}
+.compact-model-answer-alternative .authoring-answer-preview-frame{margin-top:0}
+.compact-model-answer-text>.authoring-answer-preview-frame{min-height:2.8rem;padding:12px 14px;line-height:1.6}
