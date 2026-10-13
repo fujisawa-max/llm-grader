@@ -1,6 +1,6 @@
 # J.GRADING.1a — Safe Revision-bound Grading Package Preview
 
-Status: **READY_FOR_PRODUCTION_VALIDATION**. Local implementation, API integration tests, and full backend validation pass. Production deployment and preview acceptance were not performed because this workspace has no deployment host access. J.GRADING.1 remains **PARTIAL** until the remaining production execution/review/finalization acceptance is completed.
+Status: **COMPLETE**. Local implementation, API integration tests, full backend validation, and the deployed production preview acceptance below pass. J.GRADING.1 remains **PARTIAL** until production Job execution, teacher review, and finalization acceptance is completed.
 
 ## Design and shared assembly boundary
 
@@ -46,9 +46,34 @@ The handler does not create Jobs, JobItems, events, queue entries, reconstructio
 
 ## Production deployment / acceptance
 
-No production deployment was attempted. This workspace has no Docker executable, SSH agent, or SSH host configuration. The existing runbook requires stopping the separately managed worker, deploying, running checks, and resuming it; there is no authorized host control path here. The new API has therefore **not** been verified as deployed.
+The operator deployed J.GRADING.1a before this acceptance. Using the authenticated Codex teacher account, `GET /api/v1/openapi.json` returned 200 and listed `POST /api/v1/tests/{tid}/submissions/{sid}/grading-package-preview`; login returned 200 with role `teacher`. No Course, Test, Submission, authoring record, or worker setting was created or changed.
 
-After deployment through the authorized runbook, production acceptance should call this preview for the existing dedicated S1 and S2 records, using explicit synthetic answer text because their registered PDFs have no reconstruction. Verify revision A/B identity, Question/ModelAnswer, score levels, distinct canonical package hashes, unchanged Job/event counts, and zero OCR/model calls. Do not create production grading Jobs. This phase does not validate teacher review or finalization; J.GRADING.1 remains PARTIAL for those outstanding checks.
+### Health and baseline
+
+`GET /api/v1/health` returned 200 before and after preview: `status=ok`, `database=ok`, artifact root exists/readable/writable, and global job counts were `pending=0`, `failed=0`, `review_required=0` at both checks.
+
+The read-only Test history and Submission list showed active edition B (`b9a17f19-b38e-4d8e-8969-2773fa70b0e6`), S1 pinned to A (`9fd3981c-ee1b-4046-8525-a98f687e8b06`), and S2 pinned to B. The pre-first-preview Test event feed contained 7 events and 0 grading/job events. After preview, the feed still contained 7 events; before and after the repeat-preview batch the event types were `test_created=1`, `authoring_draft_created=2`, `authoring_draft_saved=2`, and `authoring_revision_confirmed=2`. Submission pins and active revision also remained unchanged.
+
+The reconstruction-run list returned 0 for both S1 and S2 before the repeat-preview batch and after it. The earlier acceptance record also confirms that the registered synthetic PDFs had not been OCR-processed or reconstructed. No grading Job was created: the Test had zero job-related events before and after, and global health job counts did not change. The API has no Test-filtered persisted-Job count endpoint; its unfiltered Job listing was not queried to avoid reading unrelated Test data. The preview route returns only the synthetic-answer hash, not the synthetic text. No production database or artifact was directly inspected.
+
+### Preview results
+
+Each Submission was previewed twice with the exact same Question ID and synthetic answer text. All four preview calls returned 200 and `synthetic_input=true`.
+
+| Submission | Pinned revision / edition | Snapshot SHA-256 | Question | ModelAnswer | Rubric levels | Canonical package hash |
+|---|---|---|---|---|---|---|
+| S1 `fe0f55c4-29e6-401d-a765-6e9153f23643` | A `9fd3981c-ee1b-4046-8525-a98f687e8b06` / 第1版 | `bcfdeebc2917ca97f10fadca6000bf966c9f5e489b8461540b1cdb350a01a0ec` | `Edition A question` | `Edition A answer` | `[0,10]`; max 10 | `073346e9a31af6743399bfa531ccdb3cb2f40a44c8eb6cdc01c4eefdec6ec68b` |
+| S2 `5f9a6b5d-dd30-482a-99ef-e1be6b9600fb` | B `b9a17f19-b38e-4d8e-8969-2773fa70b0e6` / 第2版 | `7bb5dd91217637cc95cd9c745c0d0ccf479268394c3619b1c36701a54d1a75dd` | `Edition B question` | `Edition B answer` | `[0,5,10]`; max 10 | `eec54659f379191cc7065aa7587465621456ac21158a842b9d238af10baffe4e` |
+
+Both packages used stable Question identity `1b915527-42cc-488d-9554-17f36d08fca3`. Both had no alternatives and no visual references. The B rubric description remains `Edition A criterion` in the fixture; its frozen B scoring levels are `[0,5,10]` as expected. A and B canonical package hashes are different.
+
+The second preview for each Submission exactly repeated its first canonical package hash, snapshot hash, revision ID, Question text, ModelAnswer, rubric levels/conditions, and visual-reference list. Thus S1 continued to use edition A while B was active, and S2 used edition B. The preview-triggered GradingJob, OCR, grader/LLM, and RuntimeManager call counts were 0; the health endpoint does not expose a separate model-call counter.
+
+### Deployment identity
+
+OpenAPI identifies the service as `llm-grader API` version `1.0`, which is not a build identifier. OpenAPI has no Git SHA or Alembic-version route; `/api/v1/version`, `/api/v1/system/version`, and `/api/v1/admin/alembic` returned 404. Deployed Git SHA and production Alembic version are **unverified**. The new route's presence and behavior are verified directly against production.
+
+This acceptance does not exercise production Job execution, teacher review, or finalization. J.GRADING.1 remains **PARTIAL** for those outstanding checks.
 
 ## Files changed
 
@@ -58,17 +83,13 @@ After deployment through the authorized runbook, production acceptance should ca
 - `tests/test_revision_grading.py`
 - `docs/internal/reports/j-grading-1a-safe-package-preview.md`
 
-The worktree also contains the already-modified J.GRADING.1 production-acceptance report from the preceding task; it was not edited during this phase.
+The J.GRADING.1 production-acceptance report received a brief cross-reference to this acceptance; J.GRADING.1 remains PARTIAL as recorded above.
 
 ## Exact git status
 
 ```text
  M docs/internal/reports/j-grading-1-confirmed-revision-binding.md
- M src/scoring/api/domain.py
- M src/scoring/grading_execution.py
- M src/scoring/revision_grading.py
- M tests/test_revision_grading.py
-?? docs/internal/reports/j-grading-1a-safe-package-preview.md
+ M docs/internal/reports/j-grading-1a-safe-package-preview.md
 ```
 
 No commit or push was made.

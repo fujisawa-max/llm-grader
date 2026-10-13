@@ -371,3 +371,11 @@ This is a proposal only. No J.GRADING.1a code, endpoint, worker setting, or prod
 ```
 
 No commit or push was made. J.GRADING.1 production acceptance remains **PARTIAL**; continue only after a separately implemented and validated safe package-preview mechanism is deployed. The local codebase has not been deployed from this workspace.
+
+## J.GRADING.1a production acceptance follow-up — 2026-10-13
+
+This follow-up supersedes the preceding J.GRADING.1a proposal and its then-current stop condition; that section remains as the historical result before the preview API was implemented and deployed.
+
+The subsequent J.GRADING.1a implementation was deployed by the operator and accepted against the same dedicated Test without creating any new production records. The deployed OpenAPI listed the read-only package-preview route, and authenticated Codex teacher requests returned Edition A for S1 (`[0,10]`, package hash `073346e9a31af6743399bfa531ccdb3cb2f40a44c8eb6cdc01c4eefdec6ec68b`) and Edition B for S2 (`[0,5,10]`, package hash `eec54659f379191cc7065aa7587465621456ac21158a842b9d238af10baffe4e`). Repeated previews reproduced the same hashes; Test events, Submission pins, active revision, reconstruction runs, and health job counters did not change. No Job or model/OCR call was started. See `docs/internal/reports/j-grading-1a-safe-package-preview.md` for the full acceptance data and limitations.
+
+This closes the J.GRADING.1a package-preview acceptance, but does not close J.GRADING.1: production Job execution, teacher review, and finalization remain unverified, so J.GRADING.1 remains **PARTIAL**. Production Git SHA and Alembic version are still unverified.
