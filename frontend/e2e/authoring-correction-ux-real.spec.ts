@@ -41,6 +41,10 @@ test('manual classification-routing edits confirm semantics, preserve automatic 
   const before=await calls(page);await entry.getByLabel('模範解答本文',{exact:true}).fill(original.answer_text+' Teacher prose correction.');await saveAuthoring(page);
   row=(await(await page.request.get(base)).json()).revision;let saved=row.snapshot.domains.answer.entries.find((e:any)=>e.id===original.id);
   expect(saved.semantic_classification.status).toBe('needs_teacher_review');expect(saved.teacher_correction?.confirmation_origin).not.toBe('manual_edit');
+  expect(saved.teacher_correction.text_review.confirmation_origin).toBe('manual_edit');
+  expect(saved.teacher_correction.text_review.teacher_confirmed).toBe(true);
+  expect(saved.semantic_classification).toEqual(automatic);
+  expect(saved.diagram_records).toEqual(original.diagram_records);
   await expect(option).toContainText(' *');await expect(page.getByRole('button',{name:'要修正 1件',exact:true})).toBeVisible();
   await entry.getByLabel('解答の種類',{exact:true}).selectOption('alternative');
   await entry.getByLabel('解答の種類',{exact:true}).selectOption('primary');
@@ -103,6 +107,13 @@ test('Rubric correction and confirmation keep criterion text below sticky contro
   expect((await page.request.put(base,{data:{snapshot:row.snapshot,expected_edit_version:row.edit_version}})).status()).toBe(200);await page.reload();
   await page.getByRole('button',{name:'最終確認へ',exact:true}).click();await page.locator('.authoring-issue-cards article').filter({hasText:'統合内容が未確認'}).getByRole('button',{name:'採点基準を修正',exact:true}).click();
   const criterion=page.locator('#authoring-rubric-criterion-4'),body=criterion.getByRole('textbox',{name:'基準5の本文',exact:true});await expect(criterion).toHaveClass(/authoring-correction-target/);await visibleContent(page,body);
+  const originalCriterion=structuredClone(row.snapshot.rubrics[node.stable_key][4]);
+  await body.fill(originalCriterion.description+' Teacher text correction.');await saveAuthoring(page);
+  const corrected=(await(await page.request.get(base)).json()).revision.snapshot.rubrics[node.stable_key][4];
+  expect(corrected.provenance.text_review.confirmation_origin).toBe('manual_edit');
+  expect(corrected.grouping_confirmed).toBe(false);
+  expect(corrected.points).toBe(originalCriterion.points);expect(corrected.levels).toEqual(originalCriterion.levels);
+  await expect(page.getByRole('button',{name:/^要修正 \d+件$/})).toBeVisible();
   await criterion.getByRole('button',{name:'この採点基準を確認',exact:true}).click();await expect(page.getByRole('button',{name:/^要修正 \d+件$/})).toHaveCount(0);await visibleContent(page,body);await saveAuthoring(page);
   row=(await(await page.request.get(base)).json()).revision;expect(row.snapshot.rubrics[node.stable_key][4].grouping_confirmed).toBe(true);expect((await(await page.request.get(base+'/review')).json()).issues).toEqual([]);expect(failures).toEqual([]);
 });

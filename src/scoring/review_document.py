@@ -251,10 +251,12 @@ def validate_snapshot(snapshot, current, draft, pin, *, mark=False):
                           "parent_key", "node_type", "depth", "sort_order", "label", "body_text",
                           "ordered_content", "included", "score_semantics", "score_points",
                           "effective_points_candidate", "review_flags", "formula_decisions",
-                          "figure_decisions", "warning_states", "source_mapping_decision", "math_ocr_edits", "source_review_owner", "diagram_records"}
+                          "figure_decisions", "warning_states", "source_mapping_decision", "math_ocr_edits", "source_review_owner", "diagram_records", "teacher_correction"}
         if set(n) - allowed_fields:
             raise ReviewError("unknown_node_fields", 422)
-        required_fields = allowed_fields - {"effective_points_candidate", "depth", "source_mapping_decision", "math_ocr_edits", "source_review_owner", "diagram_records"}
+        required_fields = allowed_fields - {"effective_points_candidate", "depth", "source_mapping_decision", "math_ocr_edits", "source_review_owner", "diagram_records", "teacher_correction"}
+        if n.get('teacher_correction') != previous.get(n.get('stable_key'), {}).get('teacher_correction'):
+            raise ReviewError('text_review_history_changed', 422)
         if not required_fields.issubset(n):
             raise ReviewError("missing_node_fields", 422)
         key, identity = n.get("stable_key"), n.get("review_node_id")

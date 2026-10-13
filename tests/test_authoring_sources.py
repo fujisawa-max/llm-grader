@@ -52,6 +52,12 @@ def test_authoring_question_save_roundtrip_is_not_review_or_formal_publication(w
     assert result.status_code == 200, result.text
     restored = fixture.client.get(path).json()['revision']
     assert restored['snapshot']['nodes'][0]['ordered_content'][0]['text'] == node['ordered_content'][0]['text']
+    assert restored['snapshot']['nodes'][0]['teacher_correction']['text_review']['confirmation_origin'] == 'manual_edit'
+    assert restored['snapshot']['nodes'][0]['formula_decisions'] == node['formula_decisions']
+    assert restored['snapshot']['nodes'][0]['warning_states'] == node['warning_states']
+    again = fixture.client.put(path, json={'expected_edit_version': restored['edit_version'], 'snapshot': restored['snapshot']})
+    assert again.status_code == 200, again.text
+    assert again.json()['snapshot']['nodes'][0]['teacher_correction'] == restored['snapshot']['nodes'][0]['teacher_correction']
     assert restored['state'] == 'draft'
     assert fixture.client.get(f'/api/v1/question-import-reviews/{data["id"]}').json() == data
     assert fixture.client.get(f'/api/v1/tests/{data["test_id"]}/questions').json() == []

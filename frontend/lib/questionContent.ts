@@ -44,6 +44,11 @@ export function editQuestionContent(node: ReviewNode, regions: Region[], value: 
     if (!ids.length) return true;
     const oldParts = parseMathText(String("text" in item ? item.text ?? "" : ""), false).filter(p => p.kind !== "text");
     const parts = parseMathText(text, false).filter(p => p.kind !== "text");
+    // Editing surrounding prose does not review (or invalidate) an unchanged
+    // formula. Preserve both confirmed and still-unreviewed source decisions,
+    // including legacy merged segments without a matching math transcription.
+    if (oldParts.length === parts.length && oldParts.every((part, index) =>
+      part.kind === parts[index].kind && part.value.trim() === parts[index].value.trim())) return true;
     // Temporary invalid delimiters must remain editable. Keep the last
     // known source transcription unconfirmed; strict save/review validation
     // still rejects a source formula that is absent from the edited text.
@@ -66,6 +71,7 @@ export function editQuestionContent(node: ReviewNode, regions: Region[], value: 
       const at = oldParts.findIndex((p, index) => !used.has(index) && p.value.trim() === old?.teacher_transcription?.trim());
       if (at < 0) {decisions[id] = setFormulaConfirmation(old, "unreviewed"); continue;}
       used.add(at);
+      if (oldParts[at].kind === parts[at].kind && oldParts[at].value.trim() === parts[at].value.trim()) continue;
       decisions[id] = setFormulaConfirmation({...old, teacher_transcription: parts[at].value.trim()}, "unreviewed");
     }
     return true;

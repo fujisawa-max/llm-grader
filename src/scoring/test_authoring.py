@@ -275,6 +275,8 @@ def validate_snapshot(value, previous):
             if (not isinstance(c, dict) or not isinstance(c.get('description'), str)
                     or type(c.get('points')) not in (int, float) or not math.isfinite(c['points']) or c['points'] < 0):
                 raise AuthoringError('AUTHORING_INVALID_RUBRIC', '採点基準の内容と配点を確認してください。')
+    from .authoring_text_review import restore_question_corrections
+    restore_question_corrections(value, previous)
     return deepcopy(value)
 
 
@@ -293,6 +295,8 @@ def save_draft(session, test, value, expected, actor=None):
         if not material or material.test_id != test.id or material.sha256 != m.get('sha256') or material.material_type != m.get('role'):
             raise AuthoringError('AUTHORING_SOURCE_CHANGED', '資料の出典が変わっています。')
     validate_material_replacements(snapshot)
+    from .authoring_text_review import confirm_manual_text_edits
+    confirm_manual_text_edits(snapshot, row.snapshot, expected+1)
     from .grading_definition import freeze_definition, capture_evidence, snapshot_evidence
     evidence = snapshot.get('domains', {}).get('grading_definition', {}).get('evidence')
     if evidence is None:

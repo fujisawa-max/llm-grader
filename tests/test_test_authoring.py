@@ -89,7 +89,13 @@ def test_atomic_draft_save_preserves_formal_entities_and_conflicts(workspace):
     assert result.status_code==200, result.text
     assert result.json()['edit_version']==2
     saved_snapshot=w.client.get(base(w)+'/authoring').json()['revision']['snapshot']
-    assert saved_snapshot['nodes']==value['nodes']
+    from scoring.pdf_native import canonical_hash
+    expected_nodes = deepcopy(value['nodes'])
+    expected_nodes[0]['teacher_correction'] = {'text_review': {
+        'teacher_confirmed': True, 'confirmation_origin': 'manual_edit',
+        'previous_text_sha256': canonical_hash('Original\nsecond line'),
+        'reviewed_text_sha256': canonical_hash('Joined lines\n日本語'), 'revision': 2}}
+    assert saved_snapshot['nodes'] == expected_nodes
     assert saved_snapshot['answers']==value['answers']
     assert saved_snapshot['rubrics'][w.question][0]['description']=='Changed rubric'
     assert saved_snapshot['domains']['rubric']['entries'][0]['criteria'][0]['description']=='Changed rubric'
