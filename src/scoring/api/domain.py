@@ -5,7 +5,7 @@ from ..domain_adapter import DomainGradingJobAdapter
 from ..grading_context import GradingReadinessService, ContextError, asset_path
 from fastapi.responses import FileResponse
 from pathlib import Path
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from ..db.models import *
 from ..pdf_native import sha256_file
 from .schemas import (UserCreate, CourseCreate, CourseUpdate, OfferingCreate, OfferingUpdate,
@@ -18,6 +18,10 @@ class MaterialReuse(BaseModel):
 
 class MaterialRoleChange(BaseModel):
     material_type: str
+
+class GradingPackagePreviewRequest(BaseModel):
+    question_id: str = Field(min_length=1, max_length=36)
+    synthetic_answer_text: str | None = Field(default=None, max_length=20000)
 
 def router(db, artifact_root=None, allowed_roots=None, grading_visual_config=None,
            storage_root=None):
@@ -409,6 +413,91 @@ def router(db, artifact_root=None, allowed_roots=None, grading_visual_config=Non
                 allowed_roots=allowed_roots, **visual_options).execution_preview(sid, qid)
         except (ContextError, ValueError) as exc:
             raise HTTPException(409, str(exc))
+
+    @r.post("/tests/{tid}/submissions/{sid}/grading-package-preview")
+    def grading_package_preview(tid, sid, value: GradingPackagePreviewRequest, s=Depends(db)):
+        """Inspect the pinned revision's exact grading bundle without creating a Job."""
+        owned_test_or_error(tid, s)
+        submission = s.get(StudentSubmission, sid)
+        if submission is None or submission.test_id != tid:
+            raise HTTPException(404, "submission not found")
+        try:
+            from ..revision_grading import assemble_revision_execution_package
+            package = assemble_revision_execution_package(
+                s, tid, sid, value.question_id,
+                question_root=artifact_root,
+                answer_root=visual_options.get("answer_root"),
+                allowed_roots=allowed_roots,
+                visual_capability=visual_options.get("visual_capability"),
+                synthetic_answer_text=value.synthetic_answer_text,
+                submission=submission)
+            if not package["ready"]:
+                blockers = package.get("blockers") or []
+                code = (blockers[0].get("code") if blockers and isinstance(blockers[0], dict)
+                        else "GRADING_INPUT_MAPPING_BLOCKED")
+                raise ContextError(code)
+            bundle = package["bundle"]
+            question = package["question"]
+            context = bundle["question"]["context"]
+            rubric_entry = bundle["rubric"]["entry"]
+            criteria = []
+            for criterion in rubric_entry.get("criteria", []):
+                levels = [{"score": int(level["score"]), "condition": level["condition"]}
+                          for level in criterion.get("levels", [])]
+                criteria.append({
+                    "criterion_id": criterion.get("authoring_criterion_id"),
+                    "executable_criterion_id": criterion.get("id"),
+                    "description": criterion.get("description"),
+                    "max_score": max((level["score"] for level in levels), default=0),
+                    "levels": levels,
+                })
+            response = {
+                "submission_id": sid,
+                "confirmed_authoring_revision_id": package["revision"].id,
+                "edition_label": package["edition_label"],
+                "confirmed_snapshot_sha256": package["revision"].snapshot_sha256,
+                "question": {
+                    "question_id": bundle["identity"]["question_id"],
+                    "stable_question_key": bundle["identity"]["stable_question_key"],
+                    "parent_key": question.get("parent_key"),
+                    "label": (question.get("label") or {}).get("raw"),
+                    "ancestor_chain": context.get("ancestor_chain", []),
+                    "effective_text": context.get("effective_text", ""),
+                    "content_sha256": bundle["question"].get("content_sha256"),
+                    "context_sha256": bundle["question"].get("context_sha256"),
+                    "max_points": bundle["question"].get("max_points"),
+                },
+                "model_answer": {
+                    "primary": bundle["model_answer"].get("content", ""),
+                    "alternatives": bundle["model_answer"].get("alternatives", []),
+                    "sha256": bundle["model_answer"].get("sha256"),
+                    "alternatives_sha256": bundle["model_answer"].get("alternatives_sha256"),
+                },
+                "rubric": {
+                    "max_points": rubric_entry.get("max_points"),
+                    "aggregation": rubric_entry.get("aggregation"),
+                    "criteria": criteria,
+                },
+                "visual_references": [
+                    {key: reference.get(key) for key in ("asset_id", "sha256", "role", "question_id")}
+                    for reference in bundle.get("assets", [])
+                ],
+                "canonical_package_hash": bundle["bundle_sha256"],
+                "student_answer_sha256": (bundle.get("student_answer") or {}).get("sha256"),
+                "synthetic_input": package["synthetic_input"],
+            }
+            if s.new or s.dirty or s.deleted:
+                raise RuntimeError("grading package preview attempted a database write")
+            return response
+        except ContextError as exc:
+            raise HTTPException(409, {"error": {"code": str(exc),
+                "message": "この答案に固定された確定版から採点入力を構成できません。"}}) from exc
+        except (ValueError, OSError, KeyError, TypeError) as exc:
+            raise HTTPException(409, {"error": {"code": str(exc),
+                "message": "この答案に固定された確定版を検証できません。"}}) from exc
+        finally:
+            # The endpoint is diagnostic-only; even accidental ORM changes are rolled back.
+            s.rollback()
 
     @r.get('/tests/{tid}/submissions/{sid}/questions/{qid}/visual-assets/{aid}')
     def student_visual_asset(tid, sid, qid, aid, s=Depends(db)):

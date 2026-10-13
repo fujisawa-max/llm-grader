@@ -261,3 +261,113 @@ No production or local Codex-only files were added. No frontend or migration fil
 ```
 
 No commit or push was made. Production acceptance remains outstanding.
+
+## Production Acceptance — 2026-10-13
+
+**Result: PARTIAL.** Production API acceptance verified confirmed-revision creation, exact revision fork, and the Submission binding invariant. Delayed Job creation, actual assembled grading packages, teacher review, and finalization remain unverified because the production worker's grading mode could not be proven synthetic. No grading Job was created and no inference was invoked.
+
+### Deployment and service access
+
+- Pre-deploy working tree was clean. Local checkout was `79de4dfa2e6985447c449a9aec6c7de5e505629d` (`Unify authoring card headings and content frames`); the J.GRADING.1 implementation commit `40b7824` is an ancestor. `git pull --ff-only` had reported `Already up to date`.
+- This workspace has no `docker` executable and no configured SSH agent/host access. Therefore `python3 scripts/runtime-compose.py`, `docker compose ps`, and service logs could not be run. The production API does not expose a deployment commit/version endpoint, so the commit actually deployed on the host is **unverified**. No deployment was attempted from this workspace.
+- Production `/api/v1/health` returned `status=ok`, `database=ok`, and readable/writable artifact storage before and after the acceptance work. The API-reported global counts were `pending=0`, `failed=0`, `review_required=0` at both checks.
+- No production database console or container access was available. Production `alembic_version` is **unverified**; the local repository remains at `0018_revision_lineage`, and this phase added no migration.
+
+### Dedicated validation records
+
+The following records were created under the Codex teacher account. The Test was authored using the authenticated Web authoring/revision APIs. Student-answer PDFs contain synthetic fixture text only; they were registered as source materials and were not OCR-processed.
+
+| Record | Name / identity | ID |
+|---|---|---|
+| Course | `Codex Validation - J.GRADING.1 - 20261013T150822Z` | `4ac082b8-15e3-4ea7-8f4e-6f98ae5cac37` |
+| Offering | 2026, `other`, J.GRADING.1 validation | `56ef0c2d-b077-44f6-84e4-09f4de071a4a` |
+| Test | `Revision Binding Acceptance - 20261013T150822Z` | `9fdf06c2-6fc2-4d30-a424-1c3db726bf59` |
+| Question | Question 1 | `1b915527-42cc-488d-9554-17f36d08fca3` |
+| ModelAnswer | Edition A initial answer | `66543a8b-2e3e-4716-b68a-dde483b31650` |
+| Approved RubricVersion | Edition A initial rubric | `8181b0b4-7290-4ec6-bf5f-2966cb8dddf9` |
+| Synthetic source material A | `j-grading-1-synthetic-A.pdf` | `4e7fb3bf-26ec-4fcc-82bb-818d1d31c21a` |
+| S1 registered page-manifest material | Generated from synthetic source A | `29871193-7830-472c-805b-0ec9b47f5a96` |
+| Synthetic source material B | `j-grading-1-synthetic-B.pdf` | `c9ebb800-18cd-4a1b-9d56-7e53fd476c54` |
+| S2 registered page-manifest material | Generated from synthetic source B | `3147cf52-abfc-4bd0-9325-4eedaacdca75` |
+| Student A | `JGRADING1-SYNTHETIC-A` | `34a20f9c-9ce9-474a-8de6-b45b84778e33` |
+| Submission S1 | Synthetic validation record A | `fe0f55c4-29e6-401d-a765-6e9153f23643` |
+| Student B | `JGRADING1-SYNTHETIC-B` | `01ae84c8-7f5a-42a2-a019-e3791fd3b3bc` |
+| Submission S2 | Synthetic validation record B | `5f9a6b5d-dd30-482a-99ef-e1be6b9600fb` |
+
+### Edition and Submission results
+
+| Edition | Confirmed revision ID | Parent | Snapshot SHA-256 | Frozen Question / Answer | Frozen rubric levels |
+|---|---|---|---|---|---|
+| 第1版 (A) | `9fd3981c-ee1b-4046-8525-a98f687e8b06` | none | `bcfdeebc2917ca97f10fadca6000bf966c9f5e489b8461540b1cdb350a01a0ec` | `Edition A question` / `Edition A answer` | `[0, 10]` |
+| 第2版 (B) | `b9a17f19-b38e-4d8e-8969-2773fa70b0e6` | 第1版 A | `7bb5dd91217637cc95cd9c745c0d0ccf479268394c3619b1c36701a54d1a75dd` | `Edition B question` / `Edition B answer` | `[0, 5, 10]` |
+
+Both confirmed snapshots report `schema_version=web-grading-definition.v1`, `authority=web_authoring`, and `complete=true`. The edition A and B rubric levels and text were read back from each immutable confirmed snapshot. A revised draft fork initially matched A's snapshot exactly before the deliberate B edits. After confirming B, the history API still returned A with its original hash and content, and active revision was B.
+
+| Submission | Submission ID | `confirmed_authoring_revision_id` read back |
+|---|---|---|
+| S1 | `fe0f55c4-29e6-401d-a765-6e9153f23643` | `9fd3981c-ee1b-4046-8525-a98f687e8b06` (A) |
+| S2 | `5f9a6b5d-dd30-482a-99ef-e1be6b9600fb` | `b9a17f19-b38e-4d8e-8969-2773fa70b0e6` (B) |
+
+The supported Submission registration request for S1 was retried with the same source/student identity after B became active. It returned the same Submission ID and preserved the A pin. Activating B while S1 remained bound to A succeeded. This confirms the production Submission-side pin and retry behavior for the dedicated Test.
+
+### Unverified execution stages and safety boundary
+
+- No GradingJob was created. The dedicated Test event list contains no grading-job event. No production OCR, grader, or other model call was made.
+- A delayed S1 Job after B activation and an S2 Job were not attempted. Job creation queues work for the production worker; no established production synthetic-grader mode or paused worker was available to guarantee that the queued request could not invoke a real grader. The acceptance instructions require stopping in that situation.
+- Consequently, the actual assembled execution bundles, teacher review edition/context, finalization, and score totals were not exercised on production. The immutable A/B definitions above demonstrate the frozen source data, but do not substitute for those runtime checks.
+- Existing historical null-pin rows were not inspected or changed. No unrelated production records were modified. The only production data intentionally created were the dedicated Course, Offering, Test, Question, ModelAnswer, approved RubricVersion, two confirmed revisions, two synthetic student/source registrations, and their associated source/material records.
+
+### Exact Git status after this report update
+
+```text
+ M docs/internal/reports/j-grading-1-confirmed-revision-binding.md
+```
+
+No commit or push was made. Production acceptance remains **PARTIAL** until a deployment commit/Alembic version can be verified on the host and the delayed-job package, review, and safe synthetic finalization checks can run without real inference.
+
+## Safe production package audit — 2026-10-13 continuation
+
+**Decision: PARTIAL; stop before creating any GradingJob.** The production API has no supported prepare-only, paused/manual enqueue, synthetic grader, or package-inspection route that can prove a job will not reach the managed grader. The existing input-preview route is read-only but these two submissions are registration-only and have no reconstructed answer, so it cannot build the execution bundle. This section records the additional production checks and the proposed J.GRADING.1a design; no product code was changed.
+
+### Production API and submission preview checks
+
+- Read-only production OpenAPI returned `200`, with `info.title=llm-grader API` and `info.version=1.0`. It exposes `GET /api/v1/tests/{tid}/submissions/{sid}/questions/{qid}/grading-input-preview` and `POST /api/v1/tests/{tid}/grading-jobs`; the latter accepts an open-ended JSON object and documents no `dry_run`, `prepare_only`, `enqueue`, or synthetic-execution parameter.
+- `GET /api/v1/health` returned `status=ok`, `database=ok`, and `jobs.pending=0`, `failed=0`, `review_required=0`.
+- `GET /api/v1/version`, `/api/v1/system/version`, `/api/v1/diagnostics`, and `/api/v1/admin/alembic` each returned `404`. OpenAPI has no build SHA extension. Thus production host commit and production Alembic revision remain unverified.
+- Using an authenticated Codex session, read-only readiness and preview requests confirmed S1 (`fe0f55c4-29e6-401d-a765-6e9153f23643`) is still pinned to A (`9fd3981c-ee1b-4046-8525-a98f687e8b06`, `第1版`) and S2 (`5f9a6b5d-dd30-482a-99ef-e1be6b9600fb`) to B (`b9a17f19-b38e-4d8e-8969-2773fa70b0e6`, `第2版`). Each readiness response reported one gradable question, zero ready bundles, and one blocked bundle with `ANSWER_RECONSTRUCTION_MISSING`; each corresponding preview returned `409 ANSWER_RECONSTRUCTION_MISSING`.
+- The source PDFs were registered only; no OCR or reconstruction was run. Therefore the production API did not produce an actual A or B execution bundle. The confirmed snapshots themselves still prove A's question/answer and `[0,10]` policy and B's question/answer and `[0,5,10]` policy as recorded above, but that is not a substitute for validating the assembled execution package.
+- The dedicated Test event list contains only authoring/revision events and no grading-job event. No grading job was created during either acceptance attempt. The authenticated read-only checks used a normal Codex login session; no Course, Test, submission, authoring, or grading records were changed by this continuation.
+
+### Job-to-worker-to-grader safety audit
+
+The production route and local implementation establish this path:
+
+1. `POST /tests/{tid}/grading-jobs` in `src/scoring/api/domain.py` calls `create_revision_execution_job` for Web execution, adds a `job_created` event, commits, then returns. The route has no enqueue-suppression or prepare-only flag. It does not run the worker inline, but the committed Job state is `queued`.
+2. `create_revision_execution_job` in `src/scoring/grading_execution.py` invokes `RevisionGradingInputAssembler.execution_preview`, validates the revision-bound bundle, reads the grading runtime configuration, seals the bundle and revision/hash metadata into `GradingJob.metadata_json`, creates the queued Job and JobItem, and flushes them. This sealing happens before inference, but only inside Job creation; there is no existing endpoint that returns that sealed package without creating the Job.
+3. `docs/admin/production-runbook.md` requires a separately deployment-managed grading worker and recommends checking its PID. It is not a Compose service in this checkout, and API `/health` does not report worker liveness or a paused state. A committed queued Job therefore cannot be proven safe from worker pickup using the available production API.
+4. `JobWorker.run_once` in `src/scoring/db/worker.py` claims a queued Job and transitions it to `preparing`. For revision-bound work, it verifies the Submission/Job contract before constructing `GradingExecutionRunner`.
+5. `GradingExecutionRunner.run` in `src/scoring/grading_execution.py` verifies the sealed snapshot and asset hashes, then calls RuntimeManager `status('grader')`, `ensure_running('grader')`, and `health('grader')`, constructs the client, and calls `client.chat(...)`. RuntimeManager may start a managed grader. That path can perform real inference.
+
+No production-supported synthetic/managed-stub grader, worker-disabled mode, paused/manual queue mode, or unconsumed prepared Job state was found. Test-only monkeypatches and local fakes do not establish production safety. The existing preview is safe from grading execution, but S1/S2 fail its reconstruction requirement, so it does not return a sealed bundle. Accordingly, delayed S1 Job -> A, S2 Job -> B, actual bundle hashes/contents, teacher review edition/context, result generation, and finalization remain unverified. Job count created in this continuation: **0**. Production grading/OCR/model calls in this continuation: **0**; across this acceptance: **0**.
+
+### J.GRADING.1a design proposal — not implemented
+
+Prefer option A, a revision-bound package-preview service and staff-scoped API, over a `PREPARED` Job state. A new Job state would need to be excluded from every worker claim/recovery path and could accidentally alter established queue semantics. The preview should reuse the same immutable revision verifier and frozen-question-package assembly used by Job creation, but have no dependency on runtime config, RuntimeManager, grader client, Job/JobItem insertion, event insertion, or commit.
+
+Proposed behavior:
+
+- Add a staff/domain-authorized `POST /api/v1/tests/{tid}/submissions/{sid}/grading-package-preview` diagnostic endpoint (or an equivalent internal service exposed through an existing authorized route). It must verify the Submission pin, Test ownership, confirmed snapshot hash, completeness, artifact hashes, stable Question identity, and edition label using the existing revision-bound verifiers.
+- For a Submission that already has a valid teacher-accepted reconstruction, consume that reconstruction without modifying it. For this dedicated registration-only fixture, allow an explicitly marked synthetic answer string in the request body so the same revision-bound package can be built in memory without OCR, model calls, or a persisted reconstruction. The synthetic input must be clearly identified in the response and excluded from logs.
+- Assemble and validate the same canonical execution bundle used by `create_revision_execution_job`, including its canonical bundle hash, pinned revision ID/hash, stable Question identity, frozen Question and ModelAnswer, rubric criterion IDs/levels/derived maxima, and frozen visual-reference IDs/SHA values. Return only the fields needed for validation; do not return filesystem paths or unrelated student data.
+- Guarantee read-only behavior: no GradingJob/JobItem/event/reconstruction writes, no `commit`, and rollback/close the read transaction. Tests should assert job/event/reconstruction row counts remain unchanged and monkeypatch RuntimeManager/client access to fail if touched. The handler should not load grader runtime configuration or expose a path to `GradingExecutionRunner`.
+- Exercise the exact service/API using disposable production-like data first. On production, preview S1 and S2 and verify A returns Edition A question/answer and `[0,10]`, B returns Edition B question/answer and `[0,5,10]`, with different bundle hashes and zero job/model/OCR deltas. Review/result/finalization still require a separately authorized synthetic-result mechanism; this preview alone must not mark J.GRADING.1 COMPLETE.
+
+This is a proposal only. No J.GRADING.1a code, endpoint, worker setting, or production configuration was changed or added during this acceptance.
+
+### Exact Git status after this continuation
+
+```text
+ M docs/internal/reports/j-grading-1-confirmed-revision-binding.md
+```
+
+No commit or push was made. J.GRADING.1 production acceptance remains **PARTIAL**; continue only after a separately implemented and validated safe package-preview mechanism is deployed. The local codebase has not been deployed from this workspace.

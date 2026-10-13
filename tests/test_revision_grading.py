@@ -8,12 +8,18 @@ from pathlib import Path
 
 import fitz
 import pytest
-from sqlalchemy import event, select, update
+from sqlalchemy import event, func, select, text, update
 
 from scoring.db.models import (
     GradingJob,
+    GradingJobItem,
+    GradingJobEvent,
+    DomainEvent,
     ModelAnswer,
     RubricVersion,
+    StudentAnswerExtractionResult,
+    StudentAnswerExtractionRun,
+    StudentAnswerReconstruction,
     StudentSubmission,
     TestMaterial as Material,
     TestQuestion as FormalQuestion,
@@ -136,6 +142,14 @@ def create_job(w, tmp_path, submission, question_id, suffix):
         return session.get(GradingJob, response.json()["id"]), response.json()
 
 
+def preview_package(w, submission, question_id, *, synthetic_answer_text=None):
+    body = {"question_id": question_id}
+    if synthetic_answer_text is not None:
+        body["synthetic_answer_text"] = synthetic_answer_text
+    return w.client.post(base(w) + f"/submissions/{submission['id']}/grading-package-preview",
+                         json=body)
+
+
 class SyntheticRuntime:
     def status(self, _runtime_id):
         return {"profile": {"runtime_type": "managed", "model_id": "synthetic-revision-grader"},
@@ -190,8 +204,11 @@ def test_web_submissions_jobs_and_grading_inputs_remain_on_their_confirmed_editi
     submission_a = create_submission(w, tmp_path, "REVISION-A")
     assert submission_a["confirmed_authoring_revision_id"] == first["id"]
     question_a = add_selected_reconstruction(w, tmp_path, submission_a)
+    preview_a_initial = preview_package(w, submission_a, question_a)
+    assert preview_a_initial.status_code == 200, preview_a_initial.text
     job_a_before, job_a_before_response = create_job(w, tmp_path, submission_a, question_a, "a-before")
     bundle_a_before = job_a_before.metadata_json["grading_execution"]["bundle"]
+    assert preview_a_initial.json()["canonical_package_hash"] == bundle_a_before["bundle_sha256"]
     assert bundle_a_before["question"]["context"]["effective_text"].endswith("Question edition A")
     assert bundle_a_before["model_answer"]["content"] == "Model answer edition A"
     assert [level["score"] for level in bundle_a_before["rubric"]["entry"]["criteria"][0]["levels"]] == [0, 10]
@@ -292,12 +309,27 @@ def test_web_submissions_jobs_and_grading_inputs_remain_on_their_confirmed_editi
 
     event.listen(w.engine, "before_cursor_execute", reject_mutable_authoring_reads)
     try:
+        preview_a_after = preview_package(w, submission_a, question_a)
+        preview_b_after = preview_package(w, submission_b, question_b)
+        assert preview_a_after.status_code == preview_b_after.status_code == 200
         job_a_after, job_a_response = create_job(w, tmp_path, submission_a, question_a, "a-after")
+        job_b, job_b_response = create_job(w, tmp_path, submission_b, question_b, "b-after")
     finally:
         event.remove(w.engine, "before_cursor_execute", reject_mutable_authoring_reads)
-    job_b, job_b_response = create_job(w, tmp_path, submission_b, question_b, "b-after")
     bundle_a = job_a_after.metadata_json["grading_execution"]["bundle"]
     bundle_b = job_b.metadata_json["grading_execution"]["bundle"]
+    assert preview_a_after.json()["confirmed_authoring_revision_id"] == first["id"]
+    assert preview_a_after.json()["edition_label"] == "第1版"
+    assert preview_a_after.json()["question"]["effective_text"].endswith("Question edition A")
+    assert preview_a_after.json()["model_answer"]["primary"] == "Model answer edition A"
+    assert [level["score"] for level in preview_a_after.json()["rubric"]["criteria"][0]["levels"]] == [0, 10]
+    assert preview_a_after.json()["canonical_package_hash"] == bundle_a["bundle_sha256"]
+    assert preview_b_after.json()["confirmed_authoring_revision_id"] == second["id"]
+    assert preview_b_after.json()["edition_label"] == "第2版"
+    assert preview_b_after.json()["question"]["effective_text"].endswith("Question edition B")
+    assert preview_b_after.json()["model_answer"]["primary"] == "Model answer edition B"
+    assert [level["score"] for level in preview_b_after.json()["rubric"]["criteria"][0]["levels"]] == [0, 5, 10]
+    assert preview_b_after.json()["canonical_package_hash"] == bundle_b["bundle_sha256"]
     assert job_a_before.confirmed_authoring_revision_id == first["id"]
     assert job_a_after.confirmed_authoring_revision_id == first["id"]
     assert job_b.confirmed_authoring_revision_id == second["id"]
@@ -366,6 +398,129 @@ def test_web_submissions_jobs_and_grading_inputs_remain_on_their_confirmed_editi
         for job in session.scalars(select(GradingJob).where(GradingJob.test_id == w.legacy)).all():
             session.delete(job)
         session.commit()
+
+
+def test_package_preview_synthetic_answer_is_in_memory_and_read_only(workspace, tmp_path, monkeypatch):
+    w = workspace
+    working = set_edition_values(w, begin(w), question_text="Preview question",
+        answer_text="Preview model answer", levels=[
+            {"score": 0, "condition": "No credit"},
+            {"score": 10, "condition": "Complete"},
+        ])
+    confirmed = confirm(w, working)
+    assert confirmed.status_code == 200, confirmed.text
+    revision_id = confirmed.json()["id"]
+    submission = create_submission(w, tmp_path, "PREVIEW-SYNTHETIC")
+    synthetic_text = "SYNTHETIC-ANSWER-MUST-NOT-BE-PERSISTED"
+
+    from scoring.db.models import ConfirmedAuthoringRevision
+    from scoring.db.worker import JobWorker
+    from scoring.grading_execution import GradingExecutionRunner
+    from scoring.student_answer import SelectedImageStudentAnswerReconstruction
+    import scoring.grading_execution as grading_execution
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("package preview attempted grading, runtime, OCR, or reconstruction")
+
+    monkeypatch.setattr(GradingExecutionRunner, "run", forbidden)
+    monkeypatch.setattr(JobWorker, "run_once", forbidden)
+    monkeypatch.setattr(SelectedImageStudentAnswerReconstruction, "run", forbidden)
+    monkeypatch.setattr(grading_execution.RuntimeManagerClient, "__init__", forbidden)
+    monkeypatch.setattr(grading_execution.GradingClient, "__init__", forbidden)
+
+    def counts():
+        with w.sf() as session:
+            return {
+                "jobs": session.scalar(select(func.count()).select_from(GradingJob)),
+                "items": session.scalar(select(func.count()).select_from(GradingJobItem)),
+                "job_events": session.scalar(select(func.count()).select_from(GradingJobEvent)),
+                "domain_events": session.scalar(select(func.count()).select_from(DomainEvent)),
+                "reconstructions": session.scalar(select(func.count()).select_from(StudentAnswerReconstruction)),
+                "extraction_runs": session.scalar(select(func.count()).select_from(StudentAnswerExtractionRun)),
+                "extraction_results": session.scalar(select(func.count()).select_from(StudentAnswerExtractionResult)),
+            }
+
+    before_counts = counts()
+    with w.sf() as session:
+        before_submission = session.get(StudentSubmission, submission["id"])
+        submission_state = (before_submission.test_id, before_submission.student_id,
+            before_submission.material_id, before_submission.confirmed_authoring_revision_id)
+        before_revision = session.get(ConfirmedAuthoringRevision, revision_id)
+        snapshot_hash_before = before_revision.snapshot_sha256
+
+    response = preview_package(w, submission, w.question,
+        synthetic_answer_text=synthetic_text)
+    assert response.status_code == 200, response.text
+    preview = response.json()
+    assert preview["synthetic_input"] is True
+    assert preview["confirmed_authoring_revision_id"] == revision_id
+    assert preview["edition_label"] == "第1版"
+    assert preview["question"]["effective_text"].endswith("Preview question")
+    assert preview["model_answer"]["primary"] == "Preview model answer"
+    assert preview["rubric"]["criteria"][0]["max_score"] == 10
+    assert preview["student_answer_sha256"]
+    assert synthetic_text not in response.text
+    assert str(tmp_path) not in response.text
+    assert "artifact_ref" not in response.text
+    assert "student_id" not in preview
+    assert counts() == before_counts
+    with w.sf() as session:
+        after_submission = session.get(StudentSubmission, submission["id"])
+        assert (after_submission.test_id, after_submission.student_id,
+            after_submission.material_id, after_submission.confirmed_authoring_revision_id) == submission_state
+        assert session.get(ConfirmedAuthoringRevision, revision_id).snapshot_sha256 == snapshot_hash_before
+    assert not (tmp_path / "artifacts" / "student-answer").exists()
+
+
+def test_package_preview_rejects_foreign_test_and_cross_test_submission(workspace, tmp_path):
+    w = workspace
+    response = w.client.post(base(w, "foreign") + "/submissions/not-a-submission/grading-package-preview",
+        json={"question_id": w.question})
+    assert response.status_code == 403
+    confirmed = confirm(w, begin(w))
+    assert confirmed.status_code == 200, confirmed.text
+    same_owner_submission = create_submission(w, tmp_path, "CROSS-TEST")
+    cross = w.client.post(base(w, "fresh") +
+        f"/submissions/{same_owner_submission['id']}/grading-package-preview",
+        json={"question_id": w.question, "synthetic_answer_text": "not allowed across tests"})
+    assert cross.status_code == 404
+
+
+@pytest.mark.parametrize("corruption,expected_code", [
+    ("snapshot_hash", "GRADING_DEFINITION_SNAPSHOT_HASH_MISMATCH"),
+    ("missing_definition", "GRADING_DEFINITION_LEGACY_INCOMPLETE"),
+    ("incomplete_definition", "GRADING_DEFINITION_INCOMPLETE_OR_CHANGED"),
+    ("unsupported_schema", "GRADING_DEFINITION_LEGACY_INCOMPLETE"),
+])
+def test_package_preview_fails_closed_for_invalid_confirmed_definition(
+        workspace, tmp_path, corruption, expected_code):
+    w = workspace
+    confirmed = confirm(w, begin(w))
+    assert confirmed.status_code == 200, confirmed.text
+    submission = create_submission(w, tmp_path, f"INVALID-PREVIEW-{corruption}")
+    snapshot = deepcopy(confirmed.json()["snapshot"])
+    if corruption == "snapshot_hash":
+        snapshot["metadata"]["description"] = "tampered without updating attestation"
+        stored_hash = confirmed.json()["snapshot_sha256"]
+    elif corruption == "missing_definition":
+        snapshot["domains"].pop("grading_definition", None)
+        stored_hash = canonical_hash(snapshot)
+    elif corruption == "incomplete_definition":
+        snapshot["domains"]["grading_definition"]["complete"] = False
+        stored_hash = canonical_hash(snapshot)
+    else:
+        snapshot["domains"]["grading_definition"]["schema_version"] = "unsupported.v999"
+        stored_hash = canonical_hash(snapshot)
+    with w.engine.begin() as connection:
+        connection.execute(text("""
+            UPDATE confirmed_authoring_revisions
+            SET snapshot=:snapshot, snapshot_sha256=:sha WHERE id=:id
+        """), {"snapshot": json.dumps(snapshot), "sha": stored_hash,
+              "id": confirmed.json()["id"]})
+    response = preview_package(w, submission, w.question,
+        synthetic_answer_text="not persisted")
+    assert response.status_code == 409, response.text
+    assert response.json()["error"]["code"] == expected_code
 
 
 def test_web_submission_without_active_complete_revision_fails_closed(workspace, tmp_path):

@@ -462,7 +462,7 @@ class RevisionGradingInputAssembler:
         mapped = answer_pages({**self.document, "answers": [entries[0]]}, self.source_path.parent)[0]
         return mapped["pages"], mapped
 
-    def execution_preview(self, submission_id, question_id):
+    def execution_preview(self, submission_id, question_id, *, synthetic_answer_text=None):
         if submission_id != self.submission.id:
             raise ContextError("SUBMISSION_NOT_FOUND")
         question_key = self.keys_by_id.get(question_id)
@@ -471,10 +471,17 @@ class RevisionGradingInputAssembler:
         question = self.questions[question_key]
         if not question.get("gradable"):
             raise ContextError("ANSWER_MAPPED_TO_STRUCTURAL_QUESTION")
+        if synthetic_answer_text is not None and (
+                not isinstance(synthetic_answer_text, str)
+                or not synthetic_answer_text.strip()
+                or len(synthetic_answer_text) > 20000):
+            raise ContextError("SYNTHETIC_ANSWER_TEXT_INVALID")
         pages, mapped = self._student_pages_for(question_key)
-        reconstruction = self._selected_reconstruction(question_id)
+        reconstruction = (None if synthetic_answer_text is not None
+                          else self._selected_reconstruction(question_id))
         visual = []
-        if ((self.material.mime_type and self.material.mime_type.startswith("image/"))
+        if synthetic_answer_text is None and (
+                (self.material.mime_type and self.material.mime_type.startswith("image/"))
                 or (self.document and self.document.get("registration_only"))):
             from .student_visual import StudentVisualAssetService, safe_file
             visual_rows = StudentVisualAssetService(self.s, self.answer_root or self.source_path.parent).for_question(
@@ -493,7 +500,7 @@ class RevisionGradingInputAssembler:
                         "page_ids": [source_page["page_id"]], "review_required": False})
                     visual[-1].pop("metadata_sha256", None)
                     visual[-1]["metadata_sha256"] = canonical_hash(visual[-1])
-        if reconstruction is None and not visual:
+        if reconstruction is None and synthetic_answer_text is None and not visual:
             raise ContextError("ANSWER_RECONSTRUCTION_MISSING")
         bundle = {"schema_version": "grading-input-bundle.v1",
                   **self._question_part(question), "input_stage": "reconstructed_answer"}
@@ -501,7 +508,33 @@ class RevisionGradingInputAssembler:
                               "snapshot_sha256": self.revision.snapshot_sha256,
                               "schema_version": self.definition["schema_version"],
                               "interpreter_version": self.definition["interpreter_version"]}
-        if reconstruction is not None:
+        if synthetic_answer_text is not None:
+            source_sha = self.source_sha256
+            if self.document and self.document.get("registration_only"):
+                if len(pages) != 1:
+                    raise ContextError("STUDENT_ANSWER_PAGE_SELECTION_REQUIRED")
+                source_sha = pages[0]["sha256"]
+            normalized = {
+                "schema_version": "student-answer-reconstruction.v1",
+                "question_id": question_id,
+                "answer_text": synthetic_answer_text,
+                "segments": [],
+                "uncertainties": [],
+                "source_refs": [],
+                "status": "COMPLETE",
+            }
+            normalized["output_sha256"] = canonical_hash(normalized)
+            student_answer = {"id": "synthetic-preview", "submission_id": self.submission.id,
+                "source_answer_id": f"{self.submission.id}:{question_id}", "test_id": self.test_id,
+                "student_id": self.submission.student_id, "question_id": question_id,
+                "stable_question_key": question_key, "representation": "reconstructed",
+                "source": "RECONSTRUCTED_FROM_DOCUMENT", "answer_text": synthetic_answer_text,
+                "source_sha256": source_sha, "reconstruction_id": "synthetic-preview",
+                "reconstruction_version": 0, "reconstruction_status": "COMPLETE",
+                "page_ids": [p["page_id"] for p in pages], "source_pages": pages,
+                "reconstruction_context_sha256": question["context"].get("context_sha256"),
+                "normalized_reconstruction": normalized, "sha256": normalized["output_sha256"]}
+        elif reconstruction is not None:
             normalized = self._verified_reconstruction(reconstruction, question, pages)
             student_answer = {"id": reconstruction.id, "submission_id": self.submission.id,
                 "source_answer_id": f"{self.submission.id}:{question_id}", "test_id": self.test_id,
@@ -538,7 +571,9 @@ class RevisionGradingInputAssembler:
                     "model_answer_mapped": bool(question["answer"].get("primary") or question["visual_references"]),
                     "rubric_mapped": bool(question["rubric"].get("criteria")),
                     "reconstruction": {"id": reconstruction.id, "version": reconstruction.version,
-                        "status": reconstruction.status} if reconstruction else {"status": "NOT_REQUIRED_VISUAL"},
+                        "status": reconstruction.status} if reconstruction else
+                        ({"status": "SYNTHETIC_PREVIEW"} if synthetic_answer_text is not None
+                         else {"status": "NOT_REQUIRED_VISUAL"}),
                     "blockers": [], "warnings": []}], "gradable_count": 1,
                 "ready_bundle_count": 1, "blocked_bundle_count": 0,
                 "confirmed_authoring_revision_id": self.revision.id,
@@ -582,3 +617,60 @@ def immutable_asset_rows(bundle, artifact_roots):
         rows.append({"asset_id": reference["asset_id"], "sha256": reference["sha256"],
                      "role": reference.get("role"), "path": str(path)})
     return rows
+
+
+def assemble_revision_execution_package(session, test_id, submission_id, question_id, *,
+                                        question_root=None, answer_root=None,
+                                        allowed_roots=None, visual_capability=None,
+                                        synthetic_answer_text=None, submission=None):
+    """Build the exact revision-bound bundle shared by Job creation and diagnostics.
+
+    This service is inference-free and does not read grader configuration or
+    create persistent grading records. A synthetic answer is supplied only for
+    an explicit diagnostic preview and exists in memory.
+    """
+    from .db.models import StudentSubmission
+    from .grading_definition import confirmed_revision_for_test
+    from .grading_execution import execution_rubric, validate_bundle
+
+    submission = submission or session.get(StudentSubmission, submission_id)
+    if submission is None or submission.id != submission_id or submission.test_id != test_id:
+        raise ContextError("SUBMISSION_NOT_FOUND")
+    if not submission.confirmed_authoring_revision_id:
+        raise ContextError("WEB_GRADING_REVISION_REQUIRED")
+
+    roots = {"question_import": question_root, "answer_import": answer_root,
+             "student_visual_answer": answer_root}
+    try:
+        revision, definition = confirmed_revision_for_test(
+            session, test_id, submission.confirmed_authoring_revision_id,
+            artifact_roots=roots)
+        assembler = RevisionGradingInputAssembler(
+            session, test_id, submission_id, question_root=question_root,
+            answer_root=answer_root, allowed_roots=allowed_roots,
+            visual_capability=visual_capability)
+        preview = assembler.execution_preview(
+            submission_id, question_id, synthetic_answer_text=synthetic_answer_text)
+        row = next((value for value in preview.get("questions", [])
+                    if value.get("question_id") == question_id), None)
+        if row is None or row.get("execution_state") != "READY" or not row.get("bundle"):
+            return {"ready": False, "blockers": deepcopy((row or {}).get("blockers", [])),
+                    "submission": submission, "revision": revision,
+                    "definition": definition, "edition_label": preview.get("confirmed_revision_label"),
+                    "bundle": None, "assets": [],
+                    "synthetic_input": synthetic_answer_text is not None}
+        bundle = deepcopy(row["bundle"])
+        validate_bundle(bundle)
+        execution_rubric(bundle)
+        validate_revision_bound_bundle(bundle, revision, assembler.question_ids)
+        assets = immutable_asset_rows(bundle, roots)
+        return {"ready": True, "blockers": [], "submission": submission,
+                "revision": revision, "definition": definition,
+                "edition_label": preview["confirmed_revision_label"],
+                "question": deepcopy(assembler.questions[assembler.keys_by_id[question_id]]),
+                "bundle": bundle, "assets": assets,
+                "synthetic_input": synthetic_answer_text is not None}
+    except ContextError:
+        raise
+    except (ValueError, OSError, KeyError, TypeError) as exc:
+        raise ContextError(str(exc)) from exc

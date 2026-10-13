@@ -230,36 +230,23 @@ def create_revision_execution_job(session, test_id, submission_id, question_id, 
                                   prompt_version=None):
     """Create a Web grading job whose complete input comes from Submission's pin."""
     from sqlalchemy import select
-    from .db.models import ConfirmedAuthoringRevision, StudentSubmission
-    from .grading_definition import confirmed_edition_label, confirmed_revision_for_test
-    from .revision_grading import RevisionGradingInputAssembler, immutable_asset_rows
+    from .db.models import StudentSubmission
+    from .grading_definition import confirmed_edition_label
+    from .revision_grading import assemble_revision_execution_package
 
     submission = session.scalar(select(StudentSubmission).where(
         StudentSubmission.id == submission_id).with_for_update().execution_options(populate_existing=True))
     if submission is None or submission.test_id != test_id:
         raise ValueError("SUBMISSION_NOT_FOUND")
-    if not submission.confirmed_authoring_revision_id:
-        raise ValueError("WEB_GRADING_REVISION_REQUIRED")
-    roots = {"question_import": question_root, "answer_import": answer_root,
-             "student_visual_answer": answer_root}
-    revision, definition = confirmed_revision_for_test(
-        session, test_id, submission.confirmed_authoring_revision_id,
-        artifact_roots=roots)
-    if revision.test_id != test_id:
-        raise ValueError("WEB_GRADING_REVISION_TEST_MISMATCH")
-    if session.get(ConfirmedAuthoringRevision, revision.id) is None:
-        raise ValueError("WEB_GRADING_REVISION_NOT_FOUND")
-    assembler = RevisionGradingInputAssembler(session, test_id, submission_id,
+    package = assemble_revision_execution_package(
+        session, test_id, submission_id, question_id,
         question_root=question_root, answer_root=answer_root,
-        allowed_roots=allowed_roots, visual_capability=visual_capability)
-    preview = assembler.execution_preview(submission_id, question_id)
-    row = next((value for value in preview.get("questions", [])
-                if value.get("question_id") == question_id), None)
-    if row is None or row.get("execution_state") != "READY" or not row.get("bundle"):
+        allowed_roots=allowed_roots, visual_capability=visual_capability,
+        submission=submission)
+    if not package["ready"]:
         raise ValueError("GRADING_INPUT_MAPPING_BLOCKED")
-    bundle = deepcopy(row["bundle"])
-    validate_bundle(bundle)
-    execution_rubric(bundle)
+    revision = package["revision"]
+    bundle = package["bundle"]
     config = json.loads(Path(config_path).read_text())
     settings = deepcopy(config['models']['grader'])
     generation = {**DEFAULT_GENERATION, **config.get('generation', {}), **settings.get('generation', {})}
@@ -275,7 +262,7 @@ def create_revision_execution_job(session, test_id, submission_id, question_id, 
         'confirmed_authoring_revision_id': revision.id,
         'confirmed_snapshot_sha256': revision.snapshot_sha256,
         'confirmed_edition_label': confirmed_edition_label(session, revision),
-        'assets': immutable_asset_rows(bundle, roots)}
+        'assets': package['assets']}
     if bundle.get('visual_assets'):
         from .grading_visual import validate_capability
         validate_capability(visual_capability, settings['model_id'])
