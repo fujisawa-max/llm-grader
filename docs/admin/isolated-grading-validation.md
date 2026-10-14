@@ -278,7 +278,7 @@ python scripts/validation-compose.py build
 
 The launcher uses `--env-file /dev/null`, one explicit Compose file/project,
 strips production/Compose/DB/runtime variables, validates rendered JSON before
-any build/run, and does not connect during config/build. Docker Compose v2
+any build/run, and does not connect during config/build. Docker Compose v2 or later
 with JSON config output and `run --pull never` is required. Missing Docker,
 unsupported syntax, missing paths/permissions or unsafe configuration stops.
 Build uses package-registry networking only in Docker's build phase; no source
@@ -335,12 +335,13 @@ deleted or changed by this Compose file.
 
 ## Stage A — Docker runtime validation without production resources
 
-**Actual-server results are unverified.** These commands prepare only empty
+**Stage A passed on the server on 2026-10-14** (Engine 29.8.1, Compose v5.5.1).
+See the actual-server follow-up in
+`docs/internal/reports/j-grading-1d-containerized-acceptance.md` for evidence.
+These commands prepare only empty
 local fixtures, build the image, import Python modules and start help. They
 must not run `export`, `import`, `acceptance`, `up`, a synthetic Job, or access
-production PostgreSQL. Stage B is a separate approved procedure. Docker is
-unavailable in the Codex workspace; the following commands have not been
-executed against the server by Codex.
+production PostgreSQL. Stage B is a separate approved procedure.
 
 Run this block in Bash as a **nonroot deployment user** with local Docker
 access. Substitute the repository location if different. Each failed command

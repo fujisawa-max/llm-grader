@@ -1,9 +1,9 @@
 # J.GRADING.1d — Containerized isolated grading acceptance
 
-Status: **PARTIAL** (2026-10-14). Container configuration, isolation checks,
-operator workflow and local synthetic acceptance are implemented. Docker is
-not installed in this workspace, so image build, actual Compose rendering and
-container execution remain unverified. These are not counted as passes.
+Status: **PARTIAL** overall (2026-10-14); **J.GRADING.1d Stage A = COMPLETE**.
+Actual-server Compose config, image build, import smoke, help-only startup,
+and container isolation inspection passed; see the actual-server follow-up below.
+Earlier unverified statements below describe the historical preparation runs.
 No production export/acceptance was authorized or attempted. J.GRADING.1 is
 not declared COMPLETE by synthetic acceptance.
 
@@ -193,4 +193,105 @@ Exact follow-up `git status --short`:
 ```text
  M docs/admin/isolated-grading-validation.md
  M docs/internal/reports/j-grading-1d-containerized-acceptance.md
+```
+
+## Stage A actual-server follow-up — 2026-10-14
+
+**J.GRADING.1d Stage A = COMPLETE.** J.GRADING.1d overall remains PARTIAL;
+J.GRADING.1 is not COMPLETE. No Stage B/export/import/acceptance was executed.
+
+Checkout: `/home/fujisawa/llm-grader`, HEAD
+`c3c85d564e60c5fd7c495125c63a5d2e4f70650e` plus the changes below.
+Engine 29.8.1, Compose v5.5.1, Buildx v0.37.1; local default context uses
+`unix:///var/run/docker.sock`. No pre-existing validation-project container
+was present. Every Compose operation explicitly selected only
+`compose.validation.yaml`, project `llm-grading-validation`, both profiles,
+and `--env-file /dev/null`, with a minimal nonsecret environment.
+
+### Failure and minimal correction
+
+Actual rendered `services.acceptance.entrypoint` and
+`services.export.entrypoint` were both JSON `null`. The source Compose file
+omits this field; the launcher's service-key allowlist also omitted it, causing
+`VALIDATION_UNEXPECTED_SERVICE_CONFIGURATION`. The other rendering changes
+were expected: absolute build/mount paths, numeric `user: 1000:1000`, and
+omission of false `read_only` on the writable work mount.
+
+The launcher now accepts absent or null entrypoint only, preserving the image's
+ENTRYPOINT. Empty string, empty list, string command and command list overrides
+are rejected. Unknown fields and existing network/runtime/mount/user/capability
+checks remain enforced. Neither Compose nor image/container entrypoint changed.
+Five regression cases cover null inheritance and four forbidden overrides.
+
+### Ordered execution and evidence
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Compose config | PASS, exit 0 | `config.log`: `VALIDATION_ISOLATION_CONFIG_OK`; `compose.log` contains actual JSON |
+| Dedicated image build | PASS, exit 0 | `build.log`: selected Dockerfile, 1.74 MB context, all explicit COPY steps and successful package installation |
+| Import smoke | PASS, exit 0 | `smoke.log`: `STAGE_A_IMPORT_AND_NONROOT_WRITE_OK` |
+| Help-only startup | PASS, exit 0 | `help.log`: supported CLI help, no operation executed |
+| Container isolation inspection | PASS, exit 0 | `help-inspect.json`, `isolation.log`: `STAGE_A_ISOLATION_OK` |
+
+Private evidence directory:
+`/tmp/grading-validation-stage-a.vuhwh6g4/evidence/`.
+Each operational log has a corresponding `.exit` file. The private parent
+contains fresh empty question/answer/socket directories, a dummy `{}` allowlist,
+an empty credential placeholder and an empty work directory. No production
+path, socket or credential was supplied. The export service was never started.
+Build logs do not print a separate ignore-loading step; the selected dedicated
+Dockerfile/adjacent ignore, transferred context and COPY steps are recorded.
+Image contents were independently checked by smoke, without treating that alone
+as proof of build-context exclusion.
+
+Built image ID:
+`sha256:0f937e82c93da68e0bd90329218e6eda3ee41d9732241b9f3663f3e9e77f3a04`.
+Retained stopped help container: `grading-validation-stage-a-vuhwh6g4`, ID
+`fe80f288d4a5f40f8dca5a868ca3b8c0c4d930416097a02452fcd69eebe536ba`.
+Its inspected image matches the recorded image ID. Smoke's `--rm` container
+was removed automatically; no project-wide cleanup was run.
+
+Inspection established network none, runc, UID/GID 1000:1000, readonly rootfs,
+ALL capabilities dropped, no-new-privileges, no privileged/host PID/IPC mode,
+no ports/devices/GPU requests, bounded 64 MiB noexec/nosuid tmpfs, and exactly
+two private bind mounts: `/work` writable and `/inputs/allowlist.json` readonly.
+No database/runtime/NVIDIA environment names were present. Smoke checked all
+specified imports, exact test/helper packaging, absent source/config/secrets,
+and nonroot write access. Its temporary probe was removed; `/work` is empty.
+
+### Regression checks and existing services
+
+Focused launcher tests: **35 passed**, one dependency deprecation warning.
+Ruff on the two changed Python files and `git diff --check`: PASS.
+Tests ran in a separate `/tmp` venv with production environment stripped.
+Initial host pytest was unavailable; the first venv run had 34 passes and one
+failure because the package source was not registered for its subprocess.
+Registering `src/` in that temporary venv resolved this setup issue; no test
+or application behavior was changed to bypass the failure. Final complete
+focused run is saved as `regression-tests.log`.
+
+Existing four running application containers retained identical full IDs,
+StartedAt values, restart counts, states and health states before/after.
+The existing exited migrate container also remained unchanged. Frontend was
+already unhealthy before validation and remains unhealthy; it was not repaired
+or restarted. Before/after summaries are `existing-before.json` and
+`existing-after.json`. Protected-file hashes confirmed unchanged `AGENTS.md`,
+all Compose/Dockerfiles (including the local NVIDIA change) and all files in
+`math-ocr-debug/`. No production DB connection, artifact mount, real model call,
+GPU use, OpenWebUI change, commit, push, reset or clean was performed.
+
+The runbook's clean-checkout/pull preparation was intentionally skipped under
+this session's explicit instruction to preserve local changes and validate this
+checkout. No existing service operation was needed. Evidence and the stopped
+help container are retained for operator review.
+
+Final `git status --short`:
+
+```text
+ M compose.runtime-nvidia.yaml
+ M docs/admin/isolated-grading-validation.md
+ M docs/internal/reports/j-grading-1d-containerized-acceptance.md
+ M scripts/validation-compose.py
+ M tests/test_validation_compose.py
+?? math-ocr-debug/
 ```

@@ -50,10 +50,15 @@ def validate_config(config, env):
     if config.get("networks") or config.get("volumes") or config.get("secrets") or config.get("configs"):
         raise ValueError("VALIDATION_SHARED_RESOURCE_FORBIDDEN")
     allowed = {"image", "build", "network_mode", "read_only", "cap_drop", "security_opt",
-               "user", "tmpfs", "restart", "command", "profiles", "volumes", "runtime"}
+               "user", "tmpfs", "restart", "command", "profiles", "volumes", "runtime",
+               "entrypoint"}
     for name, service in config["services"].items():
         if set(service) - allowed:
             raise ValueError("VALIDATION_UNEXPECTED_SERVICE_CONFIGURATION")
+        # Compose v5 renders an inherited image ENTRYPOINT as explicit null.
+        # Empty strings/lists also override ENTRYPOINT and must remain forbidden.
+        if service.get("entrypoint") is not None:
+            raise ValueError("VALIDATION_CONTAINER_ISOLATION_INVALID")
         expected = {
             "image": "llm-grading-validation:1d", "network_mode": "none", "runtime": "runc",
             "read_only": True, "cap_drop": ["ALL"],

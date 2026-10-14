@@ -40,6 +40,21 @@ def test_actual_compose_isolation(config):
         "/work", "/inputs/allowlist.json"}
 
 
+def test_compose_null_entrypoint_inherits_image(config):
+    raw, env = config
+    for service in raw["services"].values():
+        service["entrypoint"] = None
+    launcher.validate_config(raw, env)
+
+
+@pytest.mark.parametrize("entrypoint", [[], "", ["bash"], "bash"])
+def test_entrypoint_override_rejected(config, entrypoint):
+    raw, env = config
+    raw["services"]["acceptance"]["entrypoint"] = entrypoint
+    with pytest.raises(ValueError, match="VALIDATION_CONTAINER_ISOLATION_INVALID"):
+        launcher.validate_config(raw, env)
+
+
 @pytest.mark.parametrize("key,value", [
     ("ports", ["8000:8000"]), ("privileged", True), ("runtime", "nvidia"),
     ("devices", ["/dev/nvidia0:/dev/nvidia0"]), ("pid", "host"),
