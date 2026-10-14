@@ -1,0 +1,12 @@
+FROM python:3.12.13-slim
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 PYTHONPATH=/app
+WORKDIR /app
+COPY requirements.validation.txt ./
+RUN pip install -r requirements.validation.txt
+COPY pyproject.toml README.md ./
+COPY src ./src
+COPY tests/__init__.py tests/synthetic_validation.py tests/run_staged_synthetic_acceptance.py ./tests/
+COPY scripts/validation-container.py ./scripts/
+RUN pip install --no-deps --no-build-isolation .
+ENTRYPOINT ["python", "scripts/validation-container.py"]
+CMD ["help"]

@@ -28,7 +28,8 @@ model quality. Operator approval is required before any production connection.
   Git/export manifests/logs.
 - Export and staging must use fresh, explicit absolute paths without `..` or
   symlink components. Keep staging on a separate validation host/private
-  volume inaccessible to production Workers, with no production config and no
+  volume, or use the strictly isolated same-host Docker procedure below. In
+  either case it must be inaccessible to production Workers, with no production config and no
   network access to grader/OCR/RuntimeManager. The stage uses its own SQLite
   database. Never point a production Worker at it.
 - Install the repository's dev dependencies in the isolated validation
@@ -195,3 +196,139 @@ Successful isolated acceptance proves production-derived data can travel
 through the shared pipeline. It does not establish the ordinary production
 Worker/runtime/model deployment or actual grading quality. J.GRADING.1's
 remaining production runtime items must be assessed separately.
+
+## Same-host Docker validation (J.GRADING.1d)
+
+A separate physical machine is preferable, but the pre-production server may
+use this explicitly separate project. **No production export or acceptance has
+been performed by this change.** This is an operator workflow, not a deployment
+replacement. Use `scripts/validation-compose.py`; do not combine these services
+with `compose.yaml`, GPU overrides, production networks or `.env`. No `up` is
+needed: each invocation is a one-shot `run --rm --no-deps`. Default command is
+help only; `up` does not connect or run acceptance.
+
+### Boundaries and prerequisites
+
+- Project is fixed to `llm-grading-validation`; image is CPU Python 3.12.13 with
+  pinned top-level dependencies in `requirements.validation.txt`. The dedicated
+  Dockerfile-specific context ignore file allows source plus exactly the two
+  validation harness modules and entrypoint. No config/secrets/model weights,
+  production `.env`, artifacts, or development helpers enter the image.
+- Both services use `network_mode: none` and explicitly `runtime: runc`, no ports, no devices/GPU/NVIDIA,
+  no privileged mode, no host namespace, no Docker socket, nonroot numeric
+  UID/GID, all capabilities dropped, no-new-privileges, read-only image and
+  bounded tmpfs. Only private `/work` is persistent/writable.
+- **Export is Unix-socket only**, not TCP or a production Docker network.
+  An existing PostgreSQL Unix socket directory must be available to a bind
+  mount, with peer/password authentication appropriate to the read-only role.
+  URL must be exactly `postgresql+psycopg://<role>:<password>@/<database>?host=/source/postgres`
+  (percent-encode credentials; no TCP host/port or additional driver parameters).
+  Existing sockets inside an inaccessible container are not automatically
+  exposed. If no approved socket directory is available, STOP; do not alter
+  PostgreSQL configuration/Compose or join its network as a workaround.
+- DBA prerequisites and J1c privilege gates above remain unchanged, including
+  PUBLIC privileges and reachable roles. A read-only mount does **not** make
+  socket SQL read-only; the existing exporter role/transaction gates do that.
+- Source mount allowlist: exact question-import root, exact answer-import root,
+  socket directory, private allowlist file, private credential file. All are
+  read-only. Do not use a host root/ancestor containing unrelated data. The
+  wrapper rejects root paths, symlinks, overlapping output/input roots, missing
+  files, root UID/GID, and loose private-file/directory permissions.
+- Acceptance mounts **only** the private `/work` (export/stage/results) and
+  allowlist, with no source artifact mount, credential file or DB environment.
+  Network is absent; ordinary workers cannot see its SQLite, which must not be
+  published or mounted into the production stack. Review/Finalize uses in-process
+  FastAPI TestClient without opening a listening port.
+- This is trusted-operator containment, not protection against root/Docker
+  administrators who intentionally alter mounts/image/commands. The Docker
+  daemon must be local and trusted. Do not use shell tracing or a credential
+  on CLI. Do not save `docker inspect` output containing export secrets; the
+  URL is read from a file only inside export, never a Compose environment value.
+
+### Prepare and validate without connecting
+
+Create a **new private** operator workspace outside the repository and all
+production roots, owned by the nonroot numeric UID/GID that will run the
+container. Do not reuse or overwrite an existing export/stage directory.
+Prepare the exact allowlist above with owning teacher ID. Keep secret/path
+files private and outside Git. Set these nonsecret path variables explicitly:
+
+```bash
+export VALIDATION_UID="$(id -u)" VALIDATION_GID="$(id -g)"
+export VALIDATION_WORK_ROOT=/srv/grading-validation/run-UNIQUE
+export VALIDATION_ALLOWLIST=/srv/grading-validation/operator/allowlist.json
+export VALIDATION_QUESTION_ROOT=/actual/question-imports
+export VALIDATION_ANSWER_ROOT=/actual/answer-imports
+export VALIDATION_PG_SOCKET_ROOT=/actual/postgresql-socket-directory
+export VALIDATION_READONLY_URL_FILE=/srv/grading-validation/operator/readonly-url
+```
+
+The work directory must already exist mode 0700 and inputs mode 0600, owned
+and readable by the selected UID. A root-only Docker user should use a dedicated
+nonroot UID/GID rather than set 0. All source files must be readable by that UID;
+never change production permissions broadly to obtain access. The credential
+file contains only the existing `GRADING_VALIDATION_READONLY_DATABASE_URL`
+value, provisioned from the secret store without logging; it is loaded into that
+variable inside export only. No credential is inherited from host environment.
+
+```bash
+python scripts/validation-compose.py config
+python scripts/validation-compose.py build
+```
+
+The launcher uses `--env-file /dev/null`, one explicit Compose file/project,
+strips production/Compose/DB/runtime variables, validates rendered JSON before
+any build/run, and does not connect during config/build. Docker Compose v2
+with JSON config output and `run --pull never` is required. Missing Docker,
+unsupported syntax, missing paths/permissions or unsafe configuration stops.
+Build uses package-registry networking only in Docker's build phase; no source
+DB is connected. Pinned top-level versions do not yet constitute a fully
+hash-locked transitive supply-chain build; record the built image ID.
+
+Inspect the rendered service configuration privately using the same explicit
+`--env-file /dev/null -p llm-grading-validation -f compose.validation.yaml`
+flags and profiles. Verify exact mount sources/destinations, readonly flags,
+`NetworkMode=none`, no ports/devices, capabilities, user and image entrypoint.
+For actual-container inspection, create a default-help acceptance container
+with these flags (`compose create acceptance`), inspect its **exact container
+ID** using `docker inspect`, then remove only that stopped container. Do not
+start export during inspection. No long-running Worker is launched.
+
+### Explicit approved execution
+
+After operator approval, record production API baseline as described above.
+Then:
+
+```bash
+python scripts/validation-compose.py export --approved-export
+# Record printed manifest SHA separately in a trusted channel.
+export VALIDATION_MANIFEST_SHA=<recorded-64-hex-sha>
+python scripts/validation-compose.py import --manifest-sha256 "$VALIDATION_MANIFEST_SHA"
+python scripts/validation-compose.py acceptance --manifest-sha256 "$VALIDATION_MANIFEST_SHA"
+```
+
+Export writes `/work/export`; import writes **fresh** `/work/stage`; acceptance
+writes `/work/stage/acceptance.json` and validation-only Job/results in its
+SQLite. Export container exits and its secret/source mounts disappear before
+acceptance runs. The modes use the existing J1c services and identical A/B
+worker/review/finalization checks, not an alternative policy assembler.
+
+Read-only role failure reports `STAGING_*` without raw driver credentials.
+Fix effective grants through the DBA, not the exporter. Failed socket/network
+setup stops rather than falling back to TCP. Existing/incomplete output is
+never overwritten or automatically deleted. Investigate its exact path; for
+retry use a fresh private work root and new trusted export checksum. Preserve
+partial evidence, and never repair immutable records to force acceptance.
+
+After acceptance, recheck **production** API baseline separately. No production
+baseline is inferred from staged results. Record actual image ID, Compose
+version/config/isolation inspection, A/B hashes/scores and zero real model/OCR
+calls. J1d COMPLETE requires that actual-server evidence; J.GRADING.1 ordinary
+runtime/model acceptance remains separate.
+
+Cleanup: `run --rm` removes one-shot containers only; default-help inspection
+containers can be removed by exact ID. Do not run `down -v` against a production
+project or use wildcard recursive cleanup. Apply the preceding manual approved
+cleanup policy to the exact private newly created work directory and credentials,
+after checking receipts/protected roots. No production volumes are created,
+deleted or changed by this Compose file.

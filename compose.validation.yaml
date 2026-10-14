@@ -1,0 +1,135 @@
+{
+  "name": "llm-grading-validation",
+  "services": {
+    "export": {
+      "image": "llm-grading-validation:1d",
+      "build": {
+        "context": ".",
+        "dockerfile": "Dockerfile.validation"
+      },
+      "network_mode": "none",
+      "read_only": true,
+      "cap_drop": [
+        "ALL"
+      ],
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "user": "${VALIDATION_UID:-65534}:${VALIDATION_GID:-65534}",
+      "tmpfs": [
+        "/tmp:rw,noexec,nosuid,size=64m"
+      ],
+      "restart": "no",
+      "command": [
+        "help"
+      ],
+      "profiles": [
+        "export"
+      ],
+      "volumes": [
+        {
+          "type": "bind",
+          "source": "${VALIDATION_WORK_ROOT:?explicit existing path required}",
+          "target": "/work",
+          "read_only": false,
+          "bind": {
+            "create_host_path": false
+          }
+        },
+        {
+          "type": "bind",
+          "source": "${VALIDATION_ALLOWLIST:?explicit existing path required}",
+          "target": "/inputs/allowlist.json",
+          "read_only": true,
+          "bind": {
+            "create_host_path": false
+          }
+        },
+        {
+          "type": "bind",
+          "source": "${VALIDATION_QUESTION_ROOT:?explicit existing path required}",
+          "target": "/source/question_import",
+          "read_only": true,
+          "bind": {
+            "create_host_path": false
+          }
+        },
+        {
+          "type": "bind",
+          "source": "${VALIDATION_ANSWER_ROOT:?explicit existing path required}",
+          "target": "/source/answer_import",
+          "read_only": true,
+          "bind": {
+            "create_host_path": false
+          }
+        },
+        {
+          "type": "bind",
+          "source": "${VALIDATION_PG_SOCKET_ROOT:?explicit existing path required}",
+          "target": "/source/postgres",
+          "read_only": true,
+          "bind": {
+            "create_host_path": false
+          }
+        },
+        {
+          "type": "bind",
+          "source": "${VALIDATION_READONLY_URL_FILE:?explicit existing path required}",
+          "target": "/run/secrets/readonly_database_url",
+          "read_only": true,
+          "bind": {
+            "create_host_path": false
+          }
+        }
+      ],
+      "runtime": "runc"
+    },
+    "acceptance": {
+      "image": "llm-grading-validation:1d",
+      "build": {
+        "context": ".",
+        "dockerfile": "Dockerfile.validation"
+      },
+      "network_mode": "none",
+      "read_only": true,
+      "cap_drop": [
+        "ALL"
+      ],
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "user": "${VALIDATION_UID:-65534}:${VALIDATION_GID:-65534}",
+      "tmpfs": [
+        "/tmp:rw,noexec,nosuid,size=64m"
+      ],
+      "restart": "no",
+      "command": [
+        "help"
+      ],
+      "profiles": [
+        "acceptance"
+      ],
+      "volumes": [
+        {
+          "type": "bind",
+          "source": "${VALIDATION_WORK_ROOT:?explicit existing path required}",
+          "target": "/work",
+          "read_only": false,
+          "bind": {
+            "create_host_path": false
+          }
+        },
+        {
+          "type": "bind",
+          "source": "${VALIDATION_ALLOWLIST:?explicit existing path required}",
+          "target": "/inputs/allowlist.json",
+          "read_only": true,
+          "bind": {
+            "create_host_path": false
+          }
+        }
+      ],
+      "runtime": "runc"
+    }
+  }
+}

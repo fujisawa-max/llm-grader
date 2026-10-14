@@ -269,7 +269,7 @@ def test_registered_answer_original_source_closure(evidence, case):
     else:
         material["sha256"] = "0" * 64
         _reseal(e.root, records=records)
-        with pytest.raises(ValueError, match="STAGING_.*(HASH|LINEAGE)"):
+        with pytest.raises(ValueError, match="STAGING_.*(HASH|LINEAGE|MATERIAL_ARTIFACT_MISSING)"):
             staging.verify_export(e.root, e.policy)
 
 

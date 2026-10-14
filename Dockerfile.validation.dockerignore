@@ -1,0 +1,15 @@
+**
+!Dockerfile.validation
+!requirements.validation.txt
+!pyproject.toml
+!README.md
+!src/
+!src/**
+!tests/
+!tests/__init__.py
+!tests/synthetic_validation.py
+!tests/run_staged_synthetic_acceptance.py
+!scripts/
+!scripts/validation-container.py
+**/__pycache__
+**/*.pyc
