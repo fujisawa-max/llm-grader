@@ -332,3 +332,214 @@ project or use wildcard recursive cleanup. Apply the preceding manual approved
 cleanup policy to the exact private newly created work directory and credentials,
 after checking receipts/protected roots. No production volumes are created,
 deleted or changed by this Compose file.
+
+## Stage A — Docker runtime validation without production resources
+
+**Actual-server results are unverified.** These commands prepare only empty
+local fixtures, build the image, import Python modules and start help. They
+must not run `export`, `import`, `acceptance`, `up`, a synthetic Job, or access
+production PostgreSQL. Stage B is a separate approved procedure. Docker is
+unavailable in the Codex workspace; the following commands have not been
+executed against the server by Codex.
+
+Run this block in Bash as a **nonroot deployment user** with local Docker
+access. Substitute the repository location if different. Each failed command
+stops; retain its evidence and investigate before proceeding. Do not use sudo
+with inherited environment or load production `.env`.
+
+### A–C. Repository and local Docker prerequisites
+
+```bash
+set -euo pipefail
+cd /opt/llm-scoring
+git status --short
+test -z "$(git status --porcelain)"   # stop if dirty; do not stash/reset
+# Operator must first publish the validation files; Codex does not commit/push.
+git pull --ff-only
+git status --short
+test -z "$(git status --porcelain)"
+git rev-parse HEAD
+test "$(id -u)" -ne 0
+test "$(id -g)" -ne 0
+
+# Use the local daemon only. The Python launcher strips Docker env overrides;
+# therefore its active stored context must also point to this same local socket.
+docker context inspect "$(docker context show)" --format '{{.Endpoints.docker.Host}}'
+test "$(docker context inspect "$(docker context show)" --format '{{.Endpoints.docker.Host}}')" = unix:///var/run/docker.sock
+unset DOCKER_HOST DOCKER_CONTEXT DOCKER_TLS_VERIFY DOCKER_CERT_PATH
+unset COMPOSE_FILE COMPOSE_PROJECT_NAME COMPOSE_PROFILES COMPOSE_ENV_FILES
+unset GRADING_VALIDATION_READONLY_DATABASE_URL LLM_GRADER_DATABASE_URL
+
+docker version
+docker compose version
+# Read-only inspection: if the existing app already uses this project name, STOP.
+docker ps -a --filter label=com.docker.compose.project=llm-grading-validation --format '{{.ID}} {{.Names}}'
+# Inspect any existing containers; do not remove/reuse them automatically.
+test -z "$(docker ps -aq --filter label=com.docker.compose.project=llm-grading-validation)"
+```
+
+If the context is remote/rootless or local daemon is inaccessible, stop and
+have the operator establish an approved local context; do not change the
+application's Compose/Worker. The project collision test deliberately rejects
+leftovers too. The server must have the validation files in its published
+checkout before the pull/build; otherwise stop rather than claim deployment.
+
+### D–E. Empty private mounts, config and build
+
+```bash
+umask 077
+VALIDATION_STAGE_A_ROOT=$(mktemp -d /tmp/grading-validation-stage-a.XXXXXXXX)
+export VALIDATION_UID="$(id -u)" VALIDATION_GID="$(id -g)"
+mkdir -m 700 "$VALIDATION_STAGE_A_ROOT/work" "$VALIDATION_STAGE_A_ROOT/inputs" \
+  "$VALIDATION_STAGE_A_ROOT/empty-question" "$VALIDATION_STAGE_A_ROOT/empty-answer" \
+  "$VALIDATION_STAGE_A_ROOT/empty-socket" "$VALIDATION_STAGE_A_ROOT/evidence"
+export VALIDATION_WORK_ROOT="$VALIDATION_STAGE_A_ROOT/work"
+export VALIDATION_ALLOWLIST="$VALIDATION_STAGE_A_ROOT/inputs/allowlist.json"
+export VALIDATION_QUESTION_ROOT="$VALIDATION_STAGE_A_ROOT/empty-question"
+export VALIDATION_ANSWER_ROOT="$VALIDATION_STAGE_A_ROOT/empty-answer"
+export VALIDATION_PG_SOCKET_ROOT="$VALIDATION_STAGE_A_ROOT/empty-socket"
+export VALIDATION_READONLY_URL_FILE="$VALIDATION_STAGE_A_ROOT/inputs/empty-readonly-url"
+printf '{}\n' > "$VALIDATION_ALLOWLIST"
+: > "$VALIDATION_READONLY_URL_FILE"   # EMPTY: no DB credential, not a usable export
+chmod 600 "$VALIDATION_ALLOWLIST" "$VALIDATION_READONLY_URL_FILE"
+
+# Fixed explicit config; never merge the normal application Compose.
+stage_a_compose() {
+  env -i PATH="$PATH" HOME="$HOME" \
+    VALIDATION_UID="$VALIDATION_UID" VALIDATION_GID="$VALIDATION_GID" \
+    VALIDATION_WORK_ROOT="$VALIDATION_WORK_ROOT" VALIDATION_ALLOWLIST="$VALIDATION_ALLOWLIST" \
+    VALIDATION_QUESTION_ROOT="$VALIDATION_QUESTION_ROOT" VALIDATION_ANSWER_ROOT="$VALIDATION_ANSWER_ROOT" \
+    VALIDATION_PG_SOCKET_ROOT="$VALIDATION_PG_SOCKET_ROOT" VALIDATION_READONLY_URL_FILE="$VALIDATION_READONLY_URL_FILE" \
+    docker compose --env-file /dev/null --project-directory "$PWD" \
+    --project-name llm-grading-validation -f "$PWD/compose.validation.yaml" \
+    --profile export --profile acceptance "$@"
+}
+# Capture both command and tee exit codes; failure stops subsequent execution.
+stage_a_logged() {
+  local label="$1"; shift
+  local -a codes
+  set +e
+  "$@" 2>&1 | tee "$VALIDATION_STAGE_A_ROOT/evidence/$label.log"
+  codes=("${PIPESTATUS[@]}")
+  set -e
+  printf '%s command_exit=%s log_exit=%s\n' "$label" "${codes[0]}" "${codes[1]}" \
+    | tee "$VALIDATION_STAGE_A_ROOT/evidence/$label.exit"
+  test "${codes[0]}" -eq 0 && test "${codes[1]}" -eq 0
+}
+
+stage_a_logged config-check python scripts/validation-compose.py config
+stage_a_compose config --format json > "$VALIDATION_STAGE_A_ROOT/evidence/compose.json"
+stage_a_logged build python scripts/validation-compose.py build
+docker image inspect llm-grading-validation:1d --format '{{.Id}} {{json .Config.Entrypoint}} {{json .Config.Cmd}}' \
+  > "$VALIDATION_STAGE_A_ROOT/evidence/image.txt"
+```
+
+The Compose file is JSON (valid YAML); real `compose config` must succeed and
+the launcher must report `VALIDATION_ISOLATION_CONFIG_OK`. All six source
+variables above point **only** inside the fresh fixture. Export's declared
+mounts are empty placeholders and its service is never started. Acceptance
+mounts only `/work` and the dummy allowlist.
+
+Dockerfile-specific `Dockerfile.validation.dockerignore`, adjacent to the
+selected Dockerfile, takes precedence over root `.dockerignore` in a supported
+Docker build. Keep both files present in the published checkout. Build logs
+must show successful context/ignore loading and each explicit COPY. Expected
+COPY inputs: requirements, pyproject/README, src, three tests package files
+and the one container entrypoint. Image inspection below checks resulting
+contents; it cannot prove ignore precedence by itself. If the builder cannot
+honor the Dockerfile-specific ignore file, STOP rather than upload a broader
+context. Record Docker/Compose/builder versions and the build log.
+
+### F–G. Import smoke and help-only start
+
+```bash
+stage_a_logged smoke stage_a_compose run --rm --no-deps --pull never \
+  --entrypoint python acceptance -c '
+import os
+from pathlib import Path
+import scoring.validation_staging
+import tests.synthetic_validation
+import tests.run_staged_synthetic_acceptance
+import fastapi, httpx, psycopg, sqlite3, fitz
+assert os.environ["PYTHONPATH"] == "/app"
+assert not Path("/source").exists()
+assert not Path("/run/secrets/readonly_database_url").exists()
+assert not Path("/app/.env").exists() and not Path("/app/config").exists()
+assert {p.name for p in Path("/app/tests").iterdir()} == {"__init__.py", "synthetic_validation.py", "run_staged_synthetic_acceptance.py"}
+assert {p.name for p in Path("/app/scripts").iterdir()} == {"validation-container.py"}
+assert not any("DATABASE_URL" in k or "RUNTIME_MANAGER" in k for k in os.environ)
+p = Path("/work/stage-a-write-probe")
+with p.open("x") as f: f.write("permission probe")
+p.unlink()
+print("STAGE_A_IMPORT_AND_NONROOT_WRITE_OK")
+'
+
+VALIDATION_HELP_NAME="grading-validation-stage-a-$(date -u +%Y%m%d%H%M%S)-$$"
+stage_a_logged help stage_a_compose run --no-deps --pull never \
+  --name "$VALIDATION_HELP_NAME" acceptance help
+# Keep the stopped help container for inspection; no --rm here.
+```
+
+Smoke only imports modules and creates/removes one exact permission probe;
+it does not create a DB/Job or invoke models. It checks that nonroot can write
+`/work`, imports work under read-only rootfs/network-none and `/app` PYTHONPATH,
+and packaging includes TestClient/httpx/PostgreSQL/SQLite dependencies. Python
+bytecode writing is disabled; `/tmp` is writable bounded tmpfs. Help must show
+only the implemented `help/export/import/acceptance` command syntax. No operation
+other than help runs. Failed import/build/permission checks are not feature passes.
+
+### H–J. Inspect and enforce actual container isolation
+
+```bash
+docker inspect "$VALIDATION_HELP_NAME" > "$VALIDATION_STAGE_A_ROOT/evidence/help-inspect.json"
+python - "$VALIDATION_STAGE_A_ROOT/evidence/help-inspect.json" "$VALIDATION_WORK_ROOT" "$VALIDATION_ALLOWLIST" <<'PY'
+import json, sys
+c, = json.load(open(sys.argv[1]))
+h, cfg = c["HostConfig"], c["Config"]
+assert c["State"]["Status"] == "exited" and c["State"]["ExitCode"] == 0
+assert cfg["Labels"]["com.docker.compose.project"] == "llm-grading-validation"
+assert cfg["Entrypoint"] == ["python", "scripts/validation-container.py"]
+assert cfg["Cmd"] == ["help"]
+assert h["NetworkMode"] == "none" and h["Runtime"] == "runc"
+assert not h["Privileged"] and h["ReadonlyRootfs"]
+assert h["PidMode"] == "" and h["IpcMode"] != "host"
+assert set(h["CapDrop"]) == {"ALL"} and not h.get("CapAdd")
+assert "no-new-privileges:true" in h["SecurityOpt"]
+assert not h.get("Devices") and not h.get("DeviceRequests")
+assert not h.get("PortBindings") and not cfg.get("ExposedPorts")
+assert not c["NetworkSettings"].get("Ports")
+assert "/tmp" in h["Tmpfs"]
+uid, gid = map(int, cfg["User"].split(":"))
+assert uid > 0 and gid > 0
+assert all(m["Type"] == "bind" or (m["Type"] == "tmpfs" and m["Destination"] == "/tmp") for m in c["Mounts"])
+mounts = {m["Destination"]: m for m in c["Mounts"] if m["Type"] == "bind"}
+assert set(mounts) == {"/work", "/inputs/allowlist.json"}
+for target, source, writable in [("/work", sys.argv[2], True), ("/inputs/allowlist.json", sys.argv[3], False)]:
+    m = mounts[target]
+    assert m["Type"] == "bind" and m["Source"] == source and m["RW"] == writable
+names = sorted(v.split("=", 1)[0] for v in cfg["Env"])
+assert not any("DATABASE_URL" in n or "RUNTIME_MANAGER" in n or n.startswith("NVIDIA") for n in names)
+print(json.dumps({"exit_code": c["State"]["ExitCode"], "network": h["NetworkMode"],
+                  "runtime": h["Runtime"], "privileged": h["Privileged"],
+                  "mount_targets": sorted(mounts), "environment_names": names,
+                  "status": "STAGE_A_ISOLATION_OK"}, indent=2))
+PY
+# Confirm work root has no export, stage, SQLite, Job or acceptance files.
+test -z "$(find "$VALIDATION_WORK_ROOT" -mindepth 1 -print -quit)"
+git status --short
+```
+
+Keep evidence private; inspect contains only this no-secret Stage A container,
+and the summary prints environment **names**, not values. Record config/build/
+smoke/help/isolation exit codes, image ID, git SHA, help output and runtime/mount/
+network/capability/port/device assertions. If any assertion fails, stop and retain
+logs/container. Do not change DB/production Compose/Worker/GPU/runtime to fix it.
+Analyze missing dependencies/COPY/import path/UID/mount or unsupported Docker
+syntax and propose the smallest validation-only correction first.
+
+After successful evidence collection, optionally remove **only** the exact
+stopped help container with `docker rm "$VALIDATION_HELP_NAME"`. Retain the
+private evidence root; no recursive cleanup is part of Stage A. A successful
+Stage A verifies Docker packaging/startup/isolation only. J1d remains PARTIAL
+until remaining required container/staged-data acceptance is established;
+production-derived Stage B still requires separate approval.

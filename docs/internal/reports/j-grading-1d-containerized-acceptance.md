@@ -154,3 +154,43 @@ Final exact `git status --short`:
 ```
 
 No staging, commit, push or production execution was performed.
+
+## Stage A preparation follow-up — 2026-10-14
+
+Instructions: `/tmp/j.grading.1d-2.md`. Initial working tree was clean. Audited
+Dockerfile/context ignore/COPY inputs, `/app` PYTHONPATH, dependencies, CLI
+argument dispatch, fixed project, network-none/runc, nonroot security and
+mount boundaries. No implementation correction was required. The earlier
+runbook assumed real source paths even for config/build; Stage A now gives
+an exact no-production-resource sequence using fresh empty private fixtures.
+
+Added ordered server commands for clean git status / operator `git pull --ff-only`,
+local Docker/Compose version and project collision checks, rendered config,
+image build/ID, import and nonroot-write smoke, help-only start, actual stopped
+container inspection/assertions and private exit/log evidence. Only acceptance
+service smoke/help starts; the export service has dummy paths but never starts.
+No source credential/socket/artifact is supplied, no synthetic Job is created,
+and no production Compose/Worker/model/OpenWebUI changes are made.
+
+The smoke checks required imports, exact image helper files, absent production
+config/secret paths and `/work` permissions. The actual-container checklist
+checks network-none, runc, nonroot UID/GID, readonly rootfs, cap-drop,
+no-new-privileges, no ports/GPU/devices/host namespaces, exact two private bind
+mounts and environment names without printing secret values. Image build logs
+and builder versions remain required to establish Dockerfile-specific ignore
+application; image file inspection alone is not claimed as proof.
+
+Local verification: **30 focused tests passed**, 1 warning; all Stage A Bash
+blocks pass `bash -n`; all explicit Docker COPY inputs exist; `git diff --check`
+passes. Only documentation changed, so backend behavior/full-suite evidence
+above remains applicable. Actual Docker config/build/container execution and
+server results are **unverified** because Docker is unavailable here. No
+production connection, export, synthetic Job, model call, deployment, commit or
+push occurred. J.GRADING.1d remains **PARTIAL**; Stage B remains separate.
+
+Exact follow-up `git status --short`:
+
+```text
+ M docs/admin/isolated-grading-validation.md
+ M docs/internal/reports/j-grading-1d-containerized-acceptance.md
+```
